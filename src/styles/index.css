@@ -34,6 +34,11 @@
   --color-cf-orange: #FF4801;
   --color-cf-blue: #0A95FF;
   --color-cf-green: #19E306;
+
+  /* Semantic accents — used for status / pacing feedback. */
+  --color-cf-success: #19E306;
+  --color-cf-warning: #FF9F0A;
+  --color-cf-danger:  #E5484D;
 }
 
 /**

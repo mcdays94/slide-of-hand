@@ -19,12 +19,32 @@ export const whatIsThisSlide: SlideDef = {
   notes: (
     <>
       <p>
-        ReAction is a JSX-first deck platform: each slide is a React component;
+        Frame the contrast with markdown-based deck tools. ReAction is{" "}
+        <strong>JSX-first</strong>: each slide is a typed React component,
         each deck is a folder of TypeScript files.
       </p>
       <p>
-        Reveal the “No directives” callout when you say the line about
-        descriptor schemas.
+        The shape an author writes:
+      </p>
+      <pre className="overflow-x-auto rounded bg-cf-bg-300/60 p-3 font-mono text-xs leading-relaxed text-cf-text">{`export const slide: SlideDef = {
+  id: "intro",
+  layout: "cover",
+  render: () => <h1>Hi.</h1>,
+};`}</pre>
+      <p>
+        After the second paragraph, press <kbd>→</kbd> to reveal the “No
+        directives” callout — say the line about descriptor schemas as it
+        lands.
+      </p>
+      <p>
+        If anyone asks how this differs from cf-slides:{" "}
+        <a
+          href="https://github.com/mcdays94/ReAction#why"
+          className="text-cf-orange underline"
+        >
+          repo README
+        </a>{" "}
+        has the long answer.
       </p>
     </>
   ),
