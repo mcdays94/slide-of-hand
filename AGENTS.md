@@ -125,6 +125,10 @@ export interface SlideDef {
   phases?: number;
   /** Optional speaker notes — rendered in presenter window only. */
   notes?: ReactNode;
+  /** Skip this slide entirely (drafts, parking lot, removed-but-not-deleted). */
+  hidden?: boolean;
+  /** Expected duration on this slide. Drives presenter pacing feedback. */
+  runtimeSeconds?: number;
   /** Render function. Receives current phase. */
   render: (props: { phase: number }) => ReactNode;
 }
@@ -144,6 +148,10 @@ export interface DeckMeta {
   event?: string;
   /** Cover image path (relative to /public). */
   cover?: string;
+  /** Categorization hook for future filtering on the index. */
+  tags?: string[];
+  /** Total expected talk runtime, in minutes. Shown on index card + drives presenter timer. */
+  runtimeMinutes?: number;
 }
 
 export interface Deck {
