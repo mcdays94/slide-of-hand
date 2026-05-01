@@ -1,0 +1,27 @@
+/**
+ * Cloudflare Worker config for ReAction.
+ *
+ * v1 ships as a pure Static Assets app: the Worker entry serves the bundled
+ * SPA from `dist/` for every route. No state stores, no AI binding, no Worker
+ * Loader — those are added per-deck only when a specific deck demonstrably
+ * needs them.
+ *
+ * Custom domain (`reaction.lusostreams.com`) is wired up in slice #8; the
+ * first deploy lands on a `*.workers.dev` URL.
+ */
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "reaction",
+  "main": "worker/index.ts",
+  "account_id": "1bcef46cbe9172d2569dcf7039048842",
+  "compatibility_date": "2025-04-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application"
+  },
+  "observability": {
+    "enabled": true
+  }
+}

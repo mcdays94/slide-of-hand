@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <meta
+      name="description"
+      content="ReAction — JSX-first deck platform on Cloudflare Workers."
+    />
+    <title>ReAction</title>
+    <!--
+      Anti-FOUC inline styles. We paint the design-system background + text
+      colour BEFORE the bundle loads so the page never flashes white. The
+      tokens here mirror src/styles/index.css; keep them in sync.
+
+      Never pure white (#FFFFFF) for the body, never pure black (#000000) for
+      text — see AGENTS.md § Anti-patterns.
+    -->
+    <style>
+      :root {
+        color-scheme: light;
+        --color-cf-bg-100: #FFFBF5;
+        --color-cf-text: #521000;
+      }
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        background: var(--color-cf-bg-100);
+        color: var(--color-cf-text);
+        font-family:
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          "Segoe UI",
+          Roboto,
+          "Helvetica Neue",
+          Arial,
+          sans-serif;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+      }
+      #root {
+        min-height: 100vh;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

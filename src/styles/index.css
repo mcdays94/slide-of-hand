@@ -1,0 +1,33 @@
+@import "tailwindcss";
+
+/**
+ * Cloudflare Workers Design System tokens.
+ *
+ * Tailwind 4's CSS-first config exposes any `--color-*` declared inside
+ * `@theme` as a utility class. The names below all generate `bg-cf-*`,
+ * `text-cf-*`, `border-cf-*`, etc.
+ *
+ * The palette is warm cream + warm brown — never pure white, never pure
+ * black. See AGENTS.md § Anti-patterns.
+ */
+@theme {
+  --color-cf-bg-100: #FFFBF5;
+  --color-cf-bg-200: #F4EFE6;
+  --color-cf-bg-300: #E8E0D2;
+
+  --color-cf-text: #521000;
+  --color-cf-text-muted: #7A4A2D;
+  --color-cf-text-subtle: #A88572;
+
+  --color-cf-border: #E0D3BD;
+
+  --color-cf-orange: #FF4801;
+  --color-cf-blue: #0A95FF;
+  --color-cf-green: #19E306;
+}
+
+html,
+body {
+  background: var(--color-cf-bg-100);
+  color: var(--color-cf-text);
+}
