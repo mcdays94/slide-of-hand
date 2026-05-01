@@ -18,10 +18,19 @@ export const coverSlide: SlideDef = {
   runtimeSeconds: 25,
   notes: (
     <>
-      <p>Welcome the audience to the ReAction demo deck.</p>
       <p>
-        This is a five-slide tour of the framework primitives — phase reveals,
-        layout switching, overview mode, and light/dark.
+        Welcome the audience to the ReAction demo deck. Set expectations: this
+        is a fast tour, no live-coding here.
+      </p>
+      <p>What you'll cover, in order:</p>
+      <ul className="list-disc space-y-1 pl-6">
+        <li>What ReAction is, in one sentence</li>
+        <li>Phase reveals — the only animation primitive you'll author</li>
+        <li>Layouts — four modes, no theme system</li>
+        <li>Q&amp;A / repo link</li>
+      </ul>
+      <p>
+        Press <kbd>→</kbd> to reveal the subtitle on this slide.
       </p>
     </>
   ),

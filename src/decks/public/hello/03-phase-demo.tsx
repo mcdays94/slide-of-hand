@@ -46,14 +46,25 @@ export const phaseDemoSlide: SlideDef = {
   notes: (
     <>
       <p>
-        Press <kbd>→</kbd> three times to reveal the cards in turn. The phase
-        counter at the top is driven by <code>usePhase()</code> — it stays
-        mounted, just animates as the phase ticks.
+        This slide has <code>phases: 3</code>. Press <kbd>→</kbd> three times
+        on the main viewer to reveal the cards in turn. The phase counter at
+        the top stays mounted — it animates as the phase ticks, driven by{" "}
+        <code>usePhase()</code>.
       </p>
+      <p>Two patterns coexist; pick the right one per slide:</p>
+      <ul className="list-disc space-y-1 pl-6">
+        <li>
+          <code>&lt;Reveal at={"{N}"}&gt;</code> — mount/unmount, clean for
+          distinct blocks. Layout shifts as content lands.
+        </li>
+        <li>
+          <code>usePhase()</code> + opacity / transform — node stays mounted,
+          stable layout. Use when surrounding content would otherwise jump.
+        </li>
+      </ul>
       <p>
-        Use <code>&lt;Reveal at={"{N}"}&gt;</code> for distinct blocks where
-        layout shift is fine; use the hook + opacity when content above /
-        below would jump.
+        Talking-point landings: card 1 = mount/unmount, card 2 = motion
+        primitives, card 3 = design-token discipline.
       </p>
     </>
   ),

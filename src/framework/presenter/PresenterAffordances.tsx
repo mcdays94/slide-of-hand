@@ -22,7 +22,7 @@ import { Fragment } from "react";
 import { usePresenterMode } from "./mode";
 
 // >>> SLICE_5_IMPORTS — slice #5 worker adds:
-// import { PresenterWindowTrigger } from "./PresenterWindowTrigger";
+import { PresenterWindowTrigger } from "./PresenterWindowTrigger";
 
 // >>> SLICE_6_IMPORTS — slice #6 worker adds:
 // import { PresenterTools } from "@/framework/tools/PresenterTools";
@@ -32,6 +32,7 @@ export function PresenterAffordances() {
   return (
     <Fragment>
       {/* >>> SLICE_5_MOUNT — slice #5 worker adds <PresenterWindowTrigger /> below: */}
+      <PresenterWindowTrigger />
 
       {/* >>> SLICE_6_MOUNT — slice #6 worker adds <PresenterTools /> below: */}
 

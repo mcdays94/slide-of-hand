@@ -3,14 +3,27 @@
  *
  * Resolves the slug against the auto-discovered registry and mounts `<Deck>`.
  * 404s for unknown slugs.
+ *
+ * Slice #5 query parameters:
+ *
+ *   - `?presenter=1` — swaps the live `<Deck>` for `<PresenterWindow>`. This
+ *     is what the spawned popup tab loads when the author presses `P`.
+ *   - `?presenter-mode=1` — turns on `<PresenterModeProvider enabled>` so
+ *     presenter affordances (the P-key listener; future tools) mount on
+ *     the public viewer. **Dev-only override** — slice #7 will replace it
+ *     by activating the provider on the admin route only. Remove this
+ *     branch once #7 lands.
  */
 
-import { Link, useParams } from "react-router-dom";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 import { Deck } from "@/framework/viewer/Deck";
 import { getDeckBySlug } from "@/lib/decks-registry";
+import { PresenterModeProvider } from "@/framework/presenter/mode";
+import { PresenterWindow } from "@/framework/presenter/PresenterWindow";
 
 export default function DeckRoute() {
   const { slug } = useParams<{ slug: string }>();
+  const [search] = useSearchParams();
   const deck = slug ? getDeckBySlug(slug) : undefined;
 
   if (!deck) {
@@ -27,7 +40,18 @@ export default function DeckRoute() {
     );
   }
 
+  // Presenter window — spawned by the main viewer via window.open.
+  if (search.get("presenter") === "1") {
+    return <PresenterWindow deck={deck} />;
+  }
+
+  // DEV-ONLY: forces presenter affordances on the public viewer so the P
+  // key works without slice #7's admin route. Remove once admin route ships.
+  const presenterModeOverride = search.get("presenter-mode") === "1";
+
   return (
-    <Deck slug={deck.meta.slug} title={deck.meta.title} slides={deck.slides} />
+    <PresenterModeProvider enabled={presenterModeOverride}>
+      <Deck slug={deck.meta.slug} title={deck.meta.title} slides={deck.slides} />
+    </PresenterModeProvider>
   );
 }

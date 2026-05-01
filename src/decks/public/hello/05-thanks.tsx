@@ -15,10 +15,32 @@ export const thanksSlide: SlideDef = {
   runtimeSeconds: 20,
   notes: (
     <>
-      <p>Final slide — invite questions.</p>
       <p>
-        Mention the repo URL (or scan-the-QR if a real QR lands here in a
-        future iteration). Thank the audience.
+        Final slide. Invite questions; the QR is a placeholder for now (a
+        real one lands in a future iteration).
+      </p>
+      <p>Closing checklist:</p>
+      <ul className="list-disc space-y-1 pl-6">
+        <li>Thank the audience by name where possible</li>
+        <li>
+          Repo URL out loud:{" "}
+          <code>github.com/mcdays94/ReAction</code>
+        </li>
+        <li>
+          Mention what's <em>not</em> in v1 (Cloudflare D1, R2, Hyperdrive —
+          intentionally) so the architecture story stays clean
+        </li>
+        <li>If time runs short, skip Q&amp;A back to chapter 03</li>
+      </ul>
+      <p>
+        Want feedback? Direct them to{" "}
+        <a
+          href="https://github.com/mcdays94/ReAction/discussions"
+          className="text-cf-orange underline"
+        >
+          Discussions
+        </a>
+        .
       </p>
     </>
   ),
