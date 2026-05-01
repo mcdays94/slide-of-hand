@@ -53,6 +53,7 @@ export function Slide({
         <div
           className="pointer-events-none absolute left-0 top-0 z-10 flex items-baseline gap-3 px-8 pt-6 text-cf-text-muted"
           data-no-advance
+          data-deck-chrome="header"
         >
           {slide.sectionNumber && (
             <span className="font-mono text-xs uppercase tracking-[0.3em] text-cf-text-subtle">

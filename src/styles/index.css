@@ -94,3 +94,26 @@ html.dark {
     @apply inline-flex items-center justify-center rounded border border-cf-border bg-cf-bg-100/40 px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.25em] text-cf-text-muted transition-colors hover:border-dashed hover:text-cf-text;
   }
 }
+
+/**
+ * Auto-hide chrome (slice #6).
+ *
+ * `framework/tools/AutoHideChrome.tsx` flips `data-presenter-idle="true"`
+ * on the deck root after 2 seconds of cursor inactivity. Any element marked
+ * `data-deck-chrome` (kicker, progress bar, …) fades out while idle and
+ * reappears instantly on mousemove or keydown. Transition uses the
+ * standard ease curve, ~250ms.
+ */
+[data-deck-chrome] {
+  transition:
+    opacity 250ms cubic-bezier(0.4, 0, 0.2, 1),
+    visibility 0s linear 0s;
+}
+[data-presenter-idle="true"] [data-deck-chrome] {
+  opacity: 0;
+  visibility: hidden;
+  transition:
+    opacity 250ms cubic-bezier(0.4, 0, 0.2, 1),
+    visibility 0s linear 250ms;
+}
+

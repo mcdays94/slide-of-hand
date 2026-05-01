@@ -25,7 +25,7 @@ import { usePresenterMode } from "./mode";
 import { PresenterWindowTrigger } from "./PresenterWindowTrigger";
 
 // >>> SLICE_6_IMPORTS — slice #6 worker adds:
-// import { PresenterTools } from "@/framework/tools/PresenterTools";
+import { PresenterTools } from "@/framework/tools/PresenterTools";
 
 export function PresenterAffordances() {
   if (!usePresenterMode()) return null;
@@ -35,7 +35,7 @@ export function PresenterAffordances() {
       <PresenterWindowTrigger />
 
       {/* >>> SLICE_6_MOUNT — slice #6 worker adds <PresenterTools /> below: */}
-
+      <PresenterTools />
     </Fragment>
   );
 }
