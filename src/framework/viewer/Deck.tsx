@@ -29,6 +29,7 @@ import { Slide } from "./Slide";
 import { PhaseProvider } from "./PhaseContext";
 import { Overview } from "./Overview";
 import { KeyboardHelp } from "./KeyboardHelp";
+import { PresenterAffordances } from "@/framework/presenter/PresenterAffordances";
 import { slideTransition } from "@/lib/motion";
 
 const THEME_STORAGE_KEY = "reaction-theme";
@@ -305,6 +306,7 @@ export function Deck({ slug, title, slides }: DeckProps) {
           onClose={closeOverlays}
         />
         <KeyboardHelp open={helpOpen} onClose={closeOverlays} />
+        <PresenterAffordances />
       </div>
     </div>
   );
