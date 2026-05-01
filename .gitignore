@@ -1,0 +1,43 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+.vite/
+.wrangler/
+
+# Environment / secrets
+.env
+.env.local
+.env.*.local
+.dev.vars
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.cursor/
+*.log
+*.swp
+*.swo
+
+# Private decks — local-only, never committed.
+# Per AGENTS.md, customer-specific or under-NDA decks live here. They run via
+# `npm run dev` on the author's machine but never reach the deployed app.
+src/decks/private/*
+!src/decks/private/.gitkeep
+
+# Per-machine agent artefacts
+skill-observations/
+RESUME_PROMPT.md
+.aider*
+
+# Test artefacts
+test-results/
+coverage/
+
+# OS
+Thumbs.db
+ehthumbs.db
