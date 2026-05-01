@@ -23,6 +23,7 @@ export function ProgressBar({ total, current, onJump }: ProgressBarProps) {
     <div
       className="pointer-events-auto absolute inset-x-0 bottom-0 z-10 flex items-center gap-1 px-8 pb-3"
       data-no-advance
+      data-deck-chrome="progress"
       data-testid="progress-bar"
     >
       {Array.from({ length: total }, (_, i) => {
