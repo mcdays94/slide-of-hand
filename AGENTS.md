@@ -28,9 +28,9 @@ A self-hosted deck platform that runs on Cloudflare Workers + Static Assets. Eac
 | Styling | Tailwind 4 + CSS custom properties for design tokens |
 | Animation | Framer Motion 12 — easings + presets in `src/lib/motion.ts`, never inline |
 | Routing | React Router v6 — **path**-based URLs (no hash router) |
-| Tests | Vitest |
+| Tests | Vitest 3 (vitest@2 collides with vite@6 type-wise; pin `^3.x`) |
 | Backend | Cloudflare Workers + Static Assets binding |
-| Deploy | Wrangler (`wrangler.jsonc`, JSON-with-comments) |
+| Deploy | Wrangler 4 (`wrangler.jsonc`, JSON-with-comments) |
 
 No state stores in v1: no R2, no Durable Objects, no Hyperdrive, no D1. Add only when a specific deck demonstrably needs it. Default deck = pure static, served from the Static Assets binding.
 
@@ -46,6 +46,8 @@ No state stores in v1: no R2, no Durable Objects, no Hyperdrive, no D1. Add only
 ├── package.json
 ├── wrangler.jsonc                  ← Worker config + Static Assets binding
 ├── vite.config.ts
+├── vitest.config.ts                ← (or vitest in vite.config.ts)
+├── tailwind.config.ts              ← Tailwind v4 config (root, not under framework/)
 ├── tsconfig.json (+ app, node)
 ├── index.html
 ├── public/                         ← static assets (favicon, fonts, images)
@@ -73,21 +75,18 @@ No state stores in v1: no R2, no Durable Objects, no Hyperdrive, no D1. Add only
 │   │   │   ├── PresenterWindow.tsx
 │   │   │   ├── SpeakerNotes.tsx
 │   │   │   └── broadcast.ts        (BroadcastChannel sync)
-│   │   ├── tools/                  ← presentation overlays
-│   │   │   ├── Magnifier.tsx
-│   │   │   ├── Laser.tsx
-│   │   │   ├── Marker.tsx
-│   │   │   └── AutoHideChrome.tsx
-│   │   └── tokens/                 ← design system
-│   │       ├── tokens.css          (CSS custom properties)
-│   │       └── tailwind.config.ts
+│   │   └── tools/                  ← presentation overlays
+│   │       ├── Magnifier.tsx
+│   │       ├── Laser.tsx
+│   │       ├── Marker.tsx
+│   │       └── AutoHideChrome.tsx
 │   ├── lib/
 │   │   ├── motion.ts               ← easings, presets
 │   │   ├── decks-registry.ts       ← `import.meta.glob` auto-discovery
 │   │   └── routes.ts               ← path constants
 │   ├── components/                 ← cross-deck shared components (sparingly)
 │   ├── styles/
-│   │   └── index.css               ← Tailwind + tokens
+│   │   └── index.css               ← Tailwind v4 entry + design-token `@theme` block (canonical token home)
 │   └── decks/
 │       ├── public/
 │       │   ├── hello/index.tsx     ← demo deck (always present)
