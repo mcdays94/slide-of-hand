@@ -3,31 +3,89 @@
 /**
  * Cloudflare Workers Design System tokens.
  *
- * Tailwind 4's CSS-first config exposes any `--color-*` declared inside
- * `@theme` as a utility class. The names below all generate `bg-cf-*`,
- * `text-cf-*`, `border-cf-*`, etc.
+ * Tailwind 4's CSS-first config exposes every `--color-*` declared inside
+ * `@theme` as a utility class — `bg-cf-*`, `text-cf-*`, `border-cf-*`, etc.
  *
- * The palette is warm cream + warm brown — never pure white, never pure
- * black. See AGENTS.md § Anti-patterns.
+ * Light is the default; dark is opted-in by toggling `class="dark"` on
+ * `<html>` (the `D` keyboard shortcut, persisted to `localStorage`). Tailwind
+ * 4 honors the `class` strategy via `@variant dark` below.
+ *
+ * Palette discipline:
+ *   - Never pure white or pure black. See AGENTS.md § Anti-patterns.
+ *   - Brand orange is identical in light + dark; only the surfaces flip.
  */
+@custom-variant dark (&:where(.dark, .dark *));
+
 @theme {
+  /* Surfaces */
   --color-cf-bg-100: #FFFBF5;
   --color-cf-bg-200: #F4EFE6;
   --color-cf-bg-300: #E8E0D2;
 
+  /* Text */
   --color-cf-text: #521000;
   --color-cf-text-muted: #7A4A2D;
   --color-cf-text-subtle: #A88572;
 
+  /* Lines */
   --color-cf-border: #E0D3BD;
 
+  /* Brand accents (same in both modes) */
   --color-cf-orange: #FF4801;
   --color-cf-blue: #0A95FF;
   --color-cf-green: #19E306;
+}
+
+/**
+ * Dark-mode overrides. The brand accents stay identical; only surfaces +
+ * text tones flip. Charcoal / parchment palette tuned to the same warm hue
+ * family so dark mode doesn't feel like a different design system.
+ */
+.dark {
+  --color-cf-bg-100: #1A1310;
+  --color-cf-bg-200: #221915;
+  --color-cf-bg-300: #2C211B;
+
+  --color-cf-text: #F4E7D7;
+  --color-cf-text-muted: #C9B49C;
+  --color-cf-text-subtle: #8E7A66;
+
+  --color-cf-border: #3A2E26;
 }
 
 html,
 body {
   background: var(--color-cf-bg-100);
   color: var(--color-cf-text);
+}
+
+html {
+  color-scheme: light;
+}
+html.dark {
+  color-scheme: dark;
+}
+
+/**
+ * Reusable design-system utility classes. Prefer these to one-off Tailwind
+ * stacks for the well-known building blocks.
+ */
+@layer components {
+  /** Uppercase-mono kicker. */
+  .cf-tag {
+    @apply font-mono text-[10px] uppercase tracking-[0.3em] text-cf-text-subtle;
+  }
+
+  /** Card frame — solid border, dashed on hover, warm surface. */
+  .cf-card {
+    @apply rounded-md border border-cf-border bg-cf-bg-100 transition-colors;
+  }
+  .cf-card:hover {
+    border-style: dashed;
+  }
+
+  /** Ghost button — subtle, mono caps. */
+  .cf-btn-ghost {
+    @apply inline-flex items-center justify-center rounded border border-cf-border bg-cf-bg-100/40 px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.25em] text-cf-text-muted transition-colors hover:border-dashed hover:text-cf-text;
+  }
 }
