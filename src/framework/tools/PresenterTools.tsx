@@ -14,10 +14,15 @@
  * <PresenterTools /> ever rendered. The auto-mount path is purely for local
  * probing and does nothing in normal admin flow.
  *
- * While marker mode is active, we add a `data-marker-active="true"`
- * attribute to the deck root so other tools / styles can react if they need
- * to. Click-to-advance suppression itself is handled by wrapping the marker
- * canvas in `<div data-no-advance>` (see `Marker.tsx`).
+ * Active-tool surface area (issue #10):
+ *   - Each tool reports its active state via `onActiveChange`.
+ *   - We mirror the *currently engaged* tool to the deck root as a
+ *     `data-tool-active="laser" | "magnifier" | "marker"` attribute. CSS
+ *     scopes `cursor: none` (laser/magnifier) and `cursor: crosshair`
+ *     (marker) on that attribute. See `src/styles/index.css`.
+ *   - Marker mode also gets a legacy `data-marker-active="true"` mirror for
+ *     downstream styles wired up before issue #10.
+ *   - A `<ToolActivePill />` is rendered top-right whenever a tool is on.
  */
 
 import { useEffect, useMemo, useState } from "react";
@@ -27,6 +32,7 @@ import { Laser } from "./Laser";
 import { Magnifier } from "./Magnifier";
 import { Marker } from "./Marker";
 import { AutoHideChrome } from "./AutoHideChrome";
+import { ToolActivePill, type ActiveTool } from "./ToolActivePill";
 
 /**
  * Read the override from `location.search`. Exported for tests / probes.
@@ -51,23 +57,42 @@ export function PresenterTools() {
   const override = useMemo(() => readPresenterModeOverride(), []);
   const enabled = presenterMode || override;
 
-  // Track marker-active so we can mirror it to the deck root for downstream
-  // styles. The Marker component owns the actual mode flag.
+  const [laserActive, setLaserActive] = useState(false);
+  const [magnifierActive, setMagnifierActive] = useState(false);
   const [markerActive, setMarkerActive] = useState(false);
 
+  // Resolve the "single active tool" used for the data-tool-active attribute
+  // and the pill. If multiple tools somehow report active simultaneously we
+  // prioritise marker (toggled, deliberate) > magnifier > laser.
+  const activeTool: ActiveTool = markerActive
+    ? "marker"
+    : magnifierActive
+      ? "magnifier"
+      : laserActive
+        ? "laser"
+        : null;
+
+  // Mirror activeTool + legacy markerActive flag onto the deck root so CSS
+  // can scope cursor visibility.
   useEffect(() => {
     if (!enabled) return;
     const root = document.querySelector<HTMLElement>("[data-deck-slug]");
     if (!root) return;
+    if (activeTool) {
+      root.setAttribute("data-tool-active", activeTool);
+    } else {
+      root.removeAttribute("data-tool-active");
+    }
     if (markerActive) {
       root.setAttribute("data-marker-active", "true");
     } else {
       root.removeAttribute("data-marker-active");
     }
     return () => {
+      root.removeAttribute("data-tool-active");
       root.removeAttribute("data-marker-active");
     };
-  }, [enabled, markerActive]);
+  }, [enabled, activeTool, markerActive]);
 
   // Resolve slug for the Laser broadcast (best-effort).
   const slug = useMemo(() => {
@@ -81,9 +106,10 @@ export function PresenterTools() {
   return (
     <>
       <AutoHideChrome />
-      <Laser slug={slug} />
-      <Magnifier />
+      <Laser slug={slug} onActiveChange={setLaserActive} />
+      <Magnifier onActiveChange={setMagnifierActive} />
       <Marker onActiveChange={setMarkerActive} />
+      <ToolActivePill tool={activeTool} />
     </>
   );
 }

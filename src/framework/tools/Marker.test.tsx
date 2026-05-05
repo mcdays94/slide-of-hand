@@ -9,7 +9,12 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, render } from "@testing-library/react";
-import { Marker } from "./Marker";
+import {
+  computeStrokeOpacity,
+  Marker,
+  MARKER_FADE_DURATION_MS,
+  MARKER_FADE_HOLD_MS,
+} from "./Marker";
 
 function mountSlideShell(index: number) {
   const slide = document.createElement("section");
@@ -81,6 +86,43 @@ describe("Marker", () => {
       window.dispatchEvent(new KeyboardEvent("keydown", { key: "e" }));
     });
     expect(onActive).toHaveBeenLastCalledWith(true);
+  });
+
+  describe("computeStrokeOpacity", () => {
+    it("returns 1 while the stroke is still being drawn (releasedAt = null)", () => {
+      expect(computeStrokeOpacity(1000, null)).toBe(1);
+    });
+
+    it("returns 1 during the hold window after release", () => {
+      const released = 1000;
+      // 1s into the hold (hold = 2.5s) — still fully opaque.
+      expect(computeStrokeOpacity(released + 1000, released)).toBe(1);
+    });
+
+    it("starts fading after the hold window expires", () => {
+      const released = 1000;
+      const justAfterHold = released + MARKER_FADE_HOLD_MS + 100;
+      const opacity = computeStrokeOpacity(justAfterHold, released);
+      // 100ms into a 1000ms fade — should be ~0.9.
+      expect(opacity).toBeGreaterThan(0.85);
+      expect(opacity).toBeLessThan(0.95);
+    });
+
+    it("returns 0 after the fade window completes", () => {
+      const released = 1000;
+      const past =
+        released + MARKER_FADE_HOLD_MS + MARKER_FADE_DURATION_MS + 1;
+      expect(computeStrokeOpacity(past, released)).toBe(0);
+    });
+
+    it("uses custom hold and fade durations when provided", () => {
+      const released = 1000;
+      // hold=100, fade=200; at t = released + 200 we're 100ms into fade,
+      // so opacity = 1 - 100/200 = 0.5
+      expect(computeStrokeOpacity(released + 200, released, 100, 200)).toBe(
+        0.5,
+      );
+    });
   });
 
   it("clears canvas pixels when the slide-shell data-slide-index changes", async () => {
