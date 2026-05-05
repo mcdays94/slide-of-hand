@@ -13,8 +13,9 @@
  * the `<PresenterModeProvider>` wrap in slice #7's `decks.$slug.tsx`).
  */
 
+import { useState } from "react";
 import { Link } from "react-router-dom";
-import { getAllDeckEntries } from "@/lib/decks-registry";
+import { getAllDeckEntries, type RegistryEntry } from "@/lib/decks-registry";
 import { vscodeUrlForDeckSource } from "@/lib/vscode-url";
 
 /**
@@ -40,6 +41,93 @@ function CodeIcon() {
       <polyline points="16 18 22 12 16 6" />
       <polyline points="8 6 2 12 8 18" />
     </svg>
+  );
+}
+
+interface AdminDeckRowProps {
+  entry: RegistryEntry;
+  ideUrl: string;
+  showIdeButton: boolean;
+}
+
+/**
+ * One admin-list row. Owns the hero-image fallback state per row so a single
+ * deck failing to load its thumbnail doesn't affect the others.
+ *
+ * Hero source priority: `meta.cover` (author-set) > `/thumbnails/<slug>/01.png`
+ * (build-time auto-snap) > hidden hero strip via `onError` (graceful for
+ * fresh clones with no thumbnails generated yet). Mirrors the fallback chain
+ * used by `<DeckCard>` and `<OverviewTile>`.
+ */
+function AdminDeckRow({ entry, ideUrl, showIdeButton }: AdminDeckRowProps) {
+  const { deck, visibility } = entry;
+  const heroSrc = deck.meta.cover ?? `/thumbnails/${deck.meta.slug}/01.png`;
+  const [imageFailed, setImageFailed] = useState(false);
+  const showHero = !imageFailed;
+
+  return (
+    <li className="relative">
+      <Link
+        to={`/admin/decks/${deck.meta.slug}`}
+        className="cf-card group block overflow-hidden text-left no-underline"
+      >
+        {showHero && (
+          <div className="aspect-[16/9] w-full overflow-hidden border-b border-cf-border bg-cf-bg-200">
+            <img
+              src={heroSrc}
+              alt=""
+              loading="lazy"
+              onError={() => setImageFailed(true)}
+              className="h-full w-full object-cover"
+            />
+          </div>
+        )}
+        <div className="p-6">
+          <div className="mb-3 flex items-center justify-between">
+            <p className="cf-tag">
+              {deck.meta.date}
+              {deck.meta.runtimeMinutes
+                ? ` · ${deck.meta.runtimeMinutes} min`
+                : ""}
+            </p>
+            <span
+              data-visibility={visibility}
+              className={
+                visibility === "private"
+                  ? "rounded border border-cf-orange/40 bg-cf-orange/10 px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.25em] text-cf-orange"
+                  : "rounded border border-cf-border px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.25em] text-cf-text-subtle"
+              }
+            >
+              {visibility}
+            </span>
+          </div>
+          <p className="mb-1 text-xl font-medium tracking-[-0.025em] text-cf-text">
+            {deck.meta.title}
+          </p>
+          <p className="text-sm text-cf-text-muted">
+            {deck.meta.description}
+          </p>
+          {deck.meta.author && (
+            <p className="mt-3 text-xs text-cf-text-subtle">
+              {deck.meta.author}
+              {deck.meta.event ? ` · ${deck.meta.event}` : ""}
+            </p>
+          )}
+        </div>
+      </Link>
+      {showIdeButton && ideUrl && (
+        <a
+          href={ideUrl}
+          onClick={(e) => e.stopPropagation()}
+          aria-label={`Open ${deck.meta.slug} in IDE`}
+          title={`Open ${deck.meta.slug} in IDE`}
+          data-testid="open-in-ide"
+          className="absolute bottom-3 right-3 inline-flex h-7 w-7 items-center justify-center rounded border border-cf-border bg-cf-bg-100 text-cf-text-muted no-underline transition-colors hover:border-cf-text hover:text-cf-text"
+        >
+          <CodeIcon />
+        </a>
+      )}
+    </li>
   );
 }
 
@@ -70,60 +158,20 @@ export default function AdminIndex() {
       {entries.length > 0 && (
         <ul className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           {entries.map((entry) => {
-            const { deck, visibility } = entry;
             const ideUrl = showIdeButton
-              ? vscodeUrlForDeckSource(projectRoot, visibility, deck.meta.slug)
+              ? vscodeUrlForDeckSource(
+                  projectRoot,
+                  entry.visibility,
+                  entry.deck.meta.slug,
+                )
               : "";
             return (
-              <li key={deck.meta.slug} className="relative">
-                <Link
-                  to={`/admin/decks/${deck.meta.slug}`}
-                  className="cf-card block p-6 text-left no-underline"
-                >
-                  <div className="mb-3 flex items-center justify-between">
-                    <p className="cf-tag">
-                      {deck.meta.date}
-                      {deck.meta.runtimeMinutes
-                        ? ` · ${deck.meta.runtimeMinutes} min`
-                        : ""}
-                    </p>
-                    <span
-                      data-visibility={visibility}
-                      className={
-                        visibility === "private"
-                          ? "rounded border border-cf-orange/40 bg-cf-orange/10 px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.25em] text-cf-orange"
-                          : "rounded border border-cf-border px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.25em] text-cf-text-subtle"
-                      }
-                    >
-                      {visibility}
-                    </span>
-                  </div>
-                  <p className="mb-1 text-xl font-medium tracking-[-0.025em] text-cf-text">
-                    {deck.meta.title}
-                  </p>
-                  <p className="text-sm text-cf-text-muted">
-                    {deck.meta.description}
-                  </p>
-                  {deck.meta.author && (
-                    <p className="mt-3 text-xs text-cf-text-subtle">
-                      {deck.meta.author}
-                      {deck.meta.event ? ` · ${deck.meta.event}` : ""}
-                    </p>
-                  )}
-                </Link>
-                {showIdeButton && ideUrl && (
-                  <a
-                    href={ideUrl}
-                    onClick={(e) => e.stopPropagation()}
-                    aria-label={`Open ${deck.meta.slug} in IDE`}
-                    title={`Open ${deck.meta.slug} in IDE`}
-                    data-testid="open-in-ide"
-                    className="absolute bottom-3 right-3 inline-flex h-7 w-7 items-center justify-center rounded border border-cf-border text-cf-text-muted no-underline transition-colors hover:border-cf-text hover:text-cf-text"
-                  >
-                    <CodeIcon />
-                  </a>
-                )}
-              </li>
+              <AdminDeckRow
+                key={entry.deck.meta.slug}
+                entry={entry}
+                ideUrl={ideUrl}
+                showIdeButton={showIdeButton}
+              />
             );
           })}
         </ul>
