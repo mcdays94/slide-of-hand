@@ -11,6 +11,7 @@
  */
 
 import { useEffect } from "react";
+import { Link } from "react-router-dom";
 import { getPublicDecks } from "@/lib/decks-registry";
 import { DeckCard } from "@/components/DeckCard";
 
@@ -31,7 +32,16 @@ export default function Root() {
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-6xl flex-col gap-12 px-6 py-16 sm:px-8 sm:py-24">
       <header className="flex flex-col gap-4">
-        <p className="cf-tag">ReAction</p>
+        <div className="flex items-start justify-between gap-4">
+          <p className="cf-tag">ReAction</p>
+          <Link
+            to="/admin"
+            className="cf-btn-ghost"
+            data-testid="admin-link"
+          >
+            Studio
+          </Link>
+        </div>
         <h1 className="text-4xl font-medium tracking-[-0.04em] text-cf-text sm:text-5xl">
           Decks
         </h1>

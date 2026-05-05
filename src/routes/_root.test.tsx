@@ -99,4 +99,17 @@ describe("/ — public deck index", () => {
     const link = screen.getByRole("link", { name: /alpha/i });
     expect(link.getAttribute("href")).toBe("/decks/alpha");
   });
+
+  it("renders a Studio link in the header pointing to /admin", async () => {
+    await renderRoot([makeDeck("alpha", "2026-01-01")]);
+    const adminLink = screen.getByTestId("admin-link");
+    expect(adminLink.getAttribute("href")).toBe("/admin");
+    expect(adminLink.textContent?.toLowerCase()).toContain("studio");
+  });
+
+  it("renders the Studio link even when no decks exist", async () => {
+    await renderRoot([]);
+    const adminLink = screen.getByTestId("admin-link");
+    expect(adminLink.getAttribute("href")).toBe("/admin");
+  });
 });
