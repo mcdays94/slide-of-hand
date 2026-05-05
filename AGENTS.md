@@ -10,11 +10,13 @@ ReAction is built on the principle that **agents are first-class deck authors**.
 
 A self-hosted deck platform that runs on Cloudflare Workers + Static Assets. Each deck is `src/decks/<visibility>/<slug>/index.tsx` and exports a typed `DeckMeta` plus an array of `SlideDef`s. The deployed app exposes a public landing page at `/` (lists `decks/public/*`), a viewer at `/decks/<slug>`, and an Access-protected `/admin` for editing and presenter ergonomics. Customer-specific or under-NDA decks live in `decks/private/*` (gitignored, local-only). The framework primitives — `<Slide>`, `<Reveal>`, `usePhase()`, layouts, keyboard navigation, overview mode — are small, opinionated, and stay out of your way.
 
+**Production:** <https://reaction.lusostreams.com> · `/admin/*` gated by Cloudflare Access · deploy + Access runbook lives at [`docs/deploy.md`](docs/deploy.md).
+
 ---
 
 ## Status
 
-**Pre-v1.** The PRD lives at GitHub issue #1; vertical-slice issues track Wave 1 of dispatched work. This file describes the conventions Wave 1 will implement — treat it as authoritative spec. If you are a Wave 1 worker scaffolding the project from this skeleton, read this entire file first; everything you build should be consistent with what's documented here.
+**v1.** Wave 1–3 are merged (scaffold, framework + hello deck, public index, admin viewer, presenter window + speaker notes, presentation tools). Wave 4 / Slice 7 wires up the production custom domain + Cloudflare Access (issue #8). The PRD lives at GitHub issue #1.
 
 ---
 

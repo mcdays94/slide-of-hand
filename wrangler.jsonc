@@ -6,8 +6,12 @@
  * Loader — those are added per-deck only when a specific deck demonstrably
  * needs them.
  *
- * Custom domain (`reaction.lusostreams.com`) is wired up in slice #8; the
- * first deploy lands on a `*.workers.dev` URL.
+ * Production lives at https://reaction.lusostreams.com (Custom Domain).
+ * `/admin/*` is gated by Cloudflare Access — see docs/deploy.md.
+ *
+ * Custom Domain syntax note: per the Wrangler config schema and Cloudflare
+ * docs, a custom_domain route uses the bare hostname (no path / no `/*`).
+ * Custom Domains point all paths of a hostname to the Worker by definition.
  */
 {
   "$schema": "node_modules/wrangler/config-schema.json",
@@ -16,6 +20,12 @@
   "account_id": "1bcef46cbe9172d2569dcf7039048842",
   "compatibility_date": "2025-04-01",
   "compatibility_flags": ["nodejs_compat"],
+  "routes": [
+    {
+      "pattern": "reaction.lusostreams.com",
+      "custom_domain": true
+    }
+  ],
   "assets": {
     "directory": "./dist",
     "binding": "ASSETS",
