@@ -117,3 +117,28 @@ html.dark {
     visibility 0s linear 250ms;
 }
 
+/**
+ * Presenter tools — cursor visibility scoping (issue #10).
+ *
+ * `framework/tools/PresenterTools.tsx` mirrors the active tool to the deck
+ * root as `data-tool-active="laser" | "magnifier" | "marker"`. While laser
+ * or magnifier is engaged we hide the OS cursor so the user sees only the
+ * tool overlay (no double-pointer). For marker mode the cursor stays
+ * visible as a crosshair so the user can aim before committing a stroke.
+ *
+ * The `*` selector applies to ALL descendants — without it the cursor
+ * could re-appear on hover targets (links, buttons) that themselves carry
+ * a `cursor` rule.
+ */
+[data-tool-active="laser"],
+[data-tool-active="laser"] *,
+[data-tool-active="magnifier"],
+[data-tool-active="magnifier"] * {
+  cursor: none !important;
+}
+
+[data-tool-active="marker"],
+[data-tool-active="marker"] * {
+  cursor: crosshair !important;
+}
+

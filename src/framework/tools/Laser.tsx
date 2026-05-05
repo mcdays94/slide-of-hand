@@ -4,34 +4,48 @@
  * Hold `Q` to activate. A 12px brand-orange dot follows the cursor. Releasing
  * `Q` (or losing focus) hides it.
  *
- * The overlay is rendered as a fixed-position div on top of the deck. It uses
- * `pointer-events: none` so the underlying click-to-advance still fires.
+ * The overlay reads cursor position from the global `useCursorPosition()`
+ * tracker so it renders IMMEDIATELY on activation — no requirement for the
+ * user to wiggle the mouse first. If the tracker has never observed a
+ * pointer event (e.g. fresh tab, keyboard-only navigation) we fall back to
+ * the viewport centre on first activation.
+ *
+ * The overlay is a fixed-position div on top of the deck. It uses
+ * `pointer-events: none` so click-to-advance still fires.
  *
  * Best-effort BroadcastChannel sends — slice #5 wires up a presenter-window
  * listener; in the meantime the channel is a no-op. We send the cursor
- * position relative to the slide-shell so the listener can map it back to its
- * own viewport size.
+ * position relative to the slide-shell so the listener can map it back to
+ * its own viewport size.
  */
 
 import { useEffect, useRef, useState } from "react";
+import { getCursorPosition, useCursorPosition } from "./useCursorPosition";
 
 const LASER_KEY = "q";
 const LASER_SIZE = 12;
 
-interface CursorPos {
-  x: number;
-  y: number;
-}
-
 export interface LaserProps {
   /** BroadcastChannel slug. We send `{ type: "tool", tool: "laser" }` + cursor pings. */
   slug?: string;
+  /** Optional callback called when the laser activates / deactivates. */
+  onActiveChange?: (active: boolean) => void;
 }
 
-export function Laser({ slug }: LaserProps) {
+function viewportCentre(): { x: number; y: number } {
+  if (typeof window === "undefined") return { x: 0, y: 0 };
+  return {
+    x: Math.round(window.innerWidth / 2),
+    y: Math.round(window.innerHeight / 2),
+  };
+}
+
+export function Laser({ slug, onActiveChange }: LaserProps) {
   const [active, setActive] = useState(false);
-  const [pos, setPos] = useState<CursorPos | null>(null);
   const channelRef = useRef<BroadcastChannel | null>(null);
+
+  // Subscribe to cursor moves so the dot follows the cursor while active.
+  const livePos = useCursorPosition(active);
 
   // Open / close channel only when slug changes.
   useEffect(() => {
@@ -43,6 +57,11 @@ export function Laser({ slug }: LaserProps) {
       channelRef.current = null;
     };
   }, [slug]);
+
+  // Notify external observers of active state changes.
+  useEffect(() => {
+    onActiveChange?.(active);
+  }, [active, onActiveChange]);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -69,7 +88,6 @@ export function Laser({ slug }: LaserProps) {
     const onKeyUp = (e: KeyboardEvent) => {
       if (e.key.toLowerCase() !== LASER_KEY) return;
       setActive(false);
-      setPos(null);
       try {
         channelRef.current?.postMessage({ type: "tool", tool: null });
       } catch {
@@ -78,7 +96,6 @@ export function Laser({ slug }: LaserProps) {
     };
     const onBlur = () => {
       setActive(false);
-      setPos(null);
     };
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
@@ -90,27 +107,27 @@ export function Laser({ slug }: LaserProps) {
     };
   }, []);
 
+  // Best-effort cursor broadcast for the presenter window.
   useEffect(() => {
-    if (!active) return;
-    const onMove = (e: MouseEvent) => {
-      setPos({ x: e.clientX, y: e.clientY });
-      // Best-effort cursor broadcast; slice #5's presenter window may listen.
-      try {
-        channelRef.current?.postMessage({
-          type: "tool-cursor",
-          tool: "laser",
-          x: e.clientX,
-          y: e.clientY,
-        });
-      } catch {
-        /* no listener / closed */
-      }
-    };
-    window.addEventListener("mousemove", onMove);
-    return () => window.removeEventListener("mousemove", onMove);
-  }, [active]);
+    if (!active || !livePos) return;
+    try {
+      channelRef.current?.postMessage({
+        type: "tool-cursor",
+        tool: "laser",
+        x: livePos.x,
+        y: livePos.y,
+      });
+    } catch {
+      /* no listener / closed */
+    }
+  }, [active, livePos]);
 
-  if (!active || !pos) return null;
+  if (!active) return null;
+
+  // Resolve render position. Prefer the live tracked cursor; if the tracker
+  // has never observed an event, fall back to a viewport-centre guess so the
+  // dot still renders immediately.
+  const pos = livePos ?? getCursorPosition() ?? viewportCentre();
   return (
     <div
       data-testid="laser-dot"

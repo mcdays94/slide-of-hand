@@ -7,12 +7,13 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { cleanup, render } from "@testing-library/react";
+import { act, cleanup, render } from "@testing-library/react";
 import { PresenterModeProvider } from "@/framework/presenter/mode";
 import {
   PresenterTools,
   readPresenterModeOverride,
 } from "./PresenterTools";
+import { __resetCursorPositionForTest } from "./useCursorPosition";
 
 describe("PresenterTools", () => {
   beforeEach(() => {
@@ -39,6 +40,96 @@ describe("PresenterTools", () => {
     // AutoHideChrome should set the idle attribute on the root.
     const root = document.querySelector("[data-deck-slug]");
     expect(root?.getAttribute("data-presenter-idle")).toBe("false");
+  });
+
+  it("mirrors the active tool to data-tool-active and renders the pill", () => {
+    __resetCursorPositionForTest();
+    // Provide a slide-shell so Magnifier can resolve a clone target if
+    // engaged (not exercised here but makes the harness symmetric with
+    // production).
+    const slide = document.createElement("section");
+    slide.setAttribute("data-testid", "slide-shell");
+    slide.setAttribute("data-slide-index", "0");
+    slide.getBoundingClientRect = () =>
+      ({
+        left: 0,
+        top: 0,
+        width: 1920,
+        height: 1080,
+        right: 1920,
+        bottom: 1080,
+        x: 0,
+        y: 0,
+        toJSON: () => "",
+      }) as DOMRect;
+    document.body.appendChild(slide);
+
+    const { queryByTestId } = render(
+      <PresenterModeProvider enabled={true}>
+        <PresenterTools />
+      </PresenterModeProvider>,
+    );
+
+    const root = document.querySelector("[data-deck-slug]");
+    // No tool engaged → no attribute, no pill.
+    expect(root?.getAttribute("data-tool-active")).toBeNull();
+    expect(queryByTestId("tool-active-pill")).toBeNull();
+
+    // Engage the laser via Q.
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "q" }));
+    });
+    expect(root?.getAttribute("data-tool-active")).toBe("laser");
+    const pill = queryByTestId("tool-active-pill");
+    expect(pill).not.toBeNull();
+    expect(pill?.textContent).toMatch(/LASER/);
+
+    // Release laser.
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keyup", { key: "q" }));
+    });
+    expect(root?.getAttribute("data-tool-active")).toBeNull();
+    expect(queryByTestId("tool-active-pill")).toBeNull();
+  });
+
+  it("mirrors marker mode to data-tool-active=marker when toggled on", () => {
+    const slide = document.createElement("section");
+    slide.setAttribute("data-testid", "slide-shell");
+    slide.setAttribute("data-slide-index", "0");
+    slide.getBoundingClientRect = () =>
+      ({
+        left: 0,
+        top: 0,
+        width: 1920,
+        height: 1080,
+        right: 1920,
+        bottom: 1080,
+        x: 0,
+        y: 0,
+        toJSON: () => "",
+      }) as DOMRect;
+    document.body.appendChild(slide);
+
+    const { queryByTestId } = render(
+      <PresenterModeProvider enabled={true}>
+        <PresenterTools />
+      </PresenterModeProvider>,
+    );
+
+    const root = document.querySelector("[data-deck-slug]");
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "e" }));
+    });
+    expect(root?.getAttribute("data-tool-active")).toBe("marker");
+    expect(root?.getAttribute("data-marker-active")).toBe("true");
+    expect(queryByTestId("tool-active-pill")?.textContent).toMatch(/MARKER/);
+
+    // Toggle off.
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "e" }));
+    });
+    expect(root?.getAttribute("data-tool-active")).toBeNull();
+    expect(root?.getAttribute("data-marker-active")).toBeNull();
   });
 });
 
