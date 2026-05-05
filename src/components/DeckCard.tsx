@@ -8,10 +8,18 @@
  * muted description, and small pill tags (max 3 visible).
  *
  * Optional fields are omitted entirely when absent — no empty wrappers, no
- * stale labels. Cover image is rendered as a 16:9 hero strip at the top
- * when `meta.cover` is present.
+ * stale labels.
+ *
+ * Hero strip (16:9 image) resolution order:
+ *   1. `meta.cover` — author opt-in, highest priority
+ *   2. `/thumbnails/<slug>/01.png` — build-time auto-thumbnail produced by
+ *      `npm run thumbnails`. See `scripts/build-thumbnails.mjs`.
+ *   3. (image fails to load) — hide the hero strip entirely. The card remains
+ *      a valid layout with just text content. This is the graceful fallback
+ *      for fresh clones / pre-`npm run thumbnails` state.
  */
 
+import { useState } from "react";
 import { Link } from "react-router-dom";
 import type { DeckMeta } from "@/framework/viewer/types";
 
@@ -32,18 +40,25 @@ export function DeckCard({ meta }: DeckCardProps) {
     kickerPieces.push(`${meta.runtimeMinutes} min`);
   }
 
+  // Hero image resolution: explicit cover wins; otherwise fall back to the
+  // build-time auto-thumbnail. If THAT 404s, the `onError` handler hides
+  // the hero strip entirely.
+  const heroSrc = meta.cover ?? `/thumbnails/${meta.slug}/01.png`;
+  const [imageFailed, setImageFailed] = useState(false);
+
   return (
     <Link
       to={`/decks/${meta.slug}`}
       className="cf-card group block overflow-hidden no-underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cf-orange"
       data-testid="deck-card"
     >
-      {meta.cover && (
+      {!imageFailed && (
         <div className="aspect-[16/9] w-full overflow-hidden border-b border-cf-border bg-cf-bg-200">
           <img
-            src={meta.cover}
+            src={heroSrc}
             alt=""
             loading="lazy"
+            onError={() => setImageFailed(true)}
             className="h-full w-full object-cover"
           />
         </div>

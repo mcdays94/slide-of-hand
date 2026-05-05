@@ -300,6 +300,7 @@ export function Deck({ slug, title, slides }: DeckProps) {
 
         <Overview
           open={overviewOpen}
+          slug={slug}
           slides={visibleSlides}
           current={cursor.slide}
           onJump={(i) => goto(i)}
