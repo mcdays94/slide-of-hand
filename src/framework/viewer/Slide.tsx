@@ -15,6 +15,8 @@ import type { ReactNode } from "react";
 import { pageEntrance } from "@/lib/motion";
 import type { SlideDef } from "./types";
 import { ProgressBar } from "./ProgressBar";
+import { HintBar } from "./HintBar";
+import { StudioBadge } from "./StudioBadge";
 
 export interface SlideProps {
   slide: SlideDef;
@@ -80,7 +82,11 @@ export function Slide({
       </div>
 
       {showProgress && (
-        <ProgressBar total={total} current={index} onJump={onJump} />
+        <>
+          <StudioBadge />
+          <HintBar />
+          <ProgressBar total={total} current={index} onJump={onJump} />
+        </>
       )}
     </motion.section>
   );
