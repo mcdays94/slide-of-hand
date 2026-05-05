@@ -1,0 +1,23 @@
+src/routes/admin/index.tsx
+  98a367e98b008ae5 16,18,47-133,162-166,169-174
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "17900a8518703026f7d45d196bea0c722766fb01",
+  "prompts": {
+    "98a367e98b008ae5": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_2077bd95cffepOw4IvqFsV7eWM",
+        "model": "anthropic/claude-opus-4-7"
+      },
+      "human_author": "mdias",
+      "messages": [],
+      "total_additions": 100,
+      "total_deletions": 52,
+      "accepted_lines": 100,
+      "overriden_lines": 0
+    }
+  }
+}
