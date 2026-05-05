@@ -15,9 +15,43 @@
 
 import { Link } from "react-router-dom";
 import { getAllDeckEntries } from "@/lib/decks-registry";
+import { vscodeUrlForDeckSource } from "@/lib/vscode-url";
+
+/**
+ * Inline SVG of lucide's `Code` icon — bracket-bracket arrows. We keep it
+ * inline (rather than depending on `lucide-react`) so the feature ships
+ * with zero new dependencies, per the issue's acceptance criteria.
+ */
+function CodeIcon() {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="h-4 w-4"
+      aria-hidden="true"
+    >
+      <polyline points="16 18 22 12 16 6" />
+      <polyline points="8 6 2 12 8 18" />
+    </svg>
+  );
+}
 
 export default function AdminIndex() {
   const entries = getAllDeckEntries();
+  // `__PROJECT_ROOT__` is injected by vite.config.ts: an absolute path in
+  // dev (`command === "serve"`), the empty string in production builds.
+  // We additionally gate the button render on `import.meta.env.DEV` so the
+  // production bundle has no trace of the affordance even if the sentinel
+  // ever leaks through.
+  const projectRoot = __PROJECT_ROOT__;
+  const showIdeButton = import.meta.env.DEV && projectRoot.length > 0;
 
   return (
     <main className="mx-auto flex w-full max-w-5xl flex-1 flex-col gap-8 px-6 py-12">
@@ -37,8 +71,11 @@ export default function AdminIndex() {
         <ul className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           {entries.map((entry) => {
             const { deck, visibility } = entry;
+            const ideUrl = showIdeButton
+              ? vscodeUrlForDeckSource(projectRoot, visibility, deck.meta.slug)
+              : "";
             return (
-              <li key={deck.meta.slug}>
+              <li key={deck.meta.slug} className="relative">
                 <Link
                   to={`/admin/decks/${deck.meta.slug}`}
                   className="cf-card block p-6 text-left no-underline"
@@ -74,6 +111,18 @@ export default function AdminIndex() {
                     </p>
                   )}
                 </Link>
+                {showIdeButton && ideUrl && (
+                  <a
+                    href={ideUrl}
+                    onClick={(e) => e.stopPropagation()}
+                    aria-label={`Open ${deck.meta.slug} in IDE`}
+                    title={`Open ${deck.meta.slug} in IDE`}
+                    data-testid="open-in-ide"
+                    className="absolute bottom-3 right-3 inline-flex h-7 w-7 items-center justify-center rounded border border-cf-border text-cf-text-muted no-underline transition-colors hover:border-cf-text hover:text-cf-text"
+                  >
+                    <CodeIcon />
+                  </a>
+                )}
               </li>
             );
           })}
