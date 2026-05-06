@@ -7,6 +7,18 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { handleManifests, type ManifestsEnv } from "./manifests";
 
+/**
+ * Construct a Request with the `cf-access-authenticated-user-email` header
+ * already set, simulating a request that has cleared Cloudflare Access.
+ * Used for admin-endpoint tests; for unauthenticated tests use plain
+ * `new Request(...)` to verify the 403 path.
+ */
+function adminRequest(input: string | URL, init: RequestInit = {}): Request {
+  const headers = new Headers(init.headers);
+  headers.set("cf-access-authenticated-user-email", "test@example.com");
+  return new Request(input, { ...init, headers });
+}
+
 class FakeKV {
   store = new Map<string, string>();
   async get(key: string, type?: "json"): Promise<unknown> {
@@ -102,7 +114,7 @@ describe("POST /api/admin/manifests/<slug>", () => {
   it("persists a valid body and returns the saved manifest", async () => {
     const { env, kv } = makeEnv();
     const res = await call(
-      new Request("https://example.com/api/admin/manifests/hello", {
+      adminRequest("https://example.com/api/admin/manifests/hello", {
         method: "POST",
         body: JSON.stringify(validBody),
         headers: { "content-type": "application/json" },
@@ -125,7 +137,7 @@ describe("POST /api/admin/manifests/<slug>", () => {
   it("accepts an empty overrides object", async () => {
     const { env } = makeEnv();
     const res = await call(
-      new Request("https://example.com/api/admin/manifests/hello", {
+      adminRequest("https://example.com/api/admin/manifests/hello", {
         method: "POST",
         body: JSON.stringify({ order: ["a", "b"], overrides: {} }),
         headers: { "content-type": "application/json" },
@@ -138,7 +150,7 @@ describe("POST /api/admin/manifests/<slug>", () => {
   it("rejects malformed JSON with 400", async () => {
     const { env } = makeEnv();
     const res = await call(
-      new Request("https://example.com/api/admin/manifests/hello", {
+      adminRequest("https://example.com/api/admin/manifests/hello", {
         method: "POST",
         body: "not json",
         headers: { "content-type": "application/json" },
@@ -151,7 +163,7 @@ describe("POST /api/admin/manifests/<slug>", () => {
   it("rejects a body missing `order` with 400", async () => {
     const { env } = makeEnv();
     const res = await call(
-      new Request("https://example.com/api/admin/manifests/hello", {
+      adminRequest("https://example.com/api/admin/manifests/hello", {
         method: "POST",
         body: JSON.stringify({ overrides: {} }),
         headers: { "content-type": "application/json" },
@@ -164,7 +176,7 @@ describe("POST /api/admin/manifests/<slug>", () => {
   it("rejects an order entry that's not kebab-case", async () => {
     const { env } = makeEnv();
     const res = await call(
-      new Request("https://example.com/api/admin/manifests/hello", {
+      adminRequest("https://example.com/api/admin/manifests/hello", {
         method: "POST",
         body: JSON.stringify({ order: ["title", "Bad Slug"], overrides: {} }),
         headers: { "content-type": "application/json" },
@@ -177,7 +189,7 @@ describe("POST /api/admin/manifests/<slug>", () => {
   it("rejects override notes longer than 10000 chars", async () => {
     const { env } = makeEnv();
     const res = await call(
-      new Request("https://example.com/api/admin/manifests/hello", {
+      adminRequest("https://example.com/api/admin/manifests/hello", {
         method: "POST",
         body: JSON.stringify({
           order: ["title"],
@@ -193,7 +205,7 @@ describe("POST /api/admin/manifests/<slug>", () => {
   it("rejects override entries with unknown keys", async () => {
     const { env } = makeEnv();
     const res = await call(
-      new Request("https://example.com/api/admin/manifests/hello", {
+      adminRequest("https://example.com/api/admin/manifests/hello", {
         method: "POST",
         body: JSON.stringify({
           order: ["title"],
@@ -220,7 +232,7 @@ describe("DELETE /api/admin/manifests/<slug>", () => {
       }),
     );
     const res = await call(
-      new Request("https://example.com/api/admin/manifests/hello", {
+      adminRequest("https://example.com/api/admin/manifests/hello", {
         method: "DELETE",
       }),
       env,
@@ -232,7 +244,7 @@ describe("DELETE /api/admin/manifests/<slug>", () => {
   it("is idempotent — deleting a missing key still returns 204", async () => {
     const { env } = makeEnv();
     const res = await call(
-      new Request("https://example.com/api/admin/manifests/hello", {
+      adminRequest("https://example.com/api/admin/manifests/hello", {
         method: "DELETE",
       }),
       env,
@@ -265,7 +277,7 @@ describe("routing", () => {
 
   it("returns 405 for GET on the admin write path", async () => {
     const res = await call(
-      new Request("https://example.com/api/admin/manifests/hello"),
+      adminRequest("https://example.com/api/admin/manifests/hello"),
       env,
     );
     expect(res.status).toBe(405);
@@ -279,5 +291,52 @@ describe("routing", () => {
       env,
     );
     expect(res.status).toBe(405);
+  });
+});
+
+describe("Access auth defense-in-depth", () => {
+  it("POST /api/admin/manifests/<slug> returns 403 without cf-access-authenticated-user-email header", async () => {
+    const { env, kv } = makeEnv();
+    const res = await call(
+      new Request("https://example.com/api/admin/manifests/hello", {
+        method: "POST",
+        body: JSON.stringify(validBody),
+      }),
+      env,
+    );
+    expect(res.status).toBe(403);
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toMatch(/Cloudflare Access/i);
+    expect(kv.store.size).toBe(0);
+  });
+
+  it("DELETE /api/admin/manifests/<slug> returns 403 without auth header", async () => {
+    const { env, kv } = makeEnv();
+    await kv.put(
+      "manifest:hello",
+      JSON.stringify({
+        version: 1,
+        ...validBody,
+        updatedAt: "2026-05-06T12:00:00.000Z",
+      }),
+    );
+    const res = await call(
+      new Request("https://example.com/api/admin/manifests/hello", {
+        method: "DELETE",
+      }),
+      env,
+    );
+    expect(res.status).toBe(403);
+    expect(kv.store.has("manifest:hello")).toBe(true);
+  });
+
+  it("public GET /api/manifests/<slug> still works without auth header", async () => {
+    const { env } = makeEnv();
+    const res = await call(
+      new Request("https://example.com/api/manifests/hello"),
+      env,
+    );
+    expect(res.status).toBe(200);
   });
 });

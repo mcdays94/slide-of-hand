@@ -9,6 +9,18 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { handleThemes, type ThemesEnv } from "./themes";
 
+/**
+ * Construct a Request with the `cf-access-authenticated-user-email` header
+ * already set, simulating a request that has cleared Cloudflare Access.
+ * Used for admin-endpoint tests; for unauthenticated tests use plain
+ * `new Request(...)` to verify the 403 path.
+ */
+function adminRequest(input: string | URL, init: RequestInit = {}): Request {
+  const headers = new Headers(init.headers);
+  headers.set("cf-access-authenticated-user-email", "test@example.com");
+  return new Request(input, { ...init, headers });
+}
+
 class FakeKV {
   store = new Map<string, string>();
   async get(key: string, type?: "json"): Promise<unknown> {
@@ -94,7 +106,7 @@ describe("POST /api/admin/themes/<slug>", () => {
   it("persists a valid body and returns the saved value", async () => {
     const { env, kv } = makeEnv();
     const res = await call(
-      new Request("https://example.com/api/admin/themes/hello", {
+      adminRequest("https://example.com/api/admin/themes/hello", {
         method: "POST",
         body: JSON.stringify({ tokens: validTokens }),
         headers: { "content-type": "application/json" },
@@ -118,7 +130,7 @@ describe("POST /api/admin/themes/<slug>", () => {
     const partial = { ...validTokens } as Record<string, string>;
     delete partial["cf-orange"];
     const res = await call(
-      new Request("https://example.com/api/admin/themes/hello", {
+      adminRequest("https://example.com/api/admin/themes/hello", {
         method: "POST",
         body: JSON.stringify({ tokens: partial }),
         headers: { "content-type": "application/json" },
@@ -131,7 +143,7 @@ describe("POST /api/admin/themes/<slug>", () => {
   it("rejects extra unknown token keys with 400", async () => {
     const { env } = makeEnv();
     const res = await call(
-      new Request("https://example.com/api/admin/themes/hello", {
+      adminRequest("https://example.com/api/admin/themes/hello", {
         method: "POST",
         body: JSON.stringify({
           tokens: { ...validTokens, "cf-extra": "#000000" },
@@ -146,7 +158,7 @@ describe("POST /api/admin/themes/<slug>", () => {
   it("rejects non-hex colour values with 400", async () => {
     const { env } = makeEnv();
     const res = await call(
-      new Request("https://example.com/api/admin/themes/hello", {
+      adminRequest("https://example.com/api/admin/themes/hello", {
         method: "POST",
         body: JSON.stringify({
           tokens: { ...validTokens, "cf-orange": "rebeccapurple" },
@@ -161,7 +173,7 @@ describe("POST /api/admin/themes/<slug>", () => {
   it("rejects 3-char hex shorthand with 400", async () => {
     const { env } = makeEnv();
     const res = await call(
-      new Request("https://example.com/api/admin/themes/hello", {
+      adminRequest("https://example.com/api/admin/themes/hello", {
         method: "POST",
         body: JSON.stringify({
           tokens: { ...validTokens, "cf-orange": "#FFF" },
@@ -176,7 +188,7 @@ describe("POST /api/admin/themes/<slug>", () => {
   it("rejects malformed JSON with 400", async () => {
     const { env } = makeEnv();
     const res = await call(
-      new Request("https://example.com/api/admin/themes/hello", {
+      adminRequest("https://example.com/api/admin/themes/hello", {
         method: "POST",
         body: "not json",
         headers: { "content-type": "application/json" },
@@ -199,7 +211,7 @@ describe("DELETE /api/admin/themes/<slug>", () => {
       }),
     );
     const res = await call(
-      new Request("https://example.com/api/admin/themes/hello", {
+      adminRequest("https://example.com/api/admin/themes/hello", {
         method: "DELETE",
       }),
       env,
@@ -211,7 +223,7 @@ describe("DELETE /api/admin/themes/<slug>", () => {
   it("is idempotent — deleting a missing key still returns 204", async () => {
     const { env } = makeEnv();
     const res = await call(
-      new Request("https://example.com/api/admin/themes/hello", {
+      adminRequest("https://example.com/api/admin/themes/hello", {
         method: "DELETE",
       }),
       env,
@@ -236,7 +248,7 @@ describe("routing", () => {
 
   it("returns 405 for GET on the admin write path", async () => {
     const res = await call(
-      new Request("https://example.com/api/admin/themes/hello"),
+      adminRequest("https://example.com/api/admin/themes/hello"),
       env,
     );
     expect(res.status).toBe(405);
@@ -250,5 +262,57 @@ describe("routing", () => {
       env,
     );
     expect(res.status).toBe(405);
+  });
+});
+
+describe("Access auth defense-in-depth", () => {
+  it("POST /api/admin/themes/<slug> returns 403 without cf-access-authenticated-user-email header", async () => {
+    const { env, kv } = makeEnv();
+    const res = await call(
+      // Plain new Request — NO auth header — simulates a request that
+      // bypassed Cloudflare Access (e.g. misconfigured app, direct
+      // workers.dev URL not gated, or a spoof attempt).
+      new Request("https://example.com/api/admin/themes/hello", {
+        method: "POST",
+        body: JSON.stringify({ tokens: validTokens }),
+      }),
+      env,
+    );
+    expect(res.status).toBe(403);
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toMatch(/Cloudflare Access/i);
+    // KV must NOT have been written.
+    expect(kv.store.size).toBe(0);
+  });
+
+  it("DELETE /api/admin/themes/<slug> returns 403 without auth header", async () => {
+    const { env, kv } = makeEnv();
+    await kv.put(
+      "theme:hello",
+      JSON.stringify({
+        version: 1,
+        tokens: validTokens,
+        updatedAt: "2026-05-06T12:00:00.000Z",
+      }),
+    );
+    const res = await call(
+      new Request("https://example.com/api/admin/themes/hello", {
+        method: "DELETE",
+      }),
+      env,
+    );
+    expect(res.status).toBe(403);
+    // KV must NOT have been deleted.
+    expect(kv.store.has("theme:hello")).toBe(true);
+  });
+
+  it("public GET /api/themes/<slug> still works without auth header", async () => {
+    const { env } = makeEnv();
+    const res = await call(
+      new Request("https://example.com/api/themes/hello"),
+      env,
+    );
+    expect(res.status).toBe(200);
   });
 });
