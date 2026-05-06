@@ -1,57 +1,53 @@
 /**
- * Magnifier overlay — cf-slides parity rewrite.
+ * Magnifier overlay — liquid-glass / barrel-refraction port from cf-slides.
  *
- * Hold `W` to activate. Renders an actual-magnifying-glass-shaped overlay
- * centred on the cursor:
+ * Hold `W` to activate. While held:
  *
- *   - Circular lens (~250px diameter) with a metallic rim.
- *   - Short handle at 45° from the bottom-right of the lens.
- *   - Drop shadow underneath the whole assembly so it feels like a physical
- *     object hovering above the slide.
- *   - The lens magnifies the slide content by 2× via an in-place clone of
- *     the slide DOM, scaled by a CSS transform inside an SVG `<foreignObject>`.
- *   - Chromatic aberration on the lens edge: a stack of three slightly
- *     offset, RGB-channel-isolated copies of the magnified clone produces a
- *     red/green/blue fringing effect. The offsets ramp from 0 at the centre
- *     to ~3px at the edge using a radial mask, so the centre is sharp and
- *     only the rim shows colour separation.
- *   - Subtle "barrel" refraction at the edge: a second scale ramp on a
- *     ring near the rim warps the magnified content slightly outward.
+ *   - **Lens**: a circular div with `backdrop-filter: url(#liquid-glass-filter)`
+ *     applied. The filter (defined inline as an SVG `<filter>`) does:
+ *       1. Barrel refraction via `<feDisplacementMap>` driven by a radial
+ *          displacement map PNG (`/displacement-map.png`).
+ *       2. Per-channel chromatic aberration (red and blue channels are
+ *          displaced differently from green; recombined via `<feBlend>`),
+ *          masked to the rim only via a radial alpha gradient.
+ *       3. Subtle edge blur on the rim only (Gaussian blur masked to edges).
  *
- * Renders IMMEDIATELY on activation. Cursor position is read from the
- * global `useCursorPosition()` tracker so we don't need a mousemove event
- * to arrive first. If no cursor has ever been observed, falls back to the
- * viewport centre.
+ *   - **Zoom layer (z-index -1, behind the lens)**: a DOM clone of the
+ *     current slide, scaled by 2.5×, positioned so the cursor's spot in the
+ *     original maps to the centre of the lens. This provides actual
+ *     magnification — the backdrop-filter only refracts; it doesn't zoom.
  *
- * The chromatic aberration / refraction layers are visual flourishes and
- * defaulted on. They use only standard CSS filters + `mix-blend-mode` so
- * they should be portable; if they prove brittle on a target device we can
- * disable via the `effects` prop.
+ *   - **Handle**: a 45°-rotated bar emerging from the bottom-right of the
+ *     lens; sized proportionally to the lens radius.
  *
- * Pure math (placement of the overlay + the cloned slide inside it) lives
- * in `magnifierMath.ts` and is unit-tested separately.
+ *   - **Scroll-wheel resize**: while active, mouse wheel scrolling resizes
+ *     the lens radius between 60px and 260px in 10px steps. Up = bigger,
+ *     down = smaller. Preserves the cursor centre.
+ *
+ * Activation: hold `W`. Release `W` deactivates. Window blur (alt-tab)
+ * also deactivates so a stuck-active state after losing focus is
+ * impossible.
+ *
+ * Cursor position is read from the global `useCursorPosition()` tracker
+ * so the lens renders at the cursor location IMMEDIATELY on activation
+ * — no need to move the mouse first. Falls back to viewport centre if
+ * no cursor position has ever been observed.
+ *
+ * Filter ID `slide-of-hand-magnifier-liquid-glass` is unique enough to
+ * coexist with any other filter on the page.
  */
 
-import { useEffect, useRef, useState } from "react";
-import {
-  MAGNIFIER_SIZE,
-  MAGNIFIER_ZOOM,
-  computeMagnifierPlacement,
-} from "./magnifierMath";
+import { useEffect, useState } from "react";
 import { getCursorPosition, useCursorPosition } from "./useCursorPosition";
 
 const MAGNIFIER_KEY = "w";
+const MAGNIFIER_DEFAULT_RADIUS = 100;
+const MAGNIFIER_MIN_RADIUS = 60;
+const MAGNIFIER_MAX_RADIUS = 260;
+const MAGNIFIER_RADIUS_STEP = 10;
+const MAGNIFIER_ZOOM = 2.5;
 
-/** Lens diameter in pixels (matches MAGNIFIER_SIZE). */
-const LENS_DIAMETER = MAGNIFIER_SIZE;
-/** Lens rim thickness — the metallic band around the glass. */
-const RIM_THICKNESS = 6;
-/** Outer SVG canvas size — must hold lens + handle + soft drop shadow. */
-const SVG_PADDING = 40;
-/** Handle dimensions. */
-const HANDLE_LENGTH = 90;
-const HANDLE_WIDTH = 18;
-const HANDLE_ANGLE_DEG = 45;
+const FILTER_ID = "slide-of-hand-magnifier-liquid-glass";
 
 interface CursorPos {
   x: number;
@@ -67,27 +63,20 @@ function viewportCentre(): CursorPos {
 }
 
 export interface MagnifierProps {
-  /** Disable visual flourishes (chromatic aberration + refraction). Defaults to true. */
-  effects?: boolean;
   /** Optional callback called when the magnifier activates / deactivates. */
   onActiveChange?: (active: boolean) => void;
 }
 
-export function Magnifier({
-  effects = true,
-  onActiveChange,
-}: MagnifierProps = {}) {
+export function Magnifier({ onActiveChange }: MagnifierProps = {}) {
   const [active, setActive] = useState(false);
-  const cloneHostRef = useRef<HTMLDivElement | null>(null);
-  const aberrationRedRef = useRef<HTMLDivElement | null>(null);
-  const aberrationBlueRef = useRef<HTMLDivElement | null>(null);
-
+  const [radius, setRadius] = useState(MAGNIFIER_DEFAULT_RADIUS);
   const livePos = useCursorPosition(active);
 
   useEffect(() => {
     onActiveChange?.(active);
   }, [active, onActiveChange]);
 
+  // ── W hold-to-activate ───────────────────────────────────────────────
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.repeat) return;
@@ -108,9 +97,7 @@ export function Magnifier({
       if (e.key.toLowerCase() !== MAGNIFIER_KEY) return;
       setActive(false);
     };
-    const onBlur = () => {
-      setActive(false);
-    };
+    const onBlur = () => setActive(false);
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
     window.addEventListener("blur", onBlur);
@@ -121,296 +108,334 @@ export function Magnifier({
     };
   }, []);
 
-  // Resolve the cursor position for *render*, not just the tracked pos.
-  // This block must produce a position even before any mousemove arrives.
-  const renderPos = active
-    ? livePos ?? getCursorPosition() ?? viewportCentre()
-    : null;
-
-  // Re-clone slide DOM whenever the cursor position changes while active.
-  // The clone is cheap; the slide tree is bounded.
+  // ── Scroll-wheel resize while active ────────────────────────────────
   useEffect(() => {
-    if (!active || !renderPos) return;
-    const slideEl = document.querySelector<HTMLElement>(
-      "[data-testid='slide-shell']",
-    );
-    if (!slideEl) return;
-
-    const rect = slideEl.getBoundingClientRect();
-    const placement = computeMagnifierPlacement(
-      renderPos.x,
-      renderPos.y,
-      rect,
-    );
-
-    const refresh = (host: HTMLDivElement | null) => {
-      if (!host) return;
-      host.innerHTML = "";
-      const clone = slideEl.cloneNode(true) as HTMLElement;
-      clone.style.position = "absolute";
-      clone.style.left = `${placement.cloneOriginX}px`;
-      clone.style.top = `${placement.cloneOriginY}px`;
-      clone.style.width = `${rect.width}px`;
-      clone.style.height = `${rect.height}px`;
-      clone.style.transformOrigin = "0 0";
-      clone.style.transform = `scale(${MAGNIFIER_ZOOM})`;
-      clone.style.pointerEvents = "none";
-      // Strip interactive ids / data-testid that downstream queries might
-      // double-match (we keep the slide-shell wrapper so layout is intact;
-      // the tests only assert on the host).
-      host.appendChild(clone);
+    if (!active) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const delta =
+        e.deltaY < 0 ? MAGNIFIER_RADIUS_STEP : -MAGNIFIER_RADIUS_STEP;
+      setRadius((prev) =>
+        Math.max(
+          MAGNIFIER_MIN_RADIUS,
+          Math.min(MAGNIFIER_MAX_RADIUS, prev + delta),
+        ),
+      );
     };
+    window.addEventListener("wheel", onWheel, { passive: false });
+    return () => window.removeEventListener("wheel", onWheel);
+  }, [active]);
 
-    refresh(cloneHostRef.current);
-    if (effects) {
-      refresh(aberrationRedRef.current);
-      refresh(aberrationBlueRef.current);
-    }
-  }, [active, renderPos, effects]);
+  if (!active) return null;
 
-  if (!active || !renderPos) return null;
+  const pos = livePos ?? getCursorPosition() ?? viewportCentre();
 
-  // SVG canvas covers the lens + handle + a small padding for the drop
-  // shadow. The cursor sits at the centre of the LENS (not the SVG canvas),
-  // so we offset the SVG accordingly.
-  const lensRadius = LENS_DIAMETER / 2;
-  const svgSize = LENS_DIAMETER + SVG_PADDING * 2 + HANDLE_LENGTH;
-  // Lens centre coords inside the SVG.
-  const lensCx = SVG_PADDING + lensRadius;
-  const lensCy = SVG_PADDING + lensRadius;
-  // Top-left of the SVG so the LENS centre lands on the cursor.
-  const svgLeft = renderPos.x - lensCx;
-  const svgTop = renderPos.y - lensCy;
+  // The DOM clone needs the slide's bounding rect to position correctly
+  // (so the cursor in the original maps to the lens centre when scaled).
+  const slideEl =
+    typeof document !== "undefined"
+      ? document.querySelector<HTMLElement>("[data-testid='slide-shell']")
+      : null;
+  const slideRect = slideEl?.getBoundingClientRect();
+  const cw = slideRect?.width ?? 0;
+  const ch = slideRect?.height ?? 0;
+  const slideLeft = slideRect?.left ?? 0;
+  const slideTop = slideRect?.top ?? 0;
 
-  // Handle geometry — short rectangle rotated 45° anchored at the bottom-right
-  // edge of the lens.
-  const handleAnchorX =
-    lensCx + Math.cos((HANDLE_ANGLE_DEG * Math.PI) / 180) * lensRadius;
-  const handleAnchorY =
-    lensCy + Math.sin((HANDLE_ANGLE_DEG * Math.PI) / 180) * lensRadius;
-
-  // Rim metallic gradient — darker outer, lighter inner. Stays consistent
-  // across light + dark mode (deliberately not theme-driven; a magnifier
-  // looks like brushed metal regardless of slide background).
-  const rimGradientId = "slide-of-hand-magnifier-rim";
-  const handleGradientId = "slide-of-hand-magnifier-handle";
-  const lensClipId = "slide-of-hand-magnifier-lens-clip";
-  const aberrationMaskId = "slide-of-hand-magnifier-aberration-mask";
+  // Cursor coordinates inside the slide's coordinate space (not viewport).
+  const cursorInSlideX = pos.x - slideLeft;
+  const cursorInSlideY = pos.y - slideTop;
 
   return (
-    <div
-      data-testid="magnifier"
-      aria-hidden="true"
-      style={{
-        position: "fixed",
-        left: svgLeft,
-        top: svgTop,
-        width: svgSize,
-        height: svgSize,
-        pointerEvents: "none",
-        zIndex: 9998,
-      }}
-    >
+    <>
+      {/* ─── SVG liquid-glass filter (rendered once, hidden) ───────────
+       * Refraction (feDisplacementMap on a radial displacement map) +
+       * per-channel chromatic aberration on the rim only + edge blur. */}
       <svg
-        width={svgSize}
-        height={svgSize}
-        viewBox={`0 0 ${svgSize} ${svgSize}`}
-        style={{ overflow: "visible" }}
+        width="0"
+        height="0"
+        style={{ position: "absolute" }}
+        aria-hidden="true"
       >
         <defs>
-          <linearGradient
-            id={rimGradientId}
-            x1="0%"
-            y1="0%"
-            x2="100%"
-            y2="100%"
+          <filter
+            id={FILTER_ID}
+            primitiveUnits="objectBoundingBox"
+            colorInterpolationFilters="sRGB"
           >
-            <stop offset="0%" stopColor="#4a4a4a" />
-            <stop offset="45%" stopColor="#a8a8a8" />
-            <stop offset="55%" stopColor="#888" />
-            <stop offset="100%" stopColor="#2a2a2a" />
-          </linearGradient>
-          <linearGradient
-            id={handleGradientId}
-            x1="0%"
-            y1="0%"
-            x2="0%"
-            y2="100%"
-          >
-            <stop offset="0%" stopColor="#5a4a3a" />
-            <stop offset="50%" stopColor="#a08570" />
-            <stop offset="100%" stopColor="#5a4a3a" />
-          </linearGradient>
-          <clipPath id={lensClipId}>
-            <circle cx={lensCx} cy={lensCy} r={lensRadius - RIM_THICKNESS} />
-          </clipPath>
-          {/* Mask used by the chromatic-aberration channels: opaque only
-              near the rim (radial gradient with hard outer edge at the
-              clear-glass radius). The centre is transparent so the sharp
-              base layer dominates inside the lens. */}
-          <radialGradient
-            id={aberrationMaskId}
-            cx="50%"
-            cy="50%"
-            r="50%"
-            fx="50%"
-            fy="50%"
-          >
-            <stop offset="0%" stopColor="black" />
-            <stop offset="60%" stopColor="black" />
-            <stop offset="85%" stopColor="white" stopOpacity="0.55" />
-            <stop offset="100%" stopColor="white" stopOpacity="0.85" />
-          </radialGradient>
+            {/* Radial displacement map — barrel refraction. */}
+            <feImage
+              href="/displacement-map.png"
+              x="0"
+              y="0"
+              width="1"
+              height="1"
+              result="map"
+            />
+
+            {/* Radial edge mask: transparent centre → opaque edges.
+                Used to confine aberration + blur to the rim only.        */}
+            <feImage
+              href={
+                "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='256' height='256'%3E" +
+                "%3Cdefs%3E%3CradialGradient id='g'%3E" +
+                "%3Cstop offset='0' stop-color='white' stop-opacity='0'/%3E" +
+                "%3Cstop offset='.4' stop-color='white' stop-opacity='0'/%3E" +
+                "%3Cstop offset='.78' stop-color='white' stop-opacity='1'/%3E" +
+                "%3Cstop offset='1' stop-color='white' stop-opacity='1'/%3E" +
+                "%3C/radialGradient%3E%3C/defs%3E" +
+                "%3Crect width='256' height='256' fill='url(%23g)'/%3E%3C/svg%3E"
+              }
+              x="0"
+              y="0"
+              width="1"
+              height="1"
+              result="edgeMask"
+            />
+
+            {/* 1. Apply refraction to the source. */}
+            <feDisplacementMap
+              in="SourceGraphic"
+              in2="map"
+              scale="0.12"
+              xChannelSelector="R"
+              yChannelSelector="G"
+              result="refracted"
+            />
+
+            {/* 2. Per-channel chromatic aberration. Red gets less
+                 displacement, blue gets more — recombine via screen blend. */}
+            <feDisplacementMap
+              in="SourceGraphic"
+              in2="map"
+              scale="0.10"
+              xChannelSelector="R"
+              yChannelSelector="G"
+              result="dispR"
+            />
+            <feColorMatrix
+              in="dispR"
+              type="matrix"
+              values="1 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 1 0"
+              result="redOnly"
+            />
+            <feColorMatrix
+              in="refracted"
+              type="matrix"
+              values="0 0 0 0 0  0 1 0 0 0  0 0 0 0 0  0 0 0 1 0"
+              result="greenOnly"
+            />
+            <feDisplacementMap
+              in="SourceGraphic"
+              in2="map"
+              scale="0.14"
+              xChannelSelector="R"
+              yChannelSelector="G"
+              result="dispB"
+            />
+            <feColorMatrix
+              in="dispB"
+              type="matrix"
+              values="0 0 0 0 0  0 0 0 0 0  0 0 1 0 0  0 0 0 1 0"
+              result="blueOnly"
+            />
+            <feBlend in="redOnly" in2="greenOnly" mode="screen" result="rg" />
+            <feBlend in="rg" in2="blueOnly" mode="screen" result="aberrated" />
+
+            {/* 3. Mask aberration to edges only; keep clean refracted centre. */}
+            <feComposite
+              in="aberrated"
+              in2="edgeMask"
+              operator="in"
+              result="aberratedEdges"
+            />
+            <feComponentTransfer in="edgeMask" result="centerMask">
+              <feFuncA type="table" tableValues="1 0" />
+            </feComponentTransfer>
+            <feComposite
+              in="refracted"
+              in2="centerMask"
+              operator="in"
+              result="sharpCenter"
+            />
+            <feComposite
+              in="sharpCenter"
+              in2="aberratedEdges"
+              operator="over"
+              result="combined"
+            />
+
+            {/* 4. Subtle edge blur on top of the aberrated result. */}
+            <feGaussianBlur
+              in="combined"
+              stdDeviation="0.010"
+              result="blurred"
+            />
+            <feComposite
+              in="blurred"
+              in2="edgeMask"
+              operator="in"
+              result="blurryEdges"
+            />
+            <feComposite
+              in="combined"
+              in2="centerMask"
+              operator="in"
+              result="crispCenter"
+            />
+            <feComposite in="crispCenter" in2="blurryEdges" operator="over" />
+          </filter>
         </defs>
+      </svg>
 
-        {/* Drop shadow under the whole magnifier — soft, slightly offset down/right. */}
-        <ellipse
-          cx={lensCx + 6}
-          cy={lensCy + 14}
-          rx={lensRadius * 0.92}
-          ry={lensRadius * 0.32}
-          fill="rgba(0, 0, 0, 0.18)"
-          filter="blur(12px)"
-        />
-
-        {/* Handle — drawn first so the lens sits in front. Rotated about
-            its anchor point so it grows out from the lens at 45°. */}
-        <g
-          transform={`rotate(${HANDLE_ANGLE_DEG} ${handleAnchorX} ${handleAnchorY})`}
-        >
-          <rect
-            x={handleAnchorX}
-            y={handleAnchorY - HANDLE_WIDTH / 2}
-            width={HANDLE_LENGTH}
-            height={HANDLE_WIDTH}
-            rx={HANDLE_WIDTH / 2}
-            ry={HANDLE_WIDTH / 2}
-            fill={`url(#${handleGradientId})`}
-            stroke="#3b2c1f"
-            strokeWidth={1.5}
-          />
-        </g>
-
-        {/* Lens magnified content — clipped to the inner glass circle. */}
-        <foreignObject
-          x={0}
-          y={0}
-          width={svgSize}
-          height={svgSize}
-          clipPath={`url(#${lensClipId})`}
+      {/* ─── DOM clone layer (z-index -1, behind the lens) ───────────
+       * Provides actual magnification: the slide is cloned, scaled 2.5×,
+       * and positioned so the cursor's location in the original maps to
+       * the centre of the lens. The lens above this then refracts + adds
+       * chromatic aberration via backdrop-filter.                       */}
+      {slideEl && (
+        <div
+          aria-hidden="true"
+          data-testid="magnifier-zoom-layer"
+          style={{
+            position: "fixed",
+            left: pos.x - radius,
+            top: pos.y - radius,
+            width: radius * 2,
+            height: radius * 2,
+            borderRadius: "50%",
+            overflow: "hidden",
+            pointerEvents: "none",
+            zIndex: 9996,
+          }}
         >
           <div
-            ref={cloneHostRef}
-            data-testid="magnifier-clone-host"
             style={{
               position: "absolute",
-              left: SVG_PADDING,
-              top: SVG_PADDING,
-              width: LENS_DIAMETER,
-              height: LENS_DIAMETER,
-              overflow: "hidden",
-              borderRadius: "50%",
+              width: cw,
+              height: ch,
+              left: radius - cursorInSlideX * MAGNIFIER_ZOOM,
+              top: radius - cursorInSlideY * MAGNIFIER_ZOOM,
+              transform: `scale(${MAGNIFIER_ZOOM})`,
+              transformOrigin: "0 0",
+              pointerEvents: "none",
+              filter: "contrast(1.05) saturate(1.1)",
+              backgroundColor: "var(--color-cf-bg-100)",
+            }}
+            ref={(el) => {
+              if (!el) return;
+              el.innerHTML = "";
+              const clone = slideEl.cloneNode(true) as HTMLElement;
+              clone.style.pointerEvents = "none";
+              // Strip canvases (e.g. marker overlay) — they don't clone
+              // their pixel buffer, leaving an empty canvas that visually
+              // distracts.
+              clone.querySelectorAll("canvas").forEach((c) => c.remove());
+              el.appendChild(clone);
             }}
           />
-        </foreignObject>
+        </div>
+      )}
 
-        {/* Chromatic-aberration channels — only visible near the rim via
-            the radial mask. Each is the same magnified clone, with a tiny
-            translation + a hue-rotate filter to isolate roughly red and
-            blue contributions. They composite via screen blend mode so
-            highlights show as colour fringing, not muddy darkening. */}
-        {effects && (
-          <foreignObject
-            x={0}
-            y={0}
-            width={svgSize}
-            height={svgSize}
-            clipPath={`url(#${lensClipId})`}
-          >
-            <div
-              data-testid="magnifier-aberration"
-              style={{
-                position: "absolute",
-                inset: 0,
-                pointerEvents: "none",
-                // Mask so the colour fringes only show near the rim.
-                WebkitMaskImage: `radial-gradient(circle at center, transparent 60%, rgba(0,0,0,0.5) 85%, rgba(0,0,0,0.85) 100%)`,
-                maskImage: `radial-gradient(circle at center, transparent 60%, rgba(0,0,0,0.5) 85%, rgba(0,0,0,0.85) 100%)`,
-              }}
-            >
-              <div
-                ref={aberrationRedRef}
-                style={{
-                  position: "absolute",
-                  left: SVG_PADDING + 2,
-                  top: SVG_PADDING,
-                  width: LENS_DIAMETER,
-                  height: LENS_DIAMETER,
-                  overflow: "hidden",
-                  borderRadius: "50%",
-                  mixBlendMode: "screen",
-                  filter: "saturate(2) hue-rotate(0deg) brightness(0.9)",
-                  opacity: 0.45,
-                }}
-              />
-              <div
-                ref={aberrationBlueRef}
-                style={{
-                  position: "absolute",
-                  left: SVG_PADDING - 2,
-                  top: SVG_PADDING,
-                  width: LENS_DIAMETER,
-                  height: LENS_DIAMETER,
-                  overflow: "hidden",
-                  borderRadius: "50%",
-                  mixBlendMode: "screen",
-                  filter:
-                    "saturate(2) hue-rotate(180deg) brightness(0.9)",
-                  opacity: 0.45,
-                }}
-              />
-            </div>
-          </foreignObject>
-        )}
-
-        {/* Inner highlight — a subtle white arc near the top of the glass
-            sells the "actual lens" feel. */}
-        <ellipse
-          cx={lensCx - lensRadius * 0.25}
-          cy={lensCy - lensRadius * 0.45}
-          rx={lensRadius * 0.55}
-          ry={lensRadius * 0.18}
-          fill="rgba(255, 255, 255, 0.16)"
+      {/* ─── Lens (backdrop-filter applies the SVG filter) ───────────
+       * Refracts whatever is visible behind it (which is the zoom layer
+       * above plus, if any, the rest of the page). The lens itself is a
+       * thin glass — slight white background + rim/specular highlights. */}
+      <div
+        aria-hidden="true"
+        data-testid="magnifier-lens"
+        style={{
+          position: "fixed",
+          left: pos.x - radius,
+          top: pos.y - radius,
+          width: radius * 2,
+          height: radius * 2,
+          borderRadius: "50%",
+          overflow: "hidden",
+          border: "2px solid rgba(255,255,255,0.5)",
+          boxShadow:
+            "0 0 0 1px rgba(82,16,0,0.15), " +
+            "0 8px 32px rgba(0,0,0,0.25), " +
+            "0 2px 8px rgba(0,0,0,0.12)",
+          backdropFilter: `url(#${FILTER_ID})`,
+          WebkitBackdropFilter: `url(#${FILTER_ID})`,
+          background: "rgba(255,255,255,0.04)",
+          pointerEvents: "none",
+          zIndex: 9997,
+        }}
+      >
+        {/* Glass rim */}
+        <div
+          aria-hidden="true"
+          style={{
+            position: "absolute",
+            inset: 0,
+            borderRadius: "9999px",
+            pointerEvents: "none",
+            background:
+              "radial-gradient(circle, transparent 50%, rgba(255,255,255,0.06) 60%, rgba(255,255,255,0.18) 78%, rgba(140,120,100,0.22) 90%, rgba(82,16,0,0.12) 100%)",
+            boxShadow:
+              "inset 0 2px 8px rgba(255,255,255,0.4), inset 0 -2px 6px rgba(0,0,0,0.15), inset 0 0 20px rgba(255,255,255,0.08)",
+          }}
         />
 
-        {/* Metallic rim — drawn AFTER the foreignObject so it sits on top. */}
-        <circle
-          cx={lensCx}
-          cy={lensCy}
-          r={lensRadius - RIM_THICKNESS / 2}
-          fill="none"
-          stroke={`url(#${rimGradientId})`}
-          strokeWidth={RIM_THICKNESS}
+        {/* Primary specular highlight (top-left) */}
+        <div
+          aria-hidden="true"
+          style={{
+            position: "absolute",
+            top: "8%",
+            left: "15%",
+            width: "40%",
+            height: "25%",
+            borderRadius: "50%",
+            background:
+              "linear-gradient(135deg, rgba(255,255,255,0.5) 0%, rgba(255,255,255,0.15) 40%, transparent 100%)",
+            transform: "rotate(-25deg)",
+            filter: "blur(2px)",
+            pointerEvents: "none",
+          }}
         />
-        {/* Inner dark ring inside the rim for definition. */}
-        <circle
-          cx={lensCx}
-          cy={lensCy}
-          r={lensRadius - RIM_THICKNESS}
-          fill="none"
-          stroke="rgba(0, 0, 0, 0.45)"
-          strokeWidth={1}
+
+        {/* Secondary specular (bottom-right) */}
+        <div
+          aria-hidden="true"
+          style={{
+            position: "absolute",
+            bottom: "12%",
+            right: "15%",
+            width: "22%",
+            height: "14%",
+            borderRadius: "50%",
+            background:
+              "linear-gradient(315deg, rgba(255,255,255,0.2) 0%, transparent 100%)",
+            transform: "rotate(15deg)",
+            filter: "blur(1px)",
+            pointerEvents: "none",
+          }}
         />
-        {/* Outer thin highlight ring for a polished feel. */}
-        <circle
-          cx={lensCx}
-          cy={lensCy}
-          r={lensRadius}
-          fill="none"
-          stroke="rgba(255, 255, 255, 0.25)"
-          strokeWidth={1}
-        />
-      </svg>
-    </div>
+      </div>
+
+      {/* ─── Handle ─── */}
+      <div
+        aria-hidden="true"
+        data-testid="magnifier-handle"
+        style={{
+          position: "fixed",
+          left: pos.x + Math.round(radius * 0.62),
+          top: pos.y + Math.round(radius * 0.62),
+          width: Math.max(42, Math.round(radius * 0.58)),
+          height: Math.max(10, Math.round(radius * 0.12)),
+          borderRadius: "6px",
+          background:
+            "linear-gradient(to right, rgba(82,16,0,0.5), rgba(82,16,0,0.35))",
+          transform: "rotate(45deg)",
+          transformOrigin: "left center",
+          boxShadow: "0 2px 4px rgba(0,0,0,0.2)",
+          pointerEvents: "none",
+          zIndex: 9997,
+        }}
+      />
+    </>
   );
 }
