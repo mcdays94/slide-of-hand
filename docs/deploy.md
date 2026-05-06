@@ -11,13 +11,35 @@ It assumes you are Miguel, deploying from a checkout of `mcdays94/ReAction` with
 
 ---
 
+## Thumbnails (build artifact, not committed)
+
+Per-deck slide thumbnails live at `public/thumbnails/<slug>/<NN>.png` and are
+gitignored. Regenerate before every deploy:
+
+```bash
+npm run thumbnails
+```
+
+The script (`scripts/build-thumbnails.mjs`) boots a transient `vite dev` on
+port 5218, walks every public deck, snaps each slide at 1920×1080, and writes
+320×180 PNGs. Takes ~10s per deck. Requires `playwright` + `sharp` devDeps
+(installed via `npm install`) and a one-time `npx playwright install chromium`.
+
+Production gracefully falls back to text tiles if the thumbnails are absent —
+the build will not fail without them — but the Overview grid (`O`) and the
+public DeckCard look much better with real screenshots, so it's part of the
+routine redeploy flow above.
+
+---
+
 ## TL;DR (routine redeploy)
 
 ```bash
 git checkout main && git pull
 npm ci
 npm test
-npm run deploy   # = npm run build && wrangler deploy
+npm run thumbnails   # snap fresh /admin + Overview thumbnails (~10s per deck)
+npm run deploy       # = npm run build && wrangler deploy
 ```
 
 That's it. Wrangler reads `wrangler.jsonc` and:

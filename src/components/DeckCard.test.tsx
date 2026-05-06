@@ -8,7 +8,7 @@
  */
 
 import { afterEach, describe, expect, it } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { DeckCard } from "./DeckCard";
 import type { DeckMeta } from "@/framework/viewer/types";
@@ -93,8 +93,43 @@ describe("DeckCard", () => {
     expect(img?.getAttribute("src")).toBe("/decks/alpha/cover.png");
   });
 
-  it("omits cover image when absent", () => {
+  // Note: the previous "omits cover image when absent" assertion was removed
+  // — the card now falls back to a build-time auto-thumbnail at
+  // `/thumbnails/<slug>/01.png` when `meta.cover` isn't set. The
+  // `onError`-driven fallback path (when neither cover nor thumbnail
+  // resolve) is covered below.
+
+  it("falls back to the slide-1 auto-thumbnail when cover is absent", () => {
+    // When `meta.cover` is not set, the card uses the build-time thumbnail
+    // produced by `npm run thumbnails`, located at
+    // `/thumbnails/<slug>/01.png`. This is the default for any deck that
+    // hasn't opted into a custom cover image.
     renderCard(baseMeta);
+    const img = document.querySelector("img");
+    expect(img).not.toBeNull();
+    expect(img?.getAttribute("src")).toBe("/thumbnails/alpha/01.png");
+  });
+
+  it("prefers `meta.cover` over the auto-thumbnail", () => {
+    renderCard({ ...baseMeta, cover: "/decks/alpha/cover.png" });
+    const img = document.querySelector("img");
+    expect(img?.getAttribute("src")).toBe("/decks/alpha/cover.png");
+  });
+
+  it("hides the hero strip if the image fails to load", () => {
+    // Fresh clones (and decks where `npm run thumbnails` has never been run)
+    // have no PNG at `/thumbnails/<slug>/01.png`. The card must remain valid
+    // — no broken-image icon, no empty 16:9 frame.
+    renderCard(baseMeta);
+    const img = document.querySelector("img") as HTMLImageElement | null;
+    expect(img).not.toBeNull();
+    // Simulate the browser's load failure. Use fireEvent so React's
+    // synthetic-event handler runs — a raw dispatchEvent bypasses React's
+    // delegation and the onError state update never fires.
+    fireEvent.error(img!);
+    // After the error, the image and its 16:9 wrapper should be gone.
     expect(document.querySelector("img")).toBeNull();
+    // The card itself remains.
+    expect(screen.getByTestId("deck-card")).toBeTruthy();
   });
 });
