@@ -58,11 +58,31 @@
    * Both `id` and `preview_id` are configured so `wrangler dev` uses a
    * separate preview namespace and doesn't pollute production data.
    */
+  /**
+   * Per-deck KV namespaces.
+   *
+   * `THEMES` (issue #12 / Bucket B1) — `theme:<slug>` keys, brand-token
+   * overrides. Read by `GET /api/themes/<slug>`, written by
+   * `POST/DELETE /api/admin/themes/<slug>`.
+   *
+   * `MANIFESTS` (issue #13 / Bucket B2) — `manifest:<slug>` keys, slide
+   * order + per-slide overrides (hidden, title, notes). Read by
+   * `GET /api/manifests/<slug>`, written by
+   * `POST/DELETE /api/admin/manifests/<slug>`.
+   *
+   * Both have separate preview namespaces so `wrangler dev` doesn't
+   * pollute production data.
+   */
   "kv_namespaces": [
     {
       "binding": "THEMES",
       "id": "c17123b57dba4e11a1b6de6b84466cdb",
       "preview_id": "1ae49a5fcede4be584eee1701bce33e3"
+    },
+    {
+      "binding": "MANIFESTS",
+      "id": "29dc4f3af1014e11b84d57acbeca782b",
+      "preview_id": "922249a7b3984630a04f430a47018d5c"
     }
   ],
   "observability": {
