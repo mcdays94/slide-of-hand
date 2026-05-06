@@ -1,0 +1,37 @@
+worker/themes.test.ts
+  98a367e98b008ae5 12-23,109,133,146,161,176,191,214,226,251,267-316
+worker/access-auth.ts
+  98a367e98b008ae5 1-89
+worker/analytics.ts
+  98a367e98b008ae5 7,9-15,17-18,58,94-105,108,453-454
+worker/manifests.test.ts
+  98a367e98b008ae5 10-21,117,140,153,166,179,192,208,235,247,280,296-340
+worker/themes.ts
+  98a367e98b008ae5 7-8,10-15,18,28,138-139
+worker/analytics.test.ts
+  98a367e98b008ae5 18-29,248,283,290,309,348,352,398,420,437,446,455,474-509
+worker/manifests.ts
+  98a367e98b008ae5 7-8,10-15,18,34,136-137
+worker/access-auth.test.ts
+  98a367e98b008ae5 1-69
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "a1e4a1b1bdd6f8cdebb450b7d3740fc263ad4a1b",
+  "prompts": {
+    "98a367e98b008ae5": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_2077bd95cffepOw4IvqFsV7eWM",
+        "model": "anthropic/claude-opus-4-7"
+      },
+      "human_author": "mdias",
+      "messages": [],
+      "total_additions": 412,
+      "total_deletions": 51,
+      "accepted_lines": 412,
+      "overriden_lines": 0
+    }
+  }
+}
