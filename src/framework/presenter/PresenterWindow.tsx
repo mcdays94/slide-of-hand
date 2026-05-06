@@ -9,7 +9,7 @@
  *   4. Elapsed time + pacing feedback.
  *   5. Click-to-jump grid of every slide.
  *
- * Synced to the main viewer over `BroadcastChannel('reaction-deck-<slug>')`.
+ * Synced to the main viewer over `BroadcastChannel('slide-of-hand-deck-<slug>')`.
  * On mount we broadcast `request-state` so a presenter window opened
  * after the main viewer is mid-deck still arrives in sync.
  *

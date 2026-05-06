@@ -24,7 +24,7 @@ import { useEffect, useState } from "react";
 /** Pacing color buckets. */
 export type Pacing = "green" | "amber" | "red";
 
-const STORAGE_PREFIX = "reaction-deck-elapsed:";
+const STORAGE_PREFIX = "slide-of-hand-deck-elapsed:";
 
 /** Format a positive duration in milliseconds as `M:SS`. */
 export function formatElapsed(ms: number): string {

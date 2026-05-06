@@ -19,7 +19,7 @@ export default function AdminLayout() {
       <header className="flex items-center justify-between border-b border-cf-border px-6 py-4">
         <div className="flex items-center gap-3">
           <Link to="/admin" className="cf-tag no-underline">
-            ReAction · Admin
+            Slide of Hand · Admin
           </Link>
         </div>
         <Link to="/" className="cf-btn-ghost no-underline">

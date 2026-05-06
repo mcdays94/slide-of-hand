@@ -192,10 +192,10 @@ export function Magnifier({
   // Rim metallic gradient — darker outer, lighter inner. Stays consistent
   // across light + dark mode (deliberately not theme-driven; a magnifier
   // looks like brushed metal regardless of slide background).
-  const rimGradientId = "reaction-magnifier-rim";
-  const handleGradientId = "reaction-magnifier-handle";
-  const lensClipId = "reaction-magnifier-lens-clip";
-  const aberrationMaskId = "reaction-magnifier-aberration-mask";
+  const rimGradientId = "slide-of-hand-magnifier-rim";
+  const handleGradientId = "slide-of-hand-magnifier-handle";
+  const lensClipId = "slide-of-hand-magnifier-lens-clip";
+  const aberrationMaskId = "slide-of-hand-magnifier-aberration-mask";
 
   return (
     <div

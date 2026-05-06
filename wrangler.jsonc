@@ -1,17 +1,30 @@
 /**
- * Cloudflare Worker config for ReAction.
+ * Cloudflare Worker config for Slide of Hand.
  *
  * v1 ships as a pure Static Assets app: the Worker entry serves the bundled
  * SPA from `dist/` for every route. No state stores, no AI binding, no Worker
  * Loader — those are added per-deck only when a specific deck demonstrably
  * needs them.
  *
- * Production lives at https://reaction.lusostreams.com (Custom Domain).
+ * Production lives at https://slide-of-hand.lusostreams.com (Custom Domain).
  * `/admin/*` is gated by Cloudflare Access — see docs/deploy.md.
  *
  * Custom Domain syntax note: per the Wrangler config schema and Cloudflare
  * docs, a custom_domain route uses the bare hostname (no path / no `/*`).
  * Custom Domains point all paths of a hostname to the Worker by definition.
+ *
+ * Rebrand transition (project rename ReAction → Slide of Hand):
+ *   - Both `slide-of-hand.lusostreams.com` AND the legacy
+ *     `reaction.lusostreams.com` are kept as Custom Domains so the rename
+ *     can land without breaking the live site for anyone holding the old
+ *     URL. The legacy entry can be removed in a follow-up commit once the
+ *     new domain is verified and Access is reconfigured for it.
+ *   - The Worker `name` field stays "reaction" (internal CF-account
+ *     identifier; not visible to visitors). Renaming the Worker would
+ *     orphan the existing Worker AND require detaching the legacy
+ *     Custom Domain from the old Worker before reattaching to the new
+ *     one. Not worth the rename gymnastics for a label only visible in
+ *     the CF dashboard. Can be done as a separate operation later.
  */
 {
   "$schema": "node_modules/wrangler/config-schema.json",
@@ -21,6 +34,10 @@
   "compatibility_date": "2025-04-01",
   "compatibility_flags": ["nodejs_compat"],
   "routes": [
+    {
+      "pattern": "slide-of-hand.lusostreams.com",
+      "custom_domain": true
+    },
     {
       "pattern": "reaction.lusostreams.com",
       "custom_domain": true

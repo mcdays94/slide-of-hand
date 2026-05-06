@@ -57,7 +57,7 @@ function openPresenterWindow(slug: string): void {
   // Use a stable name so a second `P` press focuses the existing window
   // rather than spawning a stack of duplicates.
   const features = "popup=yes,width=1280,height=800,resizable=yes,scrollbars=yes";
-  const handle = window.open(url, `reaction-presenter-${slug}`, features);
+  const handle = window.open(url, `slide-of-hand-presenter-${slug}`, features);
   try {
     handle?.focus();
   } catch {

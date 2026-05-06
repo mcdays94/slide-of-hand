@@ -67,8 +67,8 @@ afterEach(() => {
 });
 
 describe("deckChannelName", () => {
-  it("uses the canonical reaction-deck-<slug> prefix", () => {
-    expect(deckChannelName("hello")).toBe("reaction-deck-hello");
+  it("uses the canonical slide-of-hand-deck-<slug> prefix", () => {
+    expect(deckChannelName("hello")).toBe("slide-of-hand-deck-hello");
   });
 });
 
