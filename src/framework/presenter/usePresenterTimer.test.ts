@@ -5,13 +5,15 @@
  * presenter window mounting; here we cover only the pure functions, which is
  * where the off-by-one / sign / boundary risks live.
  */
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { act, cleanup, renderHook } from "@testing-library/react";
 import {
   classifyPacing,
   expectedRuntimeMs,
   formatDelta,
   formatElapsed,
   readOrInitStart,
+  usePausableElapsedTime,
 } from "./usePresenterTimer";
 
 describe("formatElapsed", () => {
@@ -138,5 +140,116 @@ describe("readOrInitStart", () => {
     readOrInitStart("b", storage, 200);
     expect(data["slide-of-hand-deck-elapsed:a"]).toBe("100");
     expect(data["slide-of-hand-deck-elapsed:b"]).toBe("200");
+  });
+});
+
+describe("usePausableElapsedTime", () => {
+  beforeEach(() => {
+    window.sessionStorage.clear();
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    cleanup();
+  });
+
+  it("starts unpaused with elapsed = 0", () => {
+    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+    const { result } = renderHook(() => usePausableElapsedTime("test-deck"));
+    expect(result.current.paused).toBe(false);
+    expect(result.current.elapsedMs).toBe(0);
+  });
+
+  it("advances elapsed time once per second while running", () => {
+    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+    const { result } = renderHook(() => usePausableElapsedTime("test-deck"));
+
+    act(() => {
+      vi.advanceTimersByTime(3000);
+    });
+    expect(result.current.elapsedMs).toBeGreaterThanOrEqual(3000);
+    expect(result.current.elapsedMs).toBeLessThan(4000);
+  });
+
+  it("freezes elapsed time while paused", () => {
+    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+    const { result } = renderHook(() => usePausableElapsedTime("test-deck"));
+
+    act(() => {
+      vi.advanceTimersByTime(5000);
+    });
+    const beforePause = result.current.elapsedMs;
+
+    act(() => {
+      result.current.pause();
+    });
+    expect(result.current.paused).toBe(true);
+
+    // Wall clock keeps moving, but elapsed must stay frozen.
+    act(() => {
+      vi.advanceTimersByTime(10_000);
+    });
+    expect(result.current.elapsedMs).toBe(beforePause);
+  });
+
+  it("resumes from where pause left off (does not jump to wall clock)", () => {
+    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+    const { result } = renderHook(() => usePausableElapsedTime("test-deck"));
+
+    act(() => {
+      vi.advanceTimersByTime(5000);
+    });
+    const beforePause = result.current.elapsedMs;
+
+    act(() => {
+      result.current.pause();
+    });
+
+    // 30s pass while paused.
+    act(() => {
+      vi.advanceTimersByTime(30_000);
+    });
+
+    act(() => {
+      result.current.resume();
+    });
+    expect(result.current.paused).toBe(false);
+    // Right after resume, elapsed should equal what it was at pause time
+    // (give or take 1ms slack).
+    expect(Math.abs(result.current.elapsedMs - beforePause)).toBeLessThan(50);
+
+    // 2 more seconds → elapsed should go up by ~2s, not 32s.
+    act(() => {
+      vi.advanceTimersByTime(2000);
+    });
+    expect(result.current.elapsedMs - beforePause).toBeGreaterThanOrEqual(
+      1500,
+    );
+    expect(result.current.elapsedMs - beforePause).toBeLessThan(3000);
+  });
+
+  it("toggle alternates pause/resume", () => {
+    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+    const { result } = renderHook(() => usePausableElapsedTime("test-deck"));
+    expect(result.current.paused).toBe(false);
+    act(() => result.current.toggle());
+    expect(result.current.paused).toBe(true);
+    act(() => result.current.toggle());
+    expect(result.current.paused).toBe(false);
+  });
+
+  it("pause is idempotent", () => {
+    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+    const { result } = renderHook(() => usePausableElapsedTime("test-deck"));
+    act(() => {
+      vi.advanceTimersByTime(5000);
+    });
+    act(() => result.current.pause());
+    const frozen = result.current.elapsedMs;
+    act(() => {
+      vi.advanceTimersByTime(5000);
+    });
+    act(() => result.current.pause()); // second call must NOT reset frozen
+    expect(result.current.elapsedMs).toBe(frozen);
   });
 });

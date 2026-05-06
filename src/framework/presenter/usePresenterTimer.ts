@@ -19,7 +19,7 @@
  * Negative deltas (running ahead) outside the ±10 s green band are also
  * classified as `amber`. The presenter can read sign separately.
  */
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 /** Pacing color buckets. */
 export type Pacing = "green" | "amber" | "red";
@@ -116,6 +116,109 @@ export function useElapsedTime(deckSlug: string): number {
   }, []);
 
   return Math.max(0, now - startedAt);
+}
+
+export interface PausableElapsed {
+  /** Current elapsed time in ms. Frozen while `paused === true`. */
+  elapsedMs: number;
+  /** Whether the clock is currently paused. */
+  paused: boolean;
+  /** Toggle pause / resume. */
+  toggle: () => void;
+  /** Force pause (idempotent). */
+  pause: () => void;
+  /** Force resume (idempotent). */
+  resume: () => void;
+}
+
+/**
+ * Pausable elapsed-time hook for the presenter window.
+ *
+ * Behaviour:
+ *   - Starts unpaused. Reads the deck's persisted start time from
+ *     sessionStorage (same key as `useElapsedTime`), so refresh keeps the
+ *     clock running.
+ *   - When `pause()` is called, freezes the displayed elapsed at the
+ *     instant of the call.
+ *   - When `resume()` is called, advances the persisted start timestamp
+ *     forward by the paused duration so the displayed elapsed continues
+ *     from where it left off (rather than jumping to wall-clock + start).
+ *
+ * The pause state itself is in-memory only — refreshing the presenter
+ * window resumes the wall-clock-driven elapsed.
+ */
+export function usePausableElapsedTime(deckSlug: string): PausableElapsed {
+  const [now, setNow] = useState(() => Date.now());
+  const [paused, setPaused] = useState(false);
+
+  // `startedAt` is mutable: pausing does not change it; resuming pushes it
+  // forward by the paused-duration so the displayed elapsed picks up where
+  // it left off.
+  const startedAtRef = useRef<number>(0);
+  const [, forceRender] = useState(0);
+  if (startedAtRef.current === 0) {
+    startedAtRef.current = readOrInitStart(
+      deckSlug,
+      typeof window !== "undefined" ? window.sessionStorage : undefined,
+      Date.now(),
+    );
+  }
+  const pausedAtRef = useRef<number | null>(null);
+  const pausedElapsedRef = useRef<number>(0);
+
+  useEffect(() => {
+    if (paused) return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [paused]);
+
+  const pause = useCallback(() => {
+    setPaused((p) => {
+      if (p) return p;
+      const at = Date.now();
+      pausedAtRef.current = at;
+      pausedElapsedRef.current = Math.max(0, at - startedAtRef.current);
+      return true;
+    });
+  }, []);
+
+  const resume = useCallback(() => {
+    setPaused((p) => {
+      if (!p) return p;
+      const pausedAt = pausedAtRef.current ?? Date.now();
+      const pausedDuration = Date.now() - pausedAt;
+      startedAtRef.current = startedAtRef.current + pausedDuration;
+      pausedAtRef.current = null;
+      // Persist updated start so a refresh during this session resumes
+      // from where we left off rather than re-eating the paused window.
+      try {
+        if (typeof window !== "undefined") {
+          window.sessionStorage.setItem(
+            "slide-of-hand-deck-elapsed:" + deckSlug,
+            String(startedAtRef.current),
+          );
+        }
+      } catch {
+        /* sessionStorage may be denied; the in-memory start is still correct */
+      }
+      // Bump now and force a re-render so the displayed elapsed updates
+      // immediately, before the next interval tick.
+      setNow(Date.now());
+      forceRender((n) => n + 1);
+      return false;
+    });
+  }, [deckSlug]);
+
+  const toggle = useCallback(() => {
+    if (pausedAtRef.current != null) resume();
+    else pause();
+  }, [pause, resume]);
+
+  const elapsedMs = paused
+    ? pausedElapsedRef.current
+    : Math.max(0, now - startedAtRef.current);
+
+  return { elapsedMs, paused, toggle, pause, resume };
 }
 
 /**
