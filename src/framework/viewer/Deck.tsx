@@ -30,6 +30,7 @@ import { PhaseProvider } from "./PhaseContext";
 import { Overview } from "./Overview";
 import { KeyboardHelp } from "./KeyboardHelp";
 import { ThemeSidebar } from "./ThemeSidebar";
+import { TopToolbar } from "./TopToolbar";
 import { useDeckTheme } from "./useDeckTheme";
 import { SlideManager } from "./SlideManager";
 import { useDeckManifest } from "./useDeckManifest";
@@ -229,9 +230,14 @@ export function Deck({ slug, title, slides }: DeckProps) {
       // Ignore key events while focus sits on an interactive element. This is
       // how `data-interactive` opt-out works for keyboard nav: a focused input
       // / button / select gets to handle its own keys.
-      const target = e.target as Element | null;
+      //
+      // `e.target` may be `Window` (e.g. for `window.dispatchEvent(new
+      // KeyboardEvent(...))` calls). Window has no `.closest()`, so we must
+      // narrow with `instanceof Element` before invoking — otherwise the
+      // handler throws and silently swallows downstream keys.
+      const target = e.target;
       if (
-        target &&
+        target instanceof Element &&
         target.closest(
           "[data-interactive], input, select, textarea, [contenteditable=true]",
         )
@@ -465,6 +471,11 @@ export function Deck({ slug, title, slides }: DeckProps) {
         )}
         <PresenterAffordances />
       </div>
+      <TopToolbar
+        slug={slug}
+        currentSlide={cursor.slide}
+        currentPhase={cursor.phase}
+      />
     </div>
   );
 }
