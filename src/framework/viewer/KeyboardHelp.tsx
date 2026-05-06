@@ -20,6 +20,7 @@ const SHORTCUTS: Array<[string, string]> = [
   ["D", "Toggle dark mode"],
   ["P", "Open presenter window (slice #5)"],
   ["Q / W / E", "Laser / magnifier / marker (slice #7)"],
+  ["T", "Theme overrides (admin only)"],
   ["Esc", "Close overlays / exit tool"],
 ];
 

@@ -29,6 +29,9 @@ import { Slide } from "./Slide";
 import { PhaseProvider } from "./PhaseContext";
 import { Overview } from "./Overview";
 import { KeyboardHelp } from "./KeyboardHelp";
+import { ThemeSidebar } from "./ThemeSidebar";
+import { useDeckTheme } from "./useDeckTheme";
+import { usePresenterMode } from "@/framework/presenter/mode";
 import { PresenterAffordances } from "@/framework/presenter/PresenterAffordances";
 import { slideTransition } from "@/lib/motion";
 
@@ -110,23 +113,43 @@ export function Deck({ slug, title, slides }: DeckProps) {
     [],
   );
 
+  // ── Per-deck theme override (issue #12 / Bucket B1) ────────────────────
+  // Both public viewers and admin viewers fetch + apply on mount; the
+  // sidebar that EDITS the override is gated by `usePresenterMode()` below.
+  const themeOverride = useDeckTheme(slug);
+  const presenterMode = usePresenterMode();
+
   // ── Overlays ────────────────────────────────────────────────────────────
   const [overviewOpen, setOverviewOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
+  const [themeSidebarOpen, setThemeSidebarOpen] = useState(false);
 
   const closeOverlays = useCallback(() => {
     setOverviewOpen(false);
     setHelpOpen(false);
+    setThemeSidebarOpen(false);
   }, []);
 
   const toggleOverview = useCallback(() => {
     setOverviewOpen((o) => !o);
     setHelpOpen(false);
+    setThemeSidebarOpen(false);
   }, []);
 
   const toggleHelp = useCallback(() => {
     setHelpOpen((h) => !h);
     setOverviewOpen(false);
+    setThemeSidebarOpen(false);
+  }, []);
+
+  const toggleThemeSidebar = useCallback(() => {
+    setThemeSidebarOpen((o) => !o);
+    setOverviewOpen(false);
+    setHelpOpen(false);
+  }, []);
+
+  const closeThemeSidebar = useCallback(() => {
+    setThemeSidebarOpen(false);
   }, []);
 
   // ── Keyboard ───────────────────────────────────────────────────────────
@@ -187,6 +210,14 @@ export function Deck({ slug, title, slides }: DeckProps) {
           e.preventDefault();
           toggleTheme();
           break;
+        case "t":
+        case "T":
+          // Theme override sidebar — admin (presenter mode) only.
+          if (presenterMode) {
+            e.preventDefault();
+            toggleThemeSidebar();
+          }
+          break;
         case "f":
         case "F":
           e.preventDefault();
@@ -199,7 +230,7 @@ export function Deck({ slug, title, slides }: DeckProps) {
           }
           break;
         case "Escape":
-          if (overviewOpen || helpOpen) {
+          if (overviewOpen || helpOpen || themeSidebarOpen) {
             e.preventDefault();
             closeOverlays();
           }
@@ -218,8 +249,11 @@ export function Deck({ slug, title, slides }: DeckProps) {
     toggleOverview,
     toggleHelp,
     toggleTheme,
+    toggleThemeSidebar,
+    presenterMode,
     overviewOpen,
     helpOpen,
+    themeSidebarOpen,
     closeOverlays,
   ]);
 
@@ -228,13 +262,13 @@ export function Deck({ slug, title, slides }: DeckProps) {
 
   const onSurfaceClick = useCallback(
     (e: React.MouseEvent<HTMLDivElement>) => {
-      if (overviewOpen || helpOpen) return;
+      if (overviewOpen || helpOpen || themeSidebarOpen) return;
       if (shouldSuppressAdvance(e.target)) return;
       // Right-click / middle-click should never advance.
       if (e.button !== 0) return;
       next();
     },
-    [next, overviewOpen, helpOpen],
+    [next, overviewOpen, helpOpen, themeSidebarOpen],
   );
 
   const slide = visibleSlides[cursor.slide];
@@ -307,6 +341,14 @@ export function Deck({ slug, title, slides }: DeckProps) {
           onClose={closeOverlays}
         />
         <KeyboardHelp open={helpOpen} onClose={closeOverlays} />
+        {presenterMode && (
+          <ThemeSidebar
+            open={themeSidebarOpen}
+            slug={slug}
+            theme={themeOverride}
+            onClose={closeThemeSidebar}
+          />
+        )}
         <PresenterAffordances />
       </div>
     </div>

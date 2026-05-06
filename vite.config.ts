@@ -45,6 +45,7 @@ export default defineConfig(({ command }) => ({
       "tests/**/*.test.tsx",
       "src/**/*.test.ts",
       "src/**/*.test.tsx",
+      "worker/**/*.test.ts",
     ],
   },
 }));

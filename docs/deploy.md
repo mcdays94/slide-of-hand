@@ -209,6 +209,72 @@ Cloudflare is provisioning the certificate. This usually takes 30–90 seconds. 
 
 ---
 
+## Theme overrides (KV)
+
+Per-deck theme overrides — the four core brand tokens (`cf-bg-100`, `cf-text`, `cf-orange`, `cf-border`) — are persisted in a Cloudflare KV namespace. The binding lives in `wrangler.jsonc`:
+
+```jsonc
+"kv_namespaces": [
+  {
+    "binding": "THEMES",
+    "id": "<production-namespace-id>",
+    "preview_id": "<preview-namespace-id>"
+  }
+]
+```
+
+The IDs are committed to the repo. They survive every deploy — the bindings are stable, KV data persists across Worker versions and rollbacks. To recreate them from scratch (e.g. for a fork):
+
+```bash
+npx wrangler kv namespace create THEMES
+npx wrangler kv namespace create THEMES --preview
+# Paste the resulting IDs into wrangler.jsonc.
+```
+
+### How overrides flow in production
+
+1. **Author** opens `https://reaction.lusostreams.com/admin/decks/<slug>`, presses `T`, drags a colour picker (live preview, no save), clicks **Save**.
+2. **Worker** receives `POST /api/admin/themes/<slug>` (Access-gated — only the author's email can hit this), validates the body shape, writes `theme:<slug>` to KV.
+3. **Public visitors** at `https://reaction.lusostreams.com/decks/<slug>` fetch `GET /api/themes/<slug>` on viewer mount; the override applies as `:root` CSS custom properties. The read endpoint returns `cache-control: public, max-age=60`, so save-to-visible latency is bounded by 60 seconds at the edge plus KV's eventual-consistency window (~30–60 s globally).
+
+### Inspecting / managing entries
+
+```bash
+# List all theme keys
+npx wrangler kv key list --binding=THEMES
+
+# Read a specific deck's override
+npx wrangler kv key get --binding=THEMES theme:hello
+
+# Wipe a deck's override (same effect as the sidebar's Reset button)
+npx wrangler kv key delete --binding=THEMES theme:hello
+```
+
+For the local preview namespace (used by `wrangler dev`), pass `--preview`:
+
+```bash
+npx wrangler kv key list --binding=THEMES --preview
+```
+
+### Local end-to-end testing
+
+`vite dev` does not understand KV bindings. Use Wrangler:
+
+```bash
+npx wrangler dev --port=5212
+```
+
+Wrangler serves the bundled SPA + `/api/*` endpoints with the **preview** KV namespace bound, so writes during local testing don't touch production data. Cloudflare Access does not enforce in dev — all `/admin/*` paths are reachable without a JWT.
+
+### v2 follow-ups (not in this release)
+
+- Typography + spacing tokens
+- Contrast checker (WCAG AA)
+- Server-side `<style>` injection via HTMLRewriter (eliminates the brief FOUC on first paint)
+- Share-preview links (read-only public URL with a draft override applied)
+
+---
+
 ## Reference
 
 - **Production URL:** <https://reaction.lusostreams.com>
