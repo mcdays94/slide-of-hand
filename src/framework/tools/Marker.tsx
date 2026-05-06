@@ -85,20 +85,31 @@ export function computeStrokeOpacity(
 }
 
 export function Marker({ onActiveChange }: MarkerProps = {}) {
+  // `active` = E key currently held. Strokes are live (releasedAt === null)
+  // while active is true. When E is released, all strokes' releasedAt is
+  // stamped, and the canvas stays mounted long enough for the fade to
+  // complete (see `mounted` below).
   const [active, setActive] = useState(false);
+  // `mounted` controls whether the canvas DOM element is rendered at all.
+  // It's true while `active`, AND continues to be true for the post-release
+  // fade window so strokes fade out smoothly. Goes back to false after the
+  // unmount timer fires (see the `active`-tracking effect below).
+  const [mounted, setMounted] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const strokesRef = useRef<Stroke[]>([]);
   const drawingRef = useRef<boolean>(false);
   const rafRef = useRef<number | null>(null);
+  const unmountTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Keep external observers in sync.
   useEffect(() => {
     onActiveChange?.(active);
   }, [active, onActiveChange]);
 
-  // Toggle on `E`, exit on `Esc`.
+  // Hold-to-draw: E key held → mode active; release E → strokes fade.
+  // Esc immediately deactivates as a safety hatch.
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
+    const onKeyDown = (e: KeyboardEvent) => {
       const target = e.target;
       if (
         target instanceof Element &&
@@ -109,10 +120,10 @@ export function Marker({ onActiveChange }: MarkerProps = {}) {
         return;
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       if (e.key.toLowerCase() === MARKER_KEY) {
-        if (e.repeat) return;
+        if (e.repeat) return; // ignore key-repeat while held
         e.preventDefault();
         e.stopPropagation();
-        setActive((a) => !a);
+        setActive(true);
       } else if (e.key === "Escape") {
         setActive((a) => {
           if (!a) return a;
@@ -121,8 +132,23 @@ export function Marker({ onActiveChange }: MarkerProps = {}) {
         });
       }
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.key.toLowerCase() === MARKER_KEY) {
+        setActive(false);
+      }
+    };
+    // If the window loses focus while E is held (alt-tab, etc.), treat that
+    // like a key-up — otherwise the user releases the focused-elsewhere E
+    // and we'd never get a keyup event to clear active state.
+    const onBlur = () => setActive(false);
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", onBlur);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("blur", onBlur);
+    };
   }, []);
 
   // Resize the canvas backing store to match the slide size whenever active.
@@ -196,9 +222,48 @@ export function Marker({ onActiveChange }: MarkerProps = {}) {
     strokesRef.current = surviving;
   }, [clearPixels]);
 
-  // Drive the render loop while active.
+  // ── Mount lifecycle ─────────────────────────────────────────────────
+  // While E is held, the canvas is mounted and strokes stay opaque
+  // (releasedAt = null). When E is released, all live strokes get their
+  // releasedAt timestamp stamped — strokes then fade per
+  // computeStrokeOpacity. The canvas stays mounted long enough for the
+  // fade to complete (hold + fade + 100ms safety buffer), then unmounts.
+  // Pressing E again before the unmount timer fires cancels it: existing
+  // strokes are restored to opaque (releasedAt = null) so the user can
+  // continue their drawing.
   useEffect(() => {
-    if (!active) return;
+    if (active) {
+      // Activated: cancel any pending unmount, restore strokes to opaque.
+      if (unmountTimerRef.current != null) {
+        clearTimeout(unmountTimerRef.current);
+        unmountTimerRef.current = null;
+      }
+      for (const s of strokesRef.current) s.releasedAt = null;
+      setMounted(true);
+      return;
+    }
+    // Deactivated: stamp releasedAt on all strokes that don't have it.
+    drawingRef.current = false;
+    const now = performance.now();
+    for (const s of strokesRef.current) {
+      if (s.releasedAt == null) s.releasedAt = now;
+    }
+    // Schedule the canvas unmount after the fade window completes. Add a
+    // small safety buffer so the rAF tick has a chance to render the final
+    // opacity-0 frame before the canvas disappears.
+    if (unmountTimerRef.current != null) {
+      clearTimeout(unmountTimerRef.current);
+    }
+    unmountTimerRef.current = setTimeout(() => {
+      strokesRef.current = [];
+      setMounted(false);
+      unmountTimerRef.current = null;
+    }, MARKER_FADE_HOLD_MS + MARKER_FADE_DURATION_MS + 100);
+  }, [active]);
+
+  // Drive the render loop while the canvas is mounted (active OR fading).
+  useEffect(() => {
+    if (!mounted) return;
     resizeCanvas();
     let cancelled = false;
     const tick = () => {
@@ -215,9 +280,10 @@ export function Marker({ onActiveChange }: MarkerProps = {}) {
       rafRef.current = null;
       window.removeEventListener("resize", onResize);
     };
-  }, [active, redrawAll, resizeCanvas]);
+  }, [mounted, redrawAll, resizeCanvas]);
 
-  // Clear strokes when the visible slide index changes.
+  // Clear strokes when the visible slide index changes (only while active —
+  // strokes from the previous slide should not stick around on a new slide).
   useEffect(() => {
     if (!active) return;
     const slideEl = document.querySelector<HTMLElement>(
@@ -246,15 +312,23 @@ export function Marker({ onActiveChange }: MarkerProps = {}) {
     return () => observer.disconnect();
   }, [active, clearPixels, resizeCanvas]);
 
-  // Reset strokes when the marker is deactivated.
+  // On unmount of the component itself, clean up the unmount timer so the
+  // setTimeout doesn't fire after the component has been torn down.
   useEffect(() => {
-    if (active) return;
-    strokesRef.current = [];
-    clearPixels();
-  }, [active, clearPixels]);
+    return () => {
+      if (unmountTimerRef.current != null) {
+        clearTimeout(unmountTimerRef.current);
+        unmountTimerRef.current = null;
+      }
+    };
+  }, []);
 
-  // Pointer handlers — bound directly to the canvas via React.
+  // Pointer handlers — bound directly to the canvas via React. Drawing
+  // is gated on `active` (E currently held). The canvas may still be
+  // mounted (post-release fade) but pointer-down should not start a new
+  // stroke once E is released.
   const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!active) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
     canvas.setPointerCapture(e.pointerId);
@@ -262,11 +336,8 @@ export function Marker({ onActiveChange }: MarkerProps = {}) {
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
 
-    // Reset the fade timer on EVERY existing stroke so a sequence of
-    // strokes doesn't fade mid-sequence.
-    for (const s of strokesRef.current) {
-      s.releasedAt = null;
-    }
+    // Existing strokes are already opaque (releasedAt = null) while active
+    // is true — see the active-tracking effect. Just append a new stroke.
     strokesRef.current.push({ points: [{ x, y }], releasedAt: null });
     drawingRef.current = true;
   };
@@ -288,16 +359,13 @@ export function Marker({ onActiveChange }: MarkerProps = {}) {
     if (canvas?.hasPointerCapture(e.pointerId)) {
       canvas.releasePointerCapture(e.pointerId);
     }
-    // Mark all strokes as released *now* so they all start fading together
-    // from this moment. (We reset releasedAt on every new pointer-down, so
-    // this just stamps the freshly-finished sequence.)
-    const now = performance.now();
-    for (const s of strokesRef.current) {
-      if (s.releasedAt == null) s.releasedAt = now;
-    }
+    // NOTE: we deliberately do NOT stamp releasedAt here. With the
+    // hold-to-draw model, strokes only fade when E itself is released;
+    // pointer-up just ends the current stroke without starting its fade.
+    // The active-tracking effect handles the stamp on E-up.
   };
 
-  if (!active) return null;
+  if (!mounted) return null;
   return (
     <div data-no-advance data-testid="marker-host">
       <canvas

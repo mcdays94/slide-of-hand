@@ -38,20 +38,29 @@ describe("Marker", () => {
     expect(queryByTestId("marker-canvas")).toBeNull();
   });
 
-  it("renders canvas after pressing E and removes it on second press", () => {
+  it("renders canvas while E is held and removes it after the fade window completes", () => {
+    vi.useFakeTimers();
     mountSlideShell(0);
     const { queryByTestId } = render(<Marker />);
     act(() => {
       window.dispatchEvent(new KeyboardEvent("keydown", { key: "e" }));
     });
     expect(queryByTestId("marker-canvas")).not.toBeNull();
+    // Release E — canvas stays mounted while the fade plays out.
     act(() => {
-      window.dispatchEvent(new KeyboardEvent("keydown", { key: "e" }));
+      window.dispatchEvent(new KeyboardEvent("keyup", { key: "e" }));
+    });
+    expect(queryByTestId("marker-canvas")).not.toBeNull();
+    // Advance past the unmount timer (hold + fade + 100ms safety buffer).
+    act(() => {
+      vi.advanceTimersByTime(MARKER_FADE_HOLD_MS + MARKER_FADE_DURATION_MS + 200);
     });
     expect(queryByTestId("marker-canvas")).toBeNull();
+    vi.useRealTimers();
   });
 
   it("exits marker mode on Escape", () => {
+    vi.useFakeTimers();
     mountSlideShell(0);
     const { queryByTestId } = render(<Marker />);
     act(() => {
@@ -61,7 +70,13 @@ describe("Marker", () => {
     act(() => {
       window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
     });
+    // Esc deactivates and schedules the unmount timer; canvas stays
+    // mounted until the fade completes (same as a normal E-up).
+    act(() => {
+      vi.advanceTimersByTime(MARKER_FADE_HOLD_MS + MARKER_FADE_DURATION_MS + 200);
+    });
     expect(queryByTestId("marker-canvas")).toBeNull();
+    vi.useRealTimers();
   });
 
   it("wraps the canvas in data-no-advance to suppress click-to-advance", () => {

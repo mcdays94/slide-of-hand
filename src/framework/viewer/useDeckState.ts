@@ -214,6 +214,24 @@ export function useDeckState(deck: DeckShape): UseDeckStateResult {
     }
   }, [cursor, deck.slug]);
 
+  // Mirror the current cursor into the URL as `?slide=N&phase=K` so the
+  // current slide is shareable as a deep link. We use `history.replaceState`
+  // (NOT `pushState`) so each navigation does NOT add a back-button entry —
+  // browser Back continues to mean "leave the deck", not "step backwards
+  // through phase reveals." Other query params (e.g. `?presenter-mode=1`)
+  // are preserved.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.set("slide", String(cursor.slide));
+      url.searchParams.set("phase", String(cursor.phase));
+      window.history.replaceState(window.history.state, "", url.toString());
+    } catch {
+      /* URL writes can fail (sandboxed iframe, etc.); silently ignore */
+    }
+  }, [cursor.slide, cursor.phase]);
+
   return {
     cursor,
     total: deck.phases.length,
