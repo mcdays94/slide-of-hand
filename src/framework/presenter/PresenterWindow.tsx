@@ -1,35 +1,53 @@
 /**
  * Presenter window — rendered when the deck route receives `?presenter=1`.
  *
- * Shows the author the four things they need while presenting:
+ * Issue #36 reshapes this layout to give the current slide ~60-70% of the
+ * vertical space (a la cf-slides' SpeakerView), and adds:
  *
- *   1. Current slide thumbnail (live render at small scale).
- *   2. Next slide thumbnail.
- *   3. Speaker notes for the current slide.
- *   4. Elapsed time + pacing feedback.
- *   5. Click-to-jump grid of every slide.
+ *   - A pause/resume control on the elapsed clock.
+ *   - Phase indicator dots beneath the current-slide preview when the
+ *     active slide has more than one phase.
+ *   - Prev / Next chevron buttons that navigate the deck via the existing
+ *     `navigate` BroadcastMessage.
+ *   - An End-Show button that closes the popup with `window.close()`. If
+ *     the window wasn't opened by `window.open()` (e.g. it's a regular
+ *     tab someone navigated to), the call no-ops, so we also surface a
+ *     "press Esc to close" hint.
+ *   - A horizontal filmstrip of slide-number chips along the bottom of
+ *     the notes panel, replacing the prior 3-col jump grid.
+ *   - A resizable notes panel on the right, persisted via localStorage.
+ *   - A font-size knob in the notes header.
  *
- * Synced to the main viewer over `BroadcastChannel('slide-of-hand-deck-<slug>')`.
- * On mount we broadcast `request-state` so a presenter window opened
- * after the main viewer is mid-deck still arrives in sync.
+ * KEEP from the prior implementation:
  *
- * The thumbnails reuse each slide's own `render()` output inside a
- * fixed 16:9 box scaled with CSS `transform: scale()`. This isn't a
- * pixel snapshot — it's a live, much-smaller copy of the slide's React
- * tree. Cheap enough for a 5-slide deck; future slices can swap to
- * `html2canvas`-style snapshots if a deck grows large.
+ *   - BroadcastChannel sync via `useDeckBroadcast` (channel name unchanged).
+ *   - The pacing classification (green / amber / red) on the header chip.
+ *   - sessionStorage-persisted elapsed clock, now via `usePausableElapsedTime`.
+ *   - The live-render-then-CSS-scale `<SlideThumbnail>` (works fine for
+ *     small decks; cf-slides' ResizeObserver-based approach was tempting
+ *     but brings its own quirks and we don't need it for the v1 deck).
  */
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Deck } from "@/framework/viewer/types";
 import { PhaseProvider } from "@/framework/viewer/PhaseContext";
 import { useDeckBroadcast } from "./broadcast";
 import { SpeakerNotes } from "./SpeakerNotes";
+import { PhaseDots } from "./PhaseDots";
+import { Filmstrip } from "./Filmstrip";
+import { useResizable } from "./useResizable";
+import {
+  ChevronLeftIcon,
+  ChevronRightIcon,
+  CloseIcon,
+  PauseIcon,
+  PlayIcon,
+} from "./NavControls";
 import {
   classifyPacing,
   expectedRuntimeMs,
   formatDelta,
   formatElapsed,
-  useElapsedTime,
+  usePausableElapsedTime,
 } from "./usePresenterTimer";
 
 export interface PresenterWindowProps {
@@ -54,64 +72,66 @@ const PACING_DOT_CLASSES: Record<"green" | "amber" | "red", string> = {
 };
 
 /**
- * Live mini-render of a slide. Uses the deck's own `render()` output inside a
- * 16:9 frame scaled with CSS — the scale factor is what makes it a thumbnail.
+ * Live mini-render of a slide, scaled with CSS transform.
+ *
+ * Same approach as the previous version of this file: render the slide's
+ * own JSX inside a 1280×720 pseudo-viewport, scale it down to thumbnail
+ * size, and absolutely-position it inside a 16:9 frame. Fast and
+ * dependency-free.
  */
 function SlideThumbnail({
   deck,
   slideIndex,
   phase,
-  label,
+  scale,
   emphasized,
   onClick,
-  scale = 0.18,
-  showLabel = true,
+  cornerLabel,
 }: {
   deck: Deck;
   slideIndex: number;
   phase: number;
-  label: string;
+  scale: number;
   emphasized?: boolean;
   onClick?: () => void;
-  /** CSS scale factor. The inner pseudo-viewport is scaled by this. */
-  scale?: number;
-  /** Suppress the corner label overlay. Tiny thumbnails read better without it. */
-  showLabel?: boolean;
+  /** Optional pill text rendered in the top-left of the frame. */
+  cornerLabel?: string;
 }) {
   const slide = deck.slides[slideIndex];
   const layout = slide?.layout ?? "default";
   const Tag: "button" | "div" = onClick ? "button" : "div";
-  // Emulate `<Slide>`'s centering + padding without re-running its motion
-  // animation (which would replay every time the cursor changes).
   const inner =
     layout === "full"
       ? "h-full w-full"
       : "flex h-full w-full items-center justify-center px-12 py-16";
-  // The pseudo-viewport renders at 1280x720 then is scaled down. Reciprocal
-  // sizing means scale=0.18 on a 100%-of-thumbnail container yields a tiny
-  // preview whose layout matches the real 16:9 slide.
+  // Reciprocal sizing so a 100%-of-thumbnail container, when scaled by
+  // `scale`, lays out at 1280×720 internally.
   const reciprocal = `${(100 / scale).toFixed(2)}%`;
   return (
     <Tag
       type={onClick ? "button" : undefined}
       onClick={onClick}
       data-testid={`thumbnail-${slideIndex}`}
-      className={`group relative flex aspect-video w-full flex-col overflow-hidden rounded-md border bg-cf-bg-100 text-left transition-colors ${
+      className={`group relative flex h-full w-full flex-col overflow-hidden rounded-md border bg-cf-bg-100 text-left transition-colors ${
         emphasized
           ? "border-cf-orange ring-2 ring-cf-orange/40"
           : "border-cf-border hover:border-dashed"
       }`}
     >
-      {showLabel && (
-        <span className="pointer-events-none absolute left-2 top-2 z-10 font-mono text-[10px] uppercase tracking-[0.25em] text-cf-text-subtle">
-          {label} · {String(slideIndex + 1).padStart(2, "0")}
+      {cornerLabel && (
+        <span className="pointer-events-none absolute left-3 top-3 z-10 inline-flex items-center rounded-full bg-cf-orange/15 px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.2em] text-cf-orange">
+          {cornerLabel}
         </span>
       )}
       {slide ? (
         <div
           aria-hidden
           className="pointer-events-none absolute left-0 top-0 origin-top-left transform-gpu"
-          style={{ width: reciprocal, height: reciprocal, transform: `scale(${scale})` }}
+          style={{
+            width: reciprocal,
+            height: reciprocal,
+            transform: `scale(${scale})`,
+          }}
         >
           <div className={`${inner} h-full w-full bg-cf-bg-100 text-cf-text`}>
             <PhaseProvider phase={phase}>
@@ -156,7 +176,11 @@ export function PresenterWindow({ deck }: PresenterWindowProps) {
   }, [deck.meta.title]);
 
   // Elapsed + pacing.
-  const elapsedMs = useElapsedTime(deck.meta.slug);
+  const {
+    elapsedMs,
+    paused,
+    toggle: toggleTimer,
+  } = usePausableElapsedTime(deck.meta.slug);
   const expectedMs = useMemo(
     () =>
       expectedRuntimeMs(
@@ -166,7 +190,6 @@ export function PresenterWindow({ deck }: PresenterWindowProps) {
     [visibleSlides, deck.meta.runtimeMinutes],
   );
   const elapsedTarget = useMemo(() => {
-    // Expected elapsed at the start of the current slide:
     let acc = 0;
     for (let i = 0; i < cursor.slide && i < visibleSlides.length; i++) {
       const secs = visibleSlides[i]?.runtimeSeconds;
@@ -179,116 +202,249 @@ export function PresenterWindow({ deck }: PresenterWindowProps) {
 
   const currentSlide = visibleSlides[cursor.slide];
   const nextSlide = visibleSlides[cursor.slide + 1];
+  const totalPhases = (currentSlide?.phases ?? 0) + 1;
 
-  const onJump = (target: number) => {
-    send({ type: "navigate", slide: target, phase: 0 });
-    // Optimistically reflect the jump locally; the main viewer's broadcast
-    // will overwrite this within a frame.
-    setCursor({ slide: target, phase: 0 });
-  };
+  // Notes panel resize.
+  const notesPanel = useResizable({
+    storageKey: "notes",
+    defaultWidth: 320,
+    minWidth: 200,
+    maxWidth: 600,
+  });
+
+  // Send a navigate broadcast and optimistically reflect the move locally.
+  const onJump = useCallback(
+    (slide: number, phase: number = 0) => {
+      const target = Math.max(0, Math.min(visibleSlides.length - 1, slide));
+      send({ type: "navigate", slide: target, phase });
+      setCursor({ slide: target, phase });
+    },
+    [send, visibleSlides.length],
+  );
+
+  const goPrev = useCallback(() => {
+    if (cursor.phase > 0) {
+      onJump(cursor.slide, cursor.phase - 1);
+      return;
+    }
+    if (cursor.slide > 0) {
+      const prev = visibleSlides[cursor.slide - 1];
+      const prevPhases = (prev?.phases ?? 0);
+      onJump(cursor.slide - 1, prevPhases);
+    }
+  }, [cursor, onJump, visibleSlides]);
+
+  const goNext = useCallback(() => {
+    if (cursor.phase < totalPhases - 1) {
+      onJump(cursor.slide, cursor.phase + 1);
+      return;
+    }
+    if (cursor.slide < visibleSlides.length - 1) {
+      onJump(cursor.slide + 1, 0);
+    }
+  }, [cursor, onJump, totalPhases, visibleSlides.length]);
+
+  const isAtStart = cursor.slide === 0 && cursor.phase === 0;
+  const isAtEnd =
+    cursor.slide === visibleSlides.length - 1 &&
+    cursor.phase === totalPhases - 1;
+
+  // End Show — try `window.close()` (works only when this window was
+  // opened by `window.open()`). If it doesn't close (regular tab), the
+  // call is a silent no-op; the kicker hint already mentions Esc.
+  const endShow = useCallback(() => {
+    if (typeof window === "undefined") return;
+    try {
+      window.close();
+    } catch {
+      /* ignore */
+    }
+  }, []);
 
   return (
     <main
       data-testid="presenter-window"
-      className="grid h-screen min-h-screen w-screen grid-rows-[auto_1fr_auto] gap-4 bg-cf-bg-200 p-6 text-cf-text"
+      className="flex h-screen min-h-screen w-screen flex-col overflow-hidden bg-cf-bg-200 text-cf-text"
     >
       {/* ── HEADER ─────────────────────────────────────────────────────── */}
-      <header className="flex items-baseline justify-between gap-6">
-        <div className="flex items-baseline gap-3">
-          <p className="cf-tag">Presenter</p>
-          <h1 className="text-2xl font-medium tracking-[-0.025em] text-cf-text">
-            {deck.meta.title}
-          </h1>
-        </div>
-        <div className="flex items-baseline gap-6 font-mono tabular-nums">
+      <header className="flex flex-shrink-0 items-center gap-4 border-b border-cf-border bg-cf-bg-100/95 px-5 py-2 backdrop-blur-[2px]">
+        <p className="cf-tag">Presenter</p>
+        <h1 className="truncate text-sm font-medium tracking-[-0.02em] text-cf-text">
+          {deck.meta.title}
+        </h1>
+        <div className="flex-1" />
+        <div className="flex items-center gap-2">
           <span
             data-testid="presenter-elapsed"
-            className="text-3xl font-medium tracking-tight text-cf-text"
+            data-paused={paused ? "true" : "false"}
+            className={`font-mono text-lg tabular-nums tracking-tight transition-colors ${
+              paused ? "text-cf-text-subtle" : "text-cf-orange"
+            }`}
           >
             {formatElapsed(elapsedMs)}
           </span>
-          <span
-            data-testid="presenter-pacing"
-            data-pacing={pacing}
-            className={`flex items-center gap-2 text-lg font-medium ${PACING_TEXT_CLASSES[pacing]}`}
+          <button
+            type="button"
+            onClick={toggleTimer}
+            data-testid="presenter-timer-toggle"
+            data-paused={paused ? "true" : "false"}
+            aria-label={paused ? "Resume timer" : "Pause timer"}
+            title={paused ? "Resume timer" : "Pause timer"}
+            className={`inline-flex h-7 w-7 items-center justify-center rounded-full border border-cf-border transition-colors hover:border-dashed ${
+              paused ? "text-cf-orange" : "text-cf-text-subtle"
+            }`}
           >
-            <span
-              aria-hidden
-              className={`inline-block h-2 w-2 rounded-full ${PACING_DOT_CLASSES[pacing]}`}
-            />
-            {formatDelta(deltaMs)}
-          </span>
+            {paused ? <PlayIcon size={12} /> : <PauseIcon size={12} />}
+          </button>
         </div>
+        <span
+          data-testid="presenter-pacing"
+          data-pacing={pacing}
+          className={`flex items-center gap-2 font-mono text-xs tabular-nums ${PACING_TEXT_CLASSES[pacing]}`}
+        >
+          <span
+            aria-hidden
+            className={`inline-block h-2 w-2 rounded-full ${PACING_DOT_CLASSES[pacing]}`}
+          />
+          {formatDelta(deltaMs)}
+        </span>
+        <span aria-hidden className="h-5 w-px bg-cf-border" />
+        <span className="font-mono text-[11px] uppercase tracking-[0.2em] text-cf-text-subtle">
+          {String(cursor.slide + 1).padStart(2, "0")} /{" "}
+          {String(visibleSlides.length).padStart(2, "0")}
+        </span>
+        <button
+          type="button"
+          onClick={endShow}
+          data-testid="presenter-end-show"
+          aria-label="End show"
+          title="Close presenter window (or press Esc)"
+          className="inline-flex items-center gap-1.5 rounded-full border border-cf-danger/30 bg-transparent px-3 py-1 font-mono text-[11px] uppercase tracking-[0.2em] text-cf-danger transition-colors hover:border-cf-danger hover:bg-cf-danger/10"
+        >
+          <CloseIcon size={11} />
+          End Show
+        </button>
       </header>
 
-      {/* ── MAIN ───────────────────────────────────────────────────────── */}
-      <section className="grid min-h-0 grid-cols-12 gap-4">
-        {/* Current slide thumbnail — ~40% */}
-        <div className="col-span-7 flex min-h-0 flex-col gap-2">
-          <p className="cf-tag">Current</p>
-          <SlideThumbnail
-            deck={deck}
-            slideIndex={cursor.slide}
-            phase={cursor.phase}
-            label="Now"
-            emphasized
-            scale={0.42}
-          />
-        </div>
-
-        {/* Next slide thumbnail — ~30% */}
-        <div className="col-span-5 flex min-h-0 flex-col gap-2">
-          <p className="cf-tag">Next</p>
-          {nextSlide ? (
-            <SlideThumbnail
-              deck={deck}
-              slideIndex={cursor.slide + 1}
-              phase={0}
-              label="Next"
-              scale={0.32}
-            />
-          ) : (
-            <div className="flex aspect-video w-full items-center justify-center rounded-md border border-dashed border-cf-border text-cf-text-subtle">
-              End of deck
+      {/* ── BODY ───────────────────────────────────────────────────────── */}
+      <div className="flex min-h-0 flex-1">
+        {/* Slides column — current preview + bottom row */}
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3 p-4">
+          {/* Current slide — large, ~60% of vertical space.
+              The `aspect-video` element is sized with both `w-full` and
+              `max-h-full`; the browser shrinks the width when max-height
+              clamps the natural aspect-ratio height, keeping 16:9 either
+              way. Centered horizontally so wide columns don't left-align
+              a tall column's narrower preview. */}
+          <div className="flex min-h-0 flex-[5] items-center justify-center">
+            <div className="relative aspect-video max-h-full w-full max-w-full">
+              <SlideThumbnail
+                deck={deck}
+                slideIndex={cursor.slide}
+                phase={cursor.phase}
+                scale={0.55}
+                emphasized
+                cornerLabel={`Current · Slide ${cursor.slide + 1}`}
+              />
+              {/* Phase dots overlay — bottom-left of the preview frame. */}
+              {totalPhases > 1 && (
+                <div className="pointer-events-none absolute bottom-3 left-3 z-10">
+                  <PhaseDots total={totalPhases} current={cursor.phase} />
+                </div>
+              )}
             </div>
-          )}
-        </div>
-      </section>
+          </div>
 
-      {/* ── NOTES + JUMP GRID ──────────────────────────────────────────── */}
-      <section className="grid min-h-0 grid-cols-12 gap-4">
-        <div className="col-span-7 min-h-0">
-          <SpeakerNotes
-            notes={currentSlide?.notes}
-            slideTitle={currentSlide?.title}
-            slideNumber={cursor.slide + 1}
-            totalSlides={visibleSlides.length}
-          />
-        </div>
-
-        <div className="col-span-5 flex min-h-0 flex-col gap-2 overflow-y-auto">
-          <p className="cf-tag">Jump to slide</p>
-          <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
-            {visibleSlides.map((s, i) => (
-              <div key={s.id} className="flex flex-col gap-1">
-                <SlideThumbnail
-                  deck={deck}
-                  slideIndex={i}
-                  phase={0}
-                  label={s.title || s.id}
-                  emphasized={i === cursor.slide}
-                  onClick={() => onJump(i)}
-                  showLabel={false}
-                  scale={0.16}
-                />
-                <p className="truncate font-mono text-[10px] uppercase tracking-[0.2em] text-cf-text-subtle">
-                  {String(i + 1).padStart(2, "0")} · {s.title || s.id}
-                </p>
+          {/* Bottom row — next preview + nav controls */}
+          <div className="flex min-h-0 flex-[2] gap-3">
+            <div className="flex min-h-0 flex-1 items-center justify-center">
+              <div className="aspect-video max-h-full w-full max-w-full">
+                {nextSlide ? (
+                  <SlideThumbnail
+                    deck={deck}
+                    slideIndex={cursor.slide + 1}
+                    phase={0}
+                    scale={0.32}
+                    cornerLabel={`Next · ${nextSlide.title || nextSlide.id}`}
+                    onClick={() => onJump(cursor.slide + 1)}
+                  />
+                ) : (
+                  <div className="flex h-full w-full items-center justify-center rounded-md border border-dashed border-cf-border bg-cf-bg-100 text-cf-text-subtle">
+                    <span className="font-mono text-sm uppercase tracking-[0.25em]">
+                      End of deck
+                    </span>
+                  </div>
+                )}
               </div>
-            ))}
+            </div>
+
+            <div className="flex flex-shrink-0 flex-col items-center justify-center gap-3 px-4">
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={goPrev}
+                  disabled={isAtStart}
+                  data-testid="presenter-prev"
+                  aria-label="Previous slide or phase"
+                  title="Previous (← or Backspace)"
+                  className="inline-flex h-12 w-12 items-center justify-center rounded-full border border-cf-border bg-cf-bg-100 text-cf-text transition-colors hover:border-dashed disabled:cursor-not-allowed disabled:opacity-30"
+                >
+                  <ChevronLeftIcon size={20} />
+                </button>
+                <button
+                  type="button"
+                  onClick={goNext}
+                  disabled={isAtEnd}
+                  data-testid="presenter-next"
+                  aria-label="Next slide or phase"
+                  title="Next (→ / Space / Enter)"
+                  className="inline-flex h-12 w-12 items-center justify-center rounded-full border border-transparent bg-cf-orange text-cf-bg-100 transition-colors hover:bg-cf-orange/90 disabled:cursor-not-allowed disabled:opacity-30"
+                >
+                  <ChevronRightIcon size={20} />
+                </button>
+              </div>
+              <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-cf-text-subtle">
+                ← → or click
+              </span>
+            </div>
           </div>
         </div>
-      </section>
+
+        {/* Splitter — 1px wide; expanded hover hit-area via padding */}
+        <div
+          data-testid="presenter-notes-splitter"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize notes panel"
+          onMouseDown={(e) => notesPanel.onMouseDown(e, -1)}
+          className="group flex-shrink-0 cursor-col-resize px-1 py-0"
+        >
+          <div className="h-full w-px bg-cf-border transition-colors group-hover:bg-cf-orange/50 group-active:bg-cf-orange" />
+        </div>
+
+        {/* Notes column */}
+        <aside
+          data-testid="presenter-notes-panel"
+          className="flex min-h-0 flex-shrink-0 flex-col gap-3 bg-cf-bg-200 p-3"
+          style={{ width: notesPanel.width }}
+        >
+          <div className="min-h-0 flex-1">
+            <SpeakerNotes
+              notes={currentSlide?.notes}
+              slideTitle={currentSlide?.title}
+              slideNumber={cursor.slide + 1}
+              totalSlides={visibleSlides.length}
+            />
+          </div>
+          <div className="flex-shrink-0 border-t border-cf-border pt-3">
+            <Filmstrip
+              slides={visibleSlides}
+              current={cursor.slide}
+              onJump={(i) => onJump(i)}
+            />
+          </div>
+        </aside>
+      </div>
     </main>
   );
 }
