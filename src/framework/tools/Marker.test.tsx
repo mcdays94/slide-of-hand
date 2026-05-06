@@ -95,15 +95,20 @@ describe("Marker", () => {
 
     it("returns 1 during the hold window after release", () => {
       const released = 1000;
-      // 1s into the hold (hold = 2.5s) — still fully opaque.
-      expect(computeStrokeOpacity(released + 1000, released)).toBe(1);
+      // Halfway through the hold (hold = MARKER_FADE_HOLD_MS) — still
+      // fully opaque. Computed relative to the constant so the test
+      // tracks any future timing tweak without manual updates.
+      const halfwayThroughHold = released + Math.floor(MARKER_FADE_HOLD_MS / 2);
+      expect(computeStrokeOpacity(halfwayThroughHold, released)).toBe(1);
     });
 
     it("starts fading after the hold window expires", () => {
       const released = 1000;
-      const justAfterHold = released + MARKER_FADE_HOLD_MS + 100;
-      const opacity = computeStrokeOpacity(justAfterHold, released);
-      // 100ms into a 1000ms fade — should be ~0.9.
+      // 10% of the way into the fade — opacity should be near 1, well
+      // above 0.5.
+      const tenPercentIntoFade =
+        released + MARKER_FADE_HOLD_MS + Math.floor(MARKER_FADE_DURATION_MS / 10);
+      const opacity = computeStrokeOpacity(tenPercentIntoFade, released);
       expect(opacity).toBeGreaterThan(0.85);
       expect(opacity).toBeLessThan(0.95);
     });

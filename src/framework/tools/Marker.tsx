@@ -30,10 +30,24 @@ const MARKER_KEY = "e";
 const MARKER_RESOLVED_COLOR = "#FF4801";
 const MARKER_WIDTH = 3;
 
-/** Time (ms) a finished stroke stays fully opaque before it begins fading. */
-export const MARKER_FADE_HOLD_MS = 2500;
-/** Time (ms) over which a stroke fades from opacity 1 → 0. */
-export const MARKER_FADE_DURATION_MS = 1000;
+/**
+ * Time (ms) a finished stroke stays fully opaque before it begins fading.
+ *
+ * Originally 2500ms; reduced to 500ms in #34 after user feedback that
+ * "the marker still doesn't go away after releasing" — the original
+ * 3.5s total visibility (2500ms hold + 1000ms fade) felt unresponsive.
+ * 500ms hold gives a brief "you drew that" moment before the fade
+ * begins. Tunable via the future settings modal (#32).
+ */
+export const MARKER_FADE_HOLD_MS = 500;
+/**
+ * Time (ms) over which a stroke fades from opacity 1 → 0.
+ *
+ * Reduced from 1000ms to 500ms in #34 — total visibility window is now
+ * 500ms hold + 500ms fade = 1s, matching the "release and it's gone"
+ * expectation while keeping the fade smooth (not a pop).
+ */
+export const MARKER_FADE_DURATION_MS = 500;
 
 interface Point {
   x: number;
