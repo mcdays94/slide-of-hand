@@ -70,8 +70,16 @@
    * `GET /api/manifests/<slug>`, written by
    * `POST/DELETE /api/admin/manifests/<slug>`.
    *
-   * Both have separate preview namespaces so `wrangler dev` doesn't
-   * pollute production data.
+   * `ELEMENT_OVERRIDES` (issue #43 / element inspector Slice 1) —
+   * `element-overrides:<slug>` keys, per-slide CSS-class swap pairs
+   * keyed by selector + fingerprint. Read by
+   * `GET /api/element-overrides/<slug>`, written by
+   * `POST/DELETE /api/admin/element-overrides/<slug>`.
+   *
+   * Each has a separate preview namespace so `wrangler dev` doesn't
+   * pollute production data. (Preview ID for ELEMENT_OVERRIDES will be
+   * filled in by the orchestrator on first deploy; `wrangler dev` runs
+   * fine without it because the in-memory mock takes over.)
    */
   "kv_namespaces": [
     {
@@ -83,6 +91,10 @@
       "binding": "MANIFESTS",
       "id": "29dc4f3af1014e11b84d57acbeca782b",
       "preview_id": "922249a7b3984630a04f430a47018d5c"
+    },
+    {
+      "binding": "ELEMENT_OVERRIDES",
+      "id": "eee93f0ffcd646e1b6ee7ffc6391ace9"
     }
   ],
   /**
