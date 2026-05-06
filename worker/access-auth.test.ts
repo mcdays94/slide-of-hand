@@ -4,7 +4,7 @@ import { requireAccessAuth, getAccessUserEmail } from "./access-auth";
 describe("requireAccessAuth", () => {
   it("returns null when cf-access-authenticated-user-email is set", () => {
     const req = new Request("https://example.com/api/admin/themes/hello", {
-      headers: { "cf-access-authenticated-user-email": "miguel@cloudflare.com" },
+      headers: { "cf-access-authenticated-user-email": "test@example.com" },
     });
     expect(requireAccessAuth(req)).toBeNull();
   });
@@ -41,18 +41,18 @@ describe("requireAccessAuth", () => {
 describe("getAccessUserEmail", () => {
   it("returns the email when present", () => {
     const req = new Request("https://example.com/", {
-      headers: { "cf-access-authenticated-user-email": "miguel@cloudflare.com" },
+      headers: { "cf-access-authenticated-user-email": "test@example.com" },
     });
-    expect(getAccessUserEmail(req)).toBe("miguel@cloudflare.com");
+    expect(getAccessUserEmail(req)).toBe("test@example.com");
   });
 
   it("trims whitespace around the email", () => {
     const req = new Request("https://example.com/", {
       headers: {
-        "cf-access-authenticated-user-email": "  miguel@cloudflare.com  ",
+        "cf-access-authenticated-user-email": "  test@example.com  ",
       },
     });
-    expect(getAccessUserEmail(req)).toBe("miguel@cloudflare.com");
+    expect(getAccessUserEmail(req)).toBe("test@example.com");
   });
 
   it("returns null when the header is absent", () => {
