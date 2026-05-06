@@ -4,15 +4,18 @@
  * Three endpoints, all KV-backed:
  *
  *   GET    /api/themes/<slug>         — public read, edge-cached 60s
- *   POST   /api/admin/themes/<slug>   — Access-gated write
- *   DELETE /api/admin/themes/<slug>   — Access-gated reset
+ *   POST   /api/admin/themes/<slug>   — Access-gated write (defense-in-depth: Worker also checks)
+ *   DELETE /api/admin/themes/<slug>   — Access-gated reset (defense-in-depth: Worker also checks)
  *
- * Cloudflare Access guards `/admin/*` at the edge, so this Worker code
- * does NOT validate JWTs. We optionally ignore `cf-access-authenticated-
- * user-email` for v1; an audit hook can hang off it later.
+ * Cloudflare Access guards `/api/admin/*` at the edge (see the
+ * `Slide of Hand Admin` Access app's `self_hosted_domains`). As of
+ * 2026-05-06 the Worker ALSO validates the `cf-access-authenticated-
+ * user-email` header on admin endpoints via `requireAccessAuth()` —
+ * defense-in-depth so a misconfigured Access app fails closed instead
+ * of open. See `worker/access-auth.ts` for the rationale.
  *
  * `handleThemes()` returns:
- *   - a `Response` for any path it owns (200 / 204 / 400 / 405)
+ *   - a `Response` for any path it owns (200 / 204 / 400 / 403 / 405)
  *   - `null` for paths it does not own (so the caller can fall through to
  *     `env.ASSETS.fetch(request)`).
  */
@@ -22,6 +25,7 @@ import {
   isValidSlug,
   type ThemeOverride,
 } from "../src/lib/theme-tokens";
+import { requireAccessAuth } from "./access-auth";
 
 export interface ThemesEnv {
   THEMES: KVNamespace;
@@ -131,6 +135,8 @@ export async function handleThemes(
 
   const writeMatch = path.match(WRITE_PATH);
   if (writeMatch) {
+    const denied = requireAccessAuth(request);
+    if (denied) return denied;
     const slug = decodeURIComponent(writeMatch[1]);
     if (!isValidSlug(slug)) return badRequest("invalid slug");
     if (request.method === "POST") return handleWrite(slug, request, env);

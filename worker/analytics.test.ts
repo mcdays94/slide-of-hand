@@ -15,6 +15,18 @@ import {
   type AnalyticsEnv,
 } from "./analytics";
 
+/**
+ * Construct a Request with the `cf-access-authenticated-user-email` header
+ * already set, simulating a request that has cleared Cloudflare Access.
+ * Used for admin-endpoint tests; for unauthenticated tests use plain
+ * `new Request(...)` to verify the 403 path.
+ */
+function adminRequest(input: string | URL, init: RequestInit = {}): Request {
+  const headers = new Headers(init.headers);
+  headers.set("cf-access-authenticated-user-email", "test@example.com");
+  return new Request(input, { ...init, headers });
+}
+
 class FakeAnalytics {
   events: AnalyticsDataPoint[] = [];
   shouldThrow = false;
@@ -233,7 +245,7 @@ describe("GET /api/admin/analytics/<slug>", () => {
 
     const { env } = makeEnv();
     const res = await call(
-      new Request("https://example.com/api/admin/analytics/hello"),
+      adminRequest("https://example.com/api/admin/analytics/hello"),
       env,
     );
     expect(res.status).toBe(200);
@@ -268,14 +280,14 @@ describe("GET /api/admin/analytics/<slug>", () => {
 
     const { env } = makeEnv();
     await call(
-      new Request("https://example.com/api/admin/analytics/hello"),
+      adminRequest("https://example.com/api/admin/analytics/hello"),
       env,
     );
     expect(fetchMock.mock.calls[0]![1]!.body).toContain("INTERVAL '7' DAY");
 
     fetchMock.mockClear();
     await call(
-      new Request(
+      adminRequest(
         "https://example.com/api/admin/analytics/hello?range=24h",
       ),
       env,
@@ -294,7 +306,7 @@ describe("GET /api/admin/analytics/<slug>", () => {
 
     const { env } = makeEnv();
     const res = await call(
-      new Request(
+      adminRequest(
         "https://example.com/api/admin/analytics/hello?range=90d",
       ),
       env,
@@ -333,11 +345,11 @@ describe("GET /api/admin/analytics/<slug>", () => {
 
     const { env } = makeEnv();
     const res = await call(
-      new Request("https://example.com/api/admin/analytics/hello"),
+      adminRequest("https://example.com/api/admin/analytics/hello"),
       env,
     );
     expect(res.status).toBe(200);
-    expect(res.headers.get("cache-control")).toContain("max-age=300");
+    expect(res.headers.get("cache-control")).toBe("private, max-age=60");
     const body = (await res.json()) as {
       slug: string;
       range: string;
@@ -383,7 +395,7 @@ describe("GET /api/admin/analytics/<slug>", () => {
 
     const { env } = makeEnv();
     const res = await call(
-      new Request("https://example.com/api/admin/analytics/hello"),
+      adminRequest("https://example.com/api/admin/analytics/hello"),
       env,
     );
     expect(res.status).toBe(200);
@@ -405,7 +417,7 @@ describe("GET /api/admin/analytics/<slug>", () => {
   it("rejects an invalid slug with 400", async () => {
     const { env } = makeEnv();
     const res = await call(
-      new Request("https://example.com/api/admin/analytics/Bad..Slug"),
+      adminRequest("https://example.com/api/admin/analytics/Bad..Slug"),
       env,
     );
     expect(res.status).toBe(400);
@@ -422,7 +434,7 @@ describe("GET /api/admin/analytics/<slug>", () => {
 
     const { env } = makeEnv();
     const res = await call(
-      new Request("https://example.com/api/admin/analytics/hello"),
+      adminRequest("https://example.com/api/admin/analytics/hello"),
       env,
     );
     expect(res.status).toBe(502);
@@ -431,7 +443,7 @@ describe("GET /api/admin/analytics/<slug>", () => {
   it("returns 502 when CF_API_TOKEN is missing", async () => {
     const { env } = makeEnv({ CF_API_TOKEN: undefined });
     const res = await call(
-      new Request("https://example.com/api/admin/analytics/hello"),
+      adminRequest("https://example.com/api/admin/analytics/hello"),
       env,
     );
     expect(res.status).toBe(502);
@@ -440,7 +452,7 @@ describe("GET /api/admin/analytics/<slug>", () => {
   it("returns 405 for POST on the read endpoint", async () => {
     const { env } = makeEnv();
     const res = await call(
-      new Request("https://example.com/api/admin/analytics/hello", {
+      adminRequest("https://example.com/api/admin/analytics/hello", {
         method: "POST",
       }),
       env,
@@ -457,5 +469,43 @@ describe("routing", () => {
       env,
     );
     expect(res).toBeNull();
+  });
+});
+
+describe("Access auth defense-in-depth", () => {
+  it("GET /api/admin/analytics/<slug> returns 403 without cf-access-authenticated-user-email header", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { env } = makeEnv();
+    const res = await call(
+      // Plain new Request — NO auth header
+      new Request("https://example.com/api/admin/analytics/hello"),
+      env,
+    );
+    expect(res.status).toBe(403);
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toMatch(/Cloudflare Access/i);
+    // SQL API must NOT have been called.
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("public POST /api/beacon still works without auth header", async () => {
+    const { env, ae } = makeEnv();
+    const res = await call(
+      new Request("https://example.com/api/beacon", {
+        method: "POST",
+        body: JSON.stringify({
+          slug: "hello",
+          slideId: "cover",
+          eventType: "view",
+          sessionId: "anonymous-session-1",
+        }),
+      }),
+      env,
+    );
+    expect(res.status).toBe(204);
+    expect(ae.events.length).toBe(1);
   });
 });
