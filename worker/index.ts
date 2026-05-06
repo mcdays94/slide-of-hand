@@ -12,14 +12,17 @@
  *     `/api/admin/themes/<slug>` (Access-gated write) — `worker/themes.ts`
  *   - `/api/manifests/<slug>` (public read) and
  *     `/api/admin/manifests/<slug>` (Access-gated write) — `worker/manifests.ts`
+ *   - `/api/beacon` (public ingestion) and
+ *     `/api/admin/analytics/<slug>` (Access-gated read) — `worker/analytics.ts`
  *
  * Cloudflare Access enforces auth at the edge for everything under
  * `/admin/*`; the Worker does not validate JWTs itself.
  */
 import { handleThemes, type ThemesEnv } from "./themes";
 import { handleManifests, type ManifestsEnv } from "./manifests";
+import { handleAnalytics, type AnalyticsEnv } from "./analytics";
 
-export interface Env extends ThemesEnv, ManifestsEnv {
+export interface Env extends ThemesEnv, ManifestsEnv, AnalyticsEnv {
   ASSETS: Fetcher;
 }
 
@@ -29,6 +32,8 @@ export default {
     if (themesResponse) return themesResponse;
     const manifestsResponse = await handleManifests(request, env);
     if (manifestsResponse) return manifestsResponse;
+    const analyticsResponse = await handleAnalytics(request, env);
+    if (analyticsResponse) return analyticsResponse;
     return env.ASSETS.fetch(request);
   },
 } satisfies ExportedHandler<Env>;

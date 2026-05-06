@@ -374,6 +374,177 @@ makes that one click.
 
 ---
 
+## Analytics (Cloudflare Analytics Engine)
+
+Per-deck view counts, time-on-slide, phase advances, and overview
+jumps are persisted to a Cloudflare Analytics Engine dataset and read
+back via the Cloudflare SQL API. The author dashboard lives at
+`/admin/decks/<slug>/analytics` (Access-gated).
+
+The binding lives in `wrangler.jsonc`:
+
+```jsonc
+"analytics_engine_datasets": [
+  {
+    "binding": "ANALYTICS",
+    "dataset": "slide_of_hand_views"
+  }
+]
+```
+
+The dataset is created on first write — no pre-provisioning needed.
+
+### One-time setup: API token + secret
+
+The analytics dashboard reads from the Cloudflare SQL API on the author's
+behalf. The Worker calls
+`POST https://api.cloudflare.com/client/v4/accounts/{account_id}/analytics_engine/sql`
+with a Bearer token. We hold that token as a Worker secret.
+
+1. **Create a Cloudflare API token** at
+   <https://dash.cloudflare.com/profile/api-tokens>:
+   - Click **Create Token → Custom token**.
+   - **Permissions:** `Account` → `Account Analytics` → `Read`
+   - **Account Resources:** Include → the `lusostreams.com` account
+     (`1bcef46cbe9172d2569dcf7039048842`)
+   - **Client IP Address Filtering / TTL:** leave default.
+   - Click **Continue to summary → Create Token**, copy the value
+     immediately (it is shown once).
+
+2. **Push it to the Worker as a secret:**
+
+   ```bash
+   npx wrangler secret put CF_API_TOKEN
+   # Paste the token when prompted; press Enter.
+   ```
+
+   The secret is encrypted at rest in Cloudflare's edge config and
+   surfaced to the Worker as `env.CF_API_TOKEN`.
+
+3. **Verify** by visiting
+   `https://slideofhand.lusostreams.com/admin/decks/hello/analytics`.
+   With no traffic yet you'll see the empty state ("No views yet —
+   share the public URL with someone."). After visiting the public
+   `/decks/hello` page in another tab and walking a few slides, wait
+   ~60 seconds (AE eventual consistency) and the dashboard populates.
+
+### Local dev: `.dev.vars`
+
+`wrangler dev` reads worker secrets from a gitignored `.dev.vars` file
+at the repo root. Create it on first local run:
+
+```bash
+cat > .dev.vars <<'EOF'
+CF_API_TOKEN=paste-the-same-account-analytics-read-token-here
+EOF
+```
+
+The file is in `.gitignore` (along with `.env*`) so it never reaches
+the repo. `wrangler dev --port=5212` will surface the secret to the
+Worker, and the dashboard works end-to-end against your dev machine.
+
+> **Note:** AE writes from `wrangler dev` go to the same production
+> dataset (`slide_of_hand_views`) — there is no preview AE namespace.
+> The frontend hook gates beacons on `import.meta.env.DEV &&
+> __PROJECT_ROOT__.length > 0`, so author dev runs do **not** pollute
+> production data. If you want to test the ingestion path during dev,
+> hit `POST /api/beacon` directly with `curl`.
+
+### Event schema
+
+All events share four `blobs` (string fields) and two `doubles`
+(numeric fields). Schema changes must be **additive only** — never
+reuse a slot.
+
+| Slot | Field | Notes |
+|---|---|---|
+| `blob1` | `deckSlug` | also used as the sampled `index` |
+| `blob2` | `slideId` | kebab-case, matches the source `id` |
+| `blob3` | `eventType` | `view` / `slide_advance` / `phase_advance` / `jump` / `overview_open` |
+| `blob4` | `sessionId` | per-tab UUID; opaque grouping key |
+| `double1` | `durationMs` | meaningful for `slide_advance` only |
+| `double2` | `phaseIndex` | meaningful for `phase_advance` only |
+
+### Sample SQL queries
+
+The dashboard issues three queries per page load, all against the
+ClickHouse-style SQL API. You can run them ad-hoc from
+<https://dash.cloudflare.com/?to=/:account/workers-and-pages/analytics-engine>:
+
+```sql
+-- Per-slide stats for a deck, last 7 days
+SELECT
+  blob2 AS slideId,
+  countIf(blob3 = 'view') AS views,
+  quantileTDigestIf(0.5)(double1, blob3 = 'slide_advance') AS medianMs,
+  countIf(blob3 = 'phase_advance') AS phases,
+  countIf(blob3 = 'jump') AS jumps
+FROM slide_of_hand_views
+WHERE blob1 = 'hello'
+  AND timestamp > NOW() - INTERVAL '7' DAY
+GROUP BY slideId
+ORDER BY views DESC
+FORMAT JSON
+```
+
+```sql
+-- Daily view counts
+SELECT
+  formatDateTime(toDate(timestamp), '%Y-%m-%d') AS date,
+  countIf(blob3 = 'view') AS views
+FROM slide_of_hand_views
+WHERE blob1 = 'hello'
+  AND timestamp > NOW() - INTERVAL '30' DAY
+GROUP BY date
+ORDER BY date ASC
+FORMAT JSON
+```
+
+### Privacy
+
+- **No cookies.** No user identifiers.
+- **No IP storage.** Cloudflare auto-strips request IPs from AE writes
+  unless explicitly written, and we never call `event.cf.ip` or pass
+  it as a blob.
+- **Session ID is per-tab.** It's a `crypto.randomUUID()` held in
+  `sessionStorage` (NOT `localStorage`), so it resets per browser
+  session. The Worker treats it as an opaque grouping key.
+- **No fingerprinting.** No User-Agent capture, no screen size, no
+  language headers.
+
+### Eventual consistency
+
+Analytics Engine batches writes globally. Expect a 30–60 second lag
+between a beacon firing and the SQL API observing it. The dashboard
+edge-caches results for 5 minutes (`cache-control: public, max-age=300`)
+because that's faster than AE's freshness anyway, and it keeps
+dashboard reloads instant.
+
+### Inspecting from the CLI
+
+The `wrangler` CLI does not yet have first-class AE inspection
+commands. Use the SQL API directly:
+
+```bash
+curl -X POST \
+  "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/analytics_engine/sql" \
+  -H "Authorization: Bearer ${CF_API_TOKEN}" \
+  -H "content-type: text/plain" \
+  --data "SELECT count() FROM slide_of_hand_views FORMAT JSON"
+```
+
+### Forking / fresh installs
+
+The dataset name is hard-coded as `slide_of_hand_views` in
+`wrangler.jsonc` and `worker/analytics.ts`. To rename for a fork:
+
+1. Change both occurrences.
+2. Redeploy. The new dataset is created on first write.
+3. There is no migration path from an old dataset — the old data
+   stays where it was, the new one starts empty.
+
+---
+
 ## Reference
 
 - **Production URL:** <https://slideofhand.lusostreams.com>
