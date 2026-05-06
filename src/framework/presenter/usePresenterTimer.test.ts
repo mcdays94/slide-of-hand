@@ -118,12 +118,12 @@ describe("readOrInitStart", () => {
     const { data, storage } = makeStorage();
     const start = readOrInitStart("hello", storage, 1_000);
     expect(start).toBe(1_000);
-    expect(data["reaction-deck-elapsed:hello"]).toBe("1000");
+    expect(data["slide-of-hand-deck-elapsed:hello"]).toBe("1000");
   });
 
   it("reads the persisted value across calls (refresh case)", () => {
     const { storage } = makeStorage({
-      "reaction-deck-elapsed:hello": "500",
+      "slide-of-hand-deck-elapsed:hello": "500",
     });
     expect(readOrInitStart("hello", storage, 9_999)).toBe(500);
   });
@@ -136,7 +136,7 @@ describe("readOrInitStart", () => {
     const { data, storage } = makeStorage();
     readOrInitStart("a", storage, 100);
     readOrInitStart("b", storage, 200);
-    expect(data["reaction-deck-elapsed:a"]).toBe("100");
-    expect(data["reaction-deck-elapsed:b"]).toBe("200");
+    expect(data["slide-of-hand-deck-elapsed:a"]).toBe("100");
+    expect(data["slide-of-hand-deck-elapsed:b"]).toBe("200");
   });
 });

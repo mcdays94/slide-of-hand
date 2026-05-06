@@ -124,7 +124,7 @@ export function PresenterTools() {
 // child copy reads the same URL override and renders the toolset directly.
 // ──────────────────────────────────────────────────────────────────────────
 
-const AUTO_MOUNT_HOST_ID = "reaction-presenter-tools-override";
+const AUTO_MOUNT_HOST_ID = "slide-of-hand-presenter-tools-override";
 let autoMountRoot: Root | null = null;
 
 function ensureAutoMount() {

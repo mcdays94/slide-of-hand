@@ -12,19 +12,19 @@ import { pageEntrance, sectionSlideUp } from "@/lib/motion";
 
 export const coverSlide: SlideDef = {
   id: "cover",
-  title: "Hello, ReAction",
+  title: "Hello, Slide of Hand",
   layout: "cover",
   phases: 1,
   runtimeSeconds: 25,
   notes: (
     <>
       <p>
-        Welcome the audience to the ReAction demo deck. Set expectations: this
+        Welcome the audience to the Slide of Hand demo deck. Set expectations: this
         is a fast tour, no live-coding here.
       </p>
       <p>What you'll cover, in order:</p>
       <ul className="list-disc space-y-1 pl-6">
-        <li>What ReAction is, in one sentence</li>
+        <li>What Slide of Hand is, in one sentence</li>
         <li>Phase reveals — the only animation primitive you'll author</li>
         <li>Layouts — four modes, no theme system</li>
         <li>Q&amp;A / repo link</li>
@@ -42,7 +42,7 @@ export const coverSlide: SlideDef = {
         transition={pageEntrance}
         className="cf-tag"
       >
-        ReAction · Demo
+        Slide of Hand · Demo
       </motion.p>
 
       <motion.h1
@@ -51,7 +51,7 @@ export const coverSlide: SlideDef = {
         transition={sectionSlideUp}
         className="text-7xl font-medium tracking-[-0.04em] text-cf-text sm:text-8xl"
       >
-        Hello, ReAction
+        Hello, Slide of Hand
       </motion.h1>
 
       <Reveal at={1}>

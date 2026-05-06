@@ -1,12 +1,12 @@
 /**
- * Cloudflare Worker config for ReAction.
+ * Cloudflare Worker config for Slide of Hand.
  *
  * v1 ships as a pure Static Assets app: the Worker entry serves the bundled
  * SPA from `dist/` for every route. No state stores, no AI binding, no Worker
  * Loader — those are added per-deck only when a specific deck demonstrably
  * needs them.
  *
- * Production lives at https://reaction.lusostreams.com (Custom Domain).
+ * Production lives at https://slide-of-hand.lusostreams.com (Custom Domain).
  * `/admin/*` is gated by Cloudflare Access — see docs/deploy.md.
  *
  * Custom Domain syntax note: per the Wrangler config schema and Cloudflare
@@ -15,14 +15,14 @@
  */
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "reaction",
+  "name": "slide-of-hand",
   "main": "worker/index.ts",
   "account_id": "1bcef46cbe9172d2569dcf7039048842",
   "compatibility_date": "2025-04-01",
   "compatibility_flags": ["nodejs_compat"],
   "routes": [
     {
-      "pattern": "reaction.lusostreams.com",
+      "pattern": "slide-of-hand.lusostreams.com",
       "custom_domain": true
     }
   ],

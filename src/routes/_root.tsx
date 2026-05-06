@@ -6,7 +6,7 @@
  * here defensively — the index page's contract is "newest first" regardless
  * of registry ordering. Each card links to the viewer at `/decks/<slug>`.
  *
- * The page title is reset to "ReAction" on mount — the deck viewer rewrites
+ * The page title is reset to "Slide of Hand" on mount — the deck viewer rewrites
  * it on navigate, so we must restore it when returning to the index.
  */
 
@@ -25,7 +25,7 @@ export default function Root() {
 
   useEffect(() => {
     if (typeof document !== "undefined") {
-      document.title = "ReAction";
+      document.title = "Slide of Hand";
     }
   }, []);
 
@@ -33,7 +33,7 @@ export default function Root() {
     <main className="mx-auto flex min-h-screen w-full max-w-6xl flex-col gap-12 px-6 py-16 sm:px-8 sm:py-24">
       <header className="flex flex-col gap-4">
         <div className="flex items-start justify-between gap-4">
-          <p className="cf-tag">ReAction</p>
+          <p className="cf-tag">Slide of Hand</p>
           <Link
             to="/admin"
             className="cf-btn-ghost"

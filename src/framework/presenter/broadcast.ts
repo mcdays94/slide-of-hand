@@ -2,7 +2,7 @@
  * Cross-window state sync via `BroadcastChannel`.
  *
  * The viewer and presenter window agree on a single channel name per deck:
- *   `reaction-deck-<slug>`
+ *   `slide-of-hand-deck-<slug>`
  *
  * Either side can post a `BroadcastMessage` and receive messages from the
  * other. The hook owns one channel per `deckSlug`, exposes a stable `send`
@@ -19,7 +19,7 @@ import type { BroadcastMessage } from "@/framework/viewer/types";
 
 /** Stable channel name for a given deck slug. */
 export function deckChannelName(slug: string): string {
-  return `reaction-deck-${slug}`;
+  return `slide-of-hand-deck-${slug}`;
 }
 
 export interface DeckBroadcast {

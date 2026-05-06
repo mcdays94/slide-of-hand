@@ -96,7 +96,7 @@ export function deckReducer(
   }
 }
 
-const STORAGE_PREFIX = "reaction-deck-cursor:";
+const STORAGE_PREFIX = "slide-of-hand-deck-cursor:";
 
 interface ParsedUrlCursor {
   slide?: number;

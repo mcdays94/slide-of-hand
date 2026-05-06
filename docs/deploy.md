@@ -1,13 +1,13 @@
-# Deploying ReAction
+# Deploying Slide of Hand
 
-Production lives at **<https://reaction.lusostreams.com>**, served by the `reaction` Worker on the `lusostreams.com` Cloudflare zone. This runbook covers:
+Production lives at **<https://slide-of-hand.lusostreams.com>**, served by the `slide-of-hand` Worker on the `lusostreams.com` Cloudflare zone. This runbook covers:
 
 - One-time setup (Custom Domain + Cloudflare Access)
 - Routine redeploys
 - Verification
 - Rollback
 
-It assumes you are Miguel, deploying from a checkout of `mcdays94/ReAction` with `wrangler login` already done.
+It assumes you are Miguel, deploying from a checkout of `mcdays94/slide-of-hand` with `wrangler login` already done.
 
 ---
 
@@ -46,10 +46,10 @@ That's it. Wrangler reads `wrangler.jsonc` and:
 
 - Builds the SPA into `dist/`
 - Deploys the Worker
-- Reconciles the Custom Domain route (`reaction.lusostreams.com`)
+- Reconciles the Custom Domain route (`slide-of-hand.lusostreams.com`)
 - Uploads Static Assets bundle
 
-Open <https://reaction.lusostreams.com> and confirm the new build is live.
+Open <https://slide-of-hand.lusostreams.com> and confirm the new build is live.
 
 ---
 
@@ -61,7 +61,7 @@ These steps are only needed on the very first production deploy (or if the Worke
 
 - `lusostreams.com` is an active Cloudflare zone in account `1bcef46cbe9172d2569dcf7039048842`.
 - `wrangler whoami` returns the account that owns the zone.
-- The hostname `reaction.lusostreams.com` does **not** already have a CNAME or A record. (If it does, delete it via **DNS → Records** before continuing — Custom Domains refuse to attach to a hostname with an existing CNAME.)
+- The hostname `slide-of-hand.lusostreams.com` does **not** already have a CNAME or A record. (If it does, delete it via **DNS → Records** before continuing — Custom Domains refuse to attach to a hostname with an existing CNAME.)
 
 ### 2. First deploy — let Wrangler create the Custom Domain
 
@@ -70,7 +70,7 @@ These steps are only needed on the very first production deploy (or if the Worke
 ```jsonc
 "routes": [
   {
-    "pattern": "reaction.lusostreams.com",
+    "pattern": "slide-of-hand.lusostreams.com",
     "custom_domain": true
   }
 ]
@@ -84,14 +84,14 @@ npm run deploy
 
 On the first deploy, Wrangler will:
 
-- Create the Worker (if it doesn't exist) at `reaction.workers.dev`
-- Attach `reaction.lusostreams.com` as a Custom Domain
+- Create the Worker (if it doesn't exist) at `slide-of-hand.workers.dev`
+- Attach `slide-of-hand.lusostreams.com` as a Custom Domain
 - Auto-create the proxied DNS record on the zone
 - Issue an Advanced Certificate via Cloudflare's certificate authority
 
-Verify in the dashboard at **Workers & Pages → reaction → Settings → Domains & Routes**: you should see `reaction.lusostreams.com` listed under **Custom Domains** with status **Active**.
+Verify in the dashboard at **Workers & Pages → slide-of-hand → Settings → Domains & Routes**: you should see `slide-of-hand.lusostreams.com` listed under **Custom Domains** with status **Active**.
 
-> **Fallback path (dashboard-driven).** If for any reason the Wrangler-driven attachment fails (e.g. the hostname is not in a zone Wrangler can manage from this account), attach the Custom Domain manually via **Workers & Pages → reaction → Settings → Domains & Routes → Add → Custom Domain** and re-run `npm run deploy`. The `routes` entry in `wrangler.jsonc` is idempotent — it will reconcile against the dashboard state without creating duplicates.
+> **Fallback path (dashboard-driven).** If for any reason the Wrangler-driven attachment fails (e.g. the hostname is not in a zone Wrangler can manage from this account), attach the Custom Domain manually via **Workers & Pages → slide-of-hand → Settings → Domains & Routes → Add → Custom Domain** and re-run `npm run deploy`. The `routes` entry in `wrangler.jsonc` is idempotent — it will reconcile against the dashboard state without creating duplicates.
 
 ### 3. Configure Cloudflare Access for `/admin/*`
 
@@ -99,9 +99,9 @@ Cloudflare Access has no Wrangler-side config. This step is dashboard-only.
 
 1. Go to **Zero Trust → Access → Applications → Add an application → Self-hosted**.
 2. Application configuration:
-   - **Application name:** `ReAction Admin`
+   - **Application name:** `Slide of Hand Admin`
    - **Session duration:** `24 hours`
-   - **Application domain:** `reaction.lusostreams.com`
+   - **Application domain:** `slide-of-hand.lusostreams.com`
    - **Path:** `/admin/*` (also covers `/admin` itself; Access matches the path prefix)
 3. Identity providers:
    - Enable the **One-time PIN** (email) provider, or whatever IdP you prefer (GitHub, Google, etc.)
@@ -112,27 +112,27 @@ Cloudflare Access has no Wrangler-side config. This step is dashboard-only.
    - Leave everything else default
 5. Save.
 
-After save, hitting any path matching `reaction.lusostreams.com/admin/*` will trigger the Access challenge. The public deck index (`/`) and the deck viewer (`/decks/<slug>`) remain unauthenticated.
+After save, hitting any path matching `slide-of-hand.lusostreams.com/admin/*` will trigger the Access challenge. The public deck index (`/`) and the deck viewer (`/decks/<slug>`) remain unauthenticated.
 
 ### 4. Verify production end-to-end
 
 ```bash
 # Public landing page — should return 200 and render the deck index
-curl -I https://reaction.lusostreams.com/
+curl -I https://slide-of-hand.lusostreams.com/
 
 # Hello deck — should return 200 unauthenticated
-curl -I https://reaction.lusostreams.com/decks/hello
+curl -I https://slide-of-hand.lusostreams.com/decks/hello
 
 # Admin — should return Access challenge (302 to a *.cloudflareaccess.com URL,
 # or a 401 / Access HTML page depending on Access policy)
-curl -I https://reaction.lusostreams.com/admin
+curl -I https://slide-of-hand.lusostreams.com/admin
 ```
 
 Then in a browser:
 
-1. Visit <https://reaction.lusostreams.com/> — public deck index loads.
+1. Visit <https://slide-of-hand.lusostreams.com/> — public deck index loads.
 2. Click into the **hello** deck, walk through with `→`, exercise `O` overview.
-3. Visit <https://reaction.lusostreams.com/admin> — Access prompt appears, authenticate with the email allow-listed in the policy.
+3. Visit <https://slide-of-hand.lusostreams.com/admin> — Access prompt appears, authenticate with the email allow-listed in the policy.
 4. Once through, the admin viewer loads with the same deck list (public decks only — privates are not bundled in the production build).
 
 If any of those fail, see **Troubleshooting** below.
@@ -184,15 +184,15 @@ If the issue is in the Static Assets bundle (rather than the Worker code), a rol
 
 ### `npm run deploy` fails with `"Cannot create custom domain — hostname already exists"`
 
-Something on `reaction.lusostreams.com` is already bound. Likely causes:
+Something on `slide-of-hand.lusostreams.com` is already bound. Likely causes:
 
-1. A pre-existing CNAME or A record at `reaction` on the zone — go to **DNS → Records** and delete it.
+1. A pre-existing CNAME or A record at `slide-of-hand` on the zone — go to **DNS → Records** and delete it.
 2. The Custom Domain is attached to a different Worker — go to **Workers & Pages**, find it, detach, then redeploy.
 
 ### Public site loads, but `/admin` does not show the Access challenge
 
 - Confirm the Access application is configured for **path** `/admin/*` (not `/admin` exact).
-- Confirm the application's domain is exactly `reaction.lusostreams.com` (not `www.reaction.lusostreams.com` or similar).
+- Confirm the application's domain is exactly `slide-of-hand.lusostreams.com` (not `www.slide-of-hand.lusostreams.com` or similar).
 - Cloudflare Access changes can take ~30 seconds to propagate. Wait, then try in a fresh incognito window (Access caches the JWT in a cookie).
 
 ### Admin returns 200 with no content / empty deck list
@@ -233,9 +233,9 @@ npx wrangler kv namespace create THEMES --preview
 
 ### How overrides flow in production
 
-1. **Author** opens `https://reaction.lusostreams.com/admin/decks/<slug>`, presses `T`, drags a colour picker (live preview, no save), clicks **Save**.
+1. **Author** opens `https://slide-of-hand.lusostreams.com/admin/decks/<slug>`, presses `T`, drags a colour picker (live preview, no save), clicks **Save**.
 2. **Worker** receives `POST /api/admin/themes/<slug>` (Access-gated — only the author's email can hit this), validates the body shape, writes `theme:<slug>` to KV.
-3. **Public visitors** at `https://reaction.lusostreams.com/decks/<slug>` fetch `GET /api/themes/<slug>` on viewer mount; the override applies as `:root` CSS custom properties. The read endpoint returns `cache-control: public, max-age=60`, so save-to-visible latency is bounded by 60 seconds at the edge plus KV's eventual-consistency window (~30–60 s globally).
+3. **Public visitors** at `https://slide-of-hand.lusostreams.com/decks/<slug>` fetch `GET /api/themes/<slug>` on viewer mount; the override applies as `:root` CSS custom properties. The read endpoint returns `cache-control: public, max-age=60`, so save-to-visible latency is bounded by 60 seconds at the edge plus KV's eventual-consistency window (~30–60 s globally).
 
 ### Inspecting / managing entries
 
@@ -277,12 +277,12 @@ Wrangler serves the bundled SPA + `/api/*` endpoints with the **preview** KV nam
 
 ## Reference
 
-- **Production URL:** <https://reaction.lusostreams.com>
-- **`*.workers.dev` URL** (always live as a fallback): <https://reaction.<workers-subdomain>.workers.dev>
+- **Production URL:** <https://slide-of-hand.lusostreams.com>
+- **`*.workers.dev` URL** (always live as a fallback): <https://slide-of-hand.<workers-subdomain>.workers.dev>
 - **Account:** `1bcef46cbe9172d2569dcf7039048842`
-- **Worker name:** `reaction`
+- **Worker name:** `slide-of-hand`
 - **Zone:** `lusostreams.com`
-- **Access app:** `ReAction Admin` (Self-hosted, applied to `reaction.lusostreams.com/admin/*`)
+- **Access app:** `Slide of Hand Admin` (Self-hosted, applied to `slide-of-hand.lusostreams.com/admin/*`)
 
 Cloudflare docs:
 

@@ -10,7 +10,7 @@ import { Reveal } from "@/framework/viewer/Reveal";
 
 export const whatIsThisSlide: SlideDef = {
   id: "what-is-this",
-  title: "What is ReAction?",
+  title: "What is Slide of Hand?",
   layout: "default",
   sectionLabel: "Overview",
   sectionNumber: "01",
@@ -19,7 +19,7 @@ export const whatIsThisSlide: SlideDef = {
   notes: (
     <>
       <p>
-        Frame the contrast with markdown-based deck tools. ReAction is{" "}
+        Frame the contrast with markdown-based deck tools. Slide of Hand is{" "}
         <strong>JSX-first</strong>: each slide is a typed React component,
         each deck is a folder of TypeScript files.
       </p>
@@ -39,7 +39,7 @@ export const whatIsThisSlide: SlideDef = {
       <p>
         If anyone asks how this differs from cf-slides:{" "}
         <a
-          href="https://github.com/mcdays94/ReAction#why"
+          href="https://github.com/mcdays94/slide-of-hand#why"
           className="text-cf-orange underline"
         >
           repo README
@@ -51,7 +51,7 @@ export const whatIsThisSlide: SlideDef = {
   render: () => (
     <div className="mx-auto flex max-w-3xl flex-col gap-6">
       <h2 className="text-5xl font-medium tracking-[-0.03em] text-cf-text">
-        What is ReAction?
+        What is Slide of Hand?
       </h2>
 
       <p className="text-lg leading-relaxed text-cf-text-muted">

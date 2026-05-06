@@ -50,7 +50,7 @@ export function Laser({ slug, onActiveChange }: LaserProps) {
   // Open / close channel only when slug changes.
   useEffect(() => {
     if (!slug || typeof BroadcastChannel === "undefined") return;
-    const ch = new BroadcastChannel(`reaction-deck-${slug}`);
+    const ch = new BroadcastChannel(`slide-of-hand-deck-${slug}`);
     channelRef.current = ch;
     return () => {
       ch.close();
