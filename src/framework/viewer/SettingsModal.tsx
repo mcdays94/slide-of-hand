@@ -23,7 +23,7 @@ import {
   motion,
   type HTMLMotionProps,
 } from "framer-motion";
-import { useId, type MouseEvent, type ReactNode } from "react";
+import { useEffect, useId, type MouseEvent, type ReactNode } from "react";
 import { easeStandard } from "@/lib/motion";
 import { useSettings } from "./useSettings";
 
@@ -110,6 +110,24 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const onBackdropClick = (e: MouseEvent<HTMLDivElement>) => {
     if (e.target === e.currentTarget) onClose();
   };
+
+  // Esc-to-close handled inside the modal itself. <Deck>'s top-level
+  // keydown handler also calls closeOverlays for Esc, but it bails
+  // early if focus is on a `data-interactive` element (e.g. the toggle
+  // we just clicked). Listening here too makes the close reliable
+  // regardless of focus.
+  useEffect(() => {
+    if (!open) return;
+    if (typeof window === "undefined") return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
 
   // The modal is mounted UNCONDITIONALLY so AnimatePresence can play the
   // exit animation. We render nothing (no panel, no overlay) when

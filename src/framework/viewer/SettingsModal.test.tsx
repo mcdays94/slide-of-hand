@@ -70,6 +70,32 @@ describe("<SettingsModal>", () => {
     expect(toggle.hasAttribute("data-interactive")).toBe(true);
   });
 
+  it("Esc keydown calls onClose (own listener, focus-independent)", () => {
+    const onClose = vi.fn();
+    render(
+      <SettingsProvider>
+        <SettingsModal open={true} onClose={onClose} />
+      </SettingsProvider>,
+    );
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("Esc keydown is ignored when modal is closed", () => {
+    const onClose = vi.fn();
+    render(
+      <SettingsProvider>
+        <SettingsModal open={false} onClose={onClose} />
+      </SettingsProvider>,
+    );
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    });
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
   it("close button calls onClose", () => {
     const onClose = vi.fn();
     render(
