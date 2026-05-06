@@ -31,6 +31,9 @@ import { Overview } from "./Overview";
 import { KeyboardHelp } from "./KeyboardHelp";
 import { ThemeSidebar } from "./ThemeSidebar";
 import { useDeckTheme } from "./useDeckTheme";
+import { SlideManager } from "./SlideManager";
+import { useDeckManifest } from "./useDeckManifest";
+import { mergeSlides } from "@/lib/manifest-merge";
 import { usePresenterMode } from "@/framework/presenter/mode";
 import { PresenterAffordances } from "@/framework/presenter/PresenterAffordances";
 import { slideTransition } from "@/lib/motion";
@@ -80,9 +83,19 @@ function shouldSuppressAdvance(target: EventTarget | null): boolean {
 }
 
 export function Deck({ slug, title, slides }: DeckProps) {
+  // ── Per-deck slide manifest (issue #13 / Bucket B2) ─────────────────────
+  // The manifest layers reorder + hidden + title + notes overrides on top
+  // of the source slide list. Public viewers fetch + apply silently; the
+  // <SlideManager> sidebar (admin only) edits + persists.
+  const manifestHook = useDeckManifest(slug);
+  const effectiveSlides = useMemo(
+    () => mergeSlides(slides, manifestHook.applied),
+    [slides, manifestHook.applied],
+  );
+
   const visibleSlides = useMemo(
-    () => slides.filter((s) => !s.hidden),
-    [slides],
+    () => effectiveSlides.filter((s) => !s.hidden),
+    [effectiveSlides],
   );
 
   const deckShape = useMemo(
@@ -123,34 +136,53 @@ export function Deck({ slug, title, slides }: DeckProps) {
   const [overviewOpen, setOverviewOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [themeSidebarOpen, setThemeSidebarOpen] = useState(false);
+  const [slideManagerOpen, setSlideManagerOpen] = useState(false);
 
   const closeOverlays = useCallback(() => {
     setOverviewOpen(false);
     setHelpOpen(false);
     setThemeSidebarOpen(false);
+    setSlideManagerOpen(false);
   }, []);
 
   const toggleOverview = useCallback(() => {
     setOverviewOpen((o) => !o);
     setHelpOpen(false);
     setThemeSidebarOpen(false);
+    setSlideManagerOpen(false);
   }, []);
 
   const toggleHelp = useCallback(() => {
     setHelpOpen((h) => !h);
     setOverviewOpen(false);
     setThemeSidebarOpen(false);
+    setSlideManagerOpen(false);
   }, []);
 
   const toggleThemeSidebar = useCallback(() => {
     setThemeSidebarOpen((o) => !o);
     setOverviewOpen(false);
     setHelpOpen(false);
+    setSlideManagerOpen(false);
   }, []);
 
   const closeThemeSidebar = useCallback(() => {
     setThemeSidebarOpen(false);
   }, []);
+
+  const toggleSlideManager = useCallback(() => {
+    setSlideManagerOpen((o) => !o);
+    setOverviewOpen(false);
+    setHelpOpen(false);
+    setThemeSidebarOpen(false);
+  }, []);
+
+  const closeSlideManager = useCallback(() => {
+    setSlideManagerOpen(false);
+    // Drop any in-flight draft so closing without saving reverts the
+    // visible deck to the persisted manifest.
+    manifestHook.clearDraft();
+  }, [manifestHook]);
 
   // ── Keyboard ───────────────────────────────────────────────────────────
   useEffect(() => {
@@ -218,6 +250,14 @@ export function Deck({ slug, title, slides }: DeckProps) {
             toggleThemeSidebar();
           }
           break;
+        case "m":
+        case "M":
+          // Slide manifest manager — admin (presenter mode) only.
+          if (presenterMode) {
+            e.preventDefault();
+            toggleSlideManager();
+          }
+          break;
         case "f":
         case "F":
           e.preventDefault();
@@ -230,7 +270,7 @@ export function Deck({ slug, title, slides }: DeckProps) {
           }
           break;
         case "Escape":
-          if (overviewOpen || helpOpen || themeSidebarOpen) {
+          if (overviewOpen || helpOpen || themeSidebarOpen || slideManagerOpen) {
             e.preventDefault();
             closeOverlays();
           }
@@ -250,10 +290,12 @@ export function Deck({ slug, title, slides }: DeckProps) {
     toggleHelp,
     toggleTheme,
     toggleThemeSidebar,
+    toggleSlideManager,
     presenterMode,
     overviewOpen,
     helpOpen,
     themeSidebarOpen,
+    slideManagerOpen,
     closeOverlays,
   ]);
 
@@ -262,13 +304,14 @@ export function Deck({ slug, title, slides }: DeckProps) {
 
   const onSurfaceClick = useCallback(
     (e: React.MouseEvent<HTMLDivElement>) => {
-      if (overviewOpen || helpOpen || themeSidebarOpen) return;
+      if (overviewOpen || helpOpen || themeSidebarOpen || slideManagerOpen)
+        return;
       if (shouldSuppressAdvance(e.target)) return;
       // Right-click / middle-click should never advance.
       if (e.button !== 0) return;
       next();
     },
-    [next, overviewOpen, helpOpen, themeSidebarOpen],
+    [next, overviewOpen, helpOpen, themeSidebarOpen, slideManagerOpen],
   );
 
   const slide = visibleSlides[cursor.slide];
@@ -347,6 +390,15 @@ export function Deck({ slug, title, slides }: DeckProps) {
             slug={slug}
             theme={themeOverride}
             onClose={closeThemeSidebar}
+          />
+        )}
+        {presenterMode && (
+          <SlideManager
+            open={slideManagerOpen}
+            slug={slug}
+            sourceSlides={slides}
+            manifest={manifestHook}
+            onClose={closeSlideManager}
           />
         )}
         <PresenterAffordances />
