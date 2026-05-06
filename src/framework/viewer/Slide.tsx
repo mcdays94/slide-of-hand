@@ -81,13 +81,20 @@ export function Slide({
         {children}
       </div>
 
-      {showProgress && (
-        <>
-          <StudioBadge />
-          <HintBar />
-          <ProgressBar total={total} current={index} onJump={onJump} />
-        </>
-      )}
+      {/*
+        Bottom toolbar (HintBar) and progress indicators (ProgressBar) show
+        on EVERY layout — including cover and section — so the user always
+        has navigation affordances available. The auto-hide-on-idle behaviour
+        in `AutoHideChrome` means they don't visually compete with full-bleed
+        cover content during inactivity.
+
+        StudioBadge stays gated to `default`-layout slides because it's a
+        top-left admin marker that visually conflicts with cover-slide hero
+        titles and section dividers.
+      */}
+      {showProgress && <StudioBadge />}
+      <HintBar />
+      <ProgressBar total={total} current={index} onJump={onJump} />
     </motion.section>
   );
 }

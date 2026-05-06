@@ -92,7 +92,7 @@ describe("PresenterTools", () => {
     expect(queryByTestId("tool-active-pill")).toBeNull();
   });
 
-  it("mirrors marker mode to data-tool-active=marker when toggled on", () => {
+  it("mirrors marker mode to data-tool-active=marker while E is held, clears on key-up", () => {
     const slide = document.createElement("section");
     slide.setAttribute("data-testid", "slide-shell");
     slide.setAttribute("data-slide-index", "0");
@@ -117,6 +117,7 @@ describe("PresenterTools", () => {
     );
 
     const root = document.querySelector("[data-deck-slug]");
+    // Press E (hold).
     act(() => {
       window.dispatchEvent(new KeyboardEvent("keydown", { key: "e" }));
     });
@@ -124,9 +125,9 @@ describe("PresenterTools", () => {
     expect(root?.getAttribute("data-marker-active")).toBe("true");
     expect(queryByTestId("tool-active-pill")?.textContent).toMatch(/MARKER/);
 
-    // Toggle off.
+    // Release E (hold-to-draw model).
     act(() => {
-      window.dispatchEvent(new KeyboardEvent("keydown", { key: "e" }));
+      window.dispatchEvent(new KeyboardEvent("keyup", { key: "e" }));
     });
     expect(root?.getAttribute("data-tool-active")).toBeNull();
     expect(root?.getAttribute("data-marker-active")).toBeNull();
