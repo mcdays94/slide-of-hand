@@ -1,0 +1,25 @@
+src/framework/tools/Marker.tsx
+  98a367e98b008ae5 33-50
+src/framework/tools/Marker.test.tsx
+  98a367e98b008ae5 98-102,107-111
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "82a7761446096d34689915b2b975524b25ff353b",
+  "prompts": {
+    "98a367e98b008ae5": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_2077bd95cffepOw4IvqFsV7eWM",
+        "model": "anthropic/claude-opus-4-7"
+      },
+      "human_author": "mdias",
+      "messages": [],
+      "total_additions": 28,
+      "total_deletions": 9,
+      "accepted_lines": 28,
+      "overriden_lines": 0
+    }
+  }
+}
