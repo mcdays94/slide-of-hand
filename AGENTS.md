@@ -10,7 +10,7 @@ Slide of Hand is built on the principle that **agents are first-class deck autho
 
 A self-hosted deck platform that runs on Cloudflare Workers + Static Assets. Each deck is `src/decks/<visibility>/<slug>/index.tsx` and exports a typed `DeckMeta` plus an array of `SlideDef`s. The deployed app exposes a public landing page at `/` (lists `decks/public/*`), a viewer at `/decks/<slug>`, and an Access-protected `/admin` for editing and presenter ergonomics. Customer-specific or under-NDA decks live in `decks/private/*` (gitignored, local-only). The framework primitives — `<Slide>`, `<Reveal>`, `usePhase()`, layouts, keyboard navigation, overview mode — are small, opinionated, and stay out of your way.
 
-**Production:** <https://slide-of-hand.lusostreams.com> · `/admin/*` gated by Cloudflare Access · deploy + Access runbook lives at [`docs/deploy.md`](docs/deploy.md).
+**Production:** <https://slideofhand.lusostreams.com> · `/admin/*` gated by Cloudflare Access · deploy + Access runbook lives at [`docs/deploy.md`](docs/deploy.md).
 
 ---
 

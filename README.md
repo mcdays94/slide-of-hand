@@ -4,7 +4,7 @@ JSX-first deck platform — Miguel Caetano Dias' personal portfolio of presentat
 
 A Cloudflare Workers + Static Assets app where each deck is a folder of TypeScript React files. No markdown, no directive vocabulary, no authoring ceremony. Public visitors browse curated decks at the root URL; the author edits and presents from `/admin` behind Cloudflare Access.
 
-**Production: <https://slide-of-hand.lusostreams.com>** · `/admin` is gated by Cloudflare Access.
+**Production: <https://slideofhand.lusostreams.com>** · `/admin` is gated by Cloudflare Access.
 
 ## Status
 
