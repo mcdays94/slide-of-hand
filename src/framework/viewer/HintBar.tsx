@@ -2,10 +2,14 @@
  * Bottom keyboard hint bar.
  *
  * A thin row of mono text just above the `<ProgressBar />` listing the
- * keyboard shortcuts available in the current viewer mode. Lives in the
- * auto-hide chrome group (`data-deck-chrome="hints"`) so the existing
- * `AutoHideChrome` controller fades it after 2s of cursor inactivity and
- * restores it on `mousemove` / `keydown`.
+ * keyboard shortcuts available in the current viewer mode.
+ *
+ * Visibility is gated by mouse proximity to the bottom edge of the
+ * viewport via `useNearViewportBottom()` (issue #30) — the bar is hidden
+ * by default and fades in when the cursor moves within ~80px of the
+ * bottom edge, then fades out ~800ms after the cursor leaves the zone.
+ * No more `data-deck-chrome` / `AutoHideChrome` involvement; the
+ * proximity hook is the single source of truth for this bar.
  *
  * Context-aware: P / Q / W / E (presenter window, laser, magnifier, marker)
  * are only rendered when `usePresenterMode()` is `true`. The public viewer
@@ -19,6 +23,7 @@
  */
 
 import { usePresenterMode } from "@/framework/presenter/mode";
+import { useNearViewportBottom } from "./useNearViewportEdge";
 
 interface Hint {
   /** Key affordance label, e.g. `← →` or `F`. */
@@ -46,15 +51,18 @@ const PRESENTER_HINTS: Hint[] = [
 
 export function HintBar() {
   const presenterMode = usePresenterMode();
+  const isNear = useNearViewportBottom();
   const hints = presenterMode
     ? [...PUBLIC_HINTS, ...PRESENTER_HINTS]
     : PUBLIC_HINTS;
 
   return (
     <div
-      className="pointer-events-none absolute inset-x-0 bottom-7 z-10 flex justify-center px-8"
+      className={`pointer-events-none absolute inset-x-0 bottom-7 z-10 flex justify-center px-8 transition-opacity duration-200 ease-out ${
+        isNear ? "opacity-100" : "pointer-events-none opacity-0"
+      }`}
       data-no-advance
-      data-deck-chrome="hints"
+      data-visible={isNear ? "true" : "false"}
       data-testid="hint-bar"
     >
       <p className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 font-mono text-[10px] uppercase tracking-[0.18em] text-cf-text-subtle">

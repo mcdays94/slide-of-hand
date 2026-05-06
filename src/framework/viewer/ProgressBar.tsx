@@ -4,8 +4,11 @@
  * Renders a thin row of segments — one per slide — with the current slide
  * highlighted. Click any segment to jump to that slide.
  *
- * Hidden on `cover` and `section` layouts because chrome is intentionally
- * absent there; the parent `<Slide>` decides whether to render this.
+ * Always visible, regardless of layout or idle state (issue #30). The
+ * parent `<Slide>` mounts this on every layout, and we no longer carry
+ * `data-deck-chrome` so the auto-hide-on-idle controller leaves us alone.
+ * A future settings-modal toggle to hide the bar entirely is tracked by
+ * issue #32 and is out of scope here.
  */
 
 import { motion } from "framer-motion";
@@ -23,7 +26,6 @@ export function ProgressBar({ total, current, onJump }: ProgressBarProps) {
     <div
       className="pointer-events-auto absolute inset-x-0 bottom-0 z-10 flex items-center gap-1 px-8 pb-3"
       data-no-advance
-      data-deck-chrome="progress"
       data-testid="progress-bar"
     >
       {Array.from({ length: total }, (_, i) => {
