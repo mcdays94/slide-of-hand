@@ -6,7 +6,7 @@
  * Loader — those are added per-deck only when a specific deck demonstrably
  * needs them.
  *
- * Production lives at https://slide-of-hand.lusostreams.com (Custom Domain).
+ * Production lives at https://slideofhand.lusostreams.com (Custom Domain).
  * `/admin/*` is gated by Cloudflare Access — see docs/deploy.md.
  *
  * Custom Domain syntax note: per the Wrangler config schema and Cloudflare
@@ -14,7 +14,7 @@
  * Custom Domains point all paths of a hostname to the Worker by definition.
  *
  * Rebrand transition (project rename ReAction → Slide of Hand):
- *   - Both `slide-of-hand.lusostreams.com` AND the legacy
+ *   - Both `slideofhand.lusostreams.com` AND the legacy
  *     `reaction.lusostreams.com` are kept as Custom Domains so the rename
  *     can land without breaking the live site for anyone holding the old
  *     URL. The legacy entry can be removed in a follow-up commit once the
@@ -35,7 +35,7 @@
   "compatibility_flags": ["nodejs_compat"],
   "routes": [
     {
-      "pattern": "slide-of-hand.lusostreams.com",
+      "pattern": "slideofhand.lusostreams.com",
       "custom_domain": true
     },
     {
