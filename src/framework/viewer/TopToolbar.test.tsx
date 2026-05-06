@@ -44,6 +44,36 @@ describe("<TopToolbar> (public viewer)", () => {
     expect(studio.getAttribute("href")).toBe("/admin");
   });
 
+  it("renders the always-visible Settings button in the left cluster", () => {
+    renderInRouter(
+      <PresenterModeProvider enabled={false}>
+        <TopToolbar slug="hello" currentSlide={0} currentPhase={0} />
+      </PresenterModeProvider>,
+    );
+    expect(screen.getByTestId("top-toolbar-settings")).toBeTruthy();
+  });
+
+  it("Settings button click synthesises an `s` keydown on document.body", () => {
+    const captured: Array<{ key: string; targetIsBody: boolean }> = [];
+    const listener = (e: KeyboardEvent) => {
+      captured.push({ key: e.key, targetIsBody: e.target === document.body });
+    };
+    window.addEventListener("keydown", listener);
+    try {
+      renderInRouter(
+        <PresenterModeProvider enabled={false}>
+          <TopToolbar slug="hello" currentSlide={0} currentPhase={0} />
+        </PresenterModeProvider>,
+      );
+      fireEvent.click(screen.getByTestId("top-toolbar-settings"));
+      const sEvents = captured.filter((c) => c.key === "s");
+      expect(sEvents.length).toBeGreaterThan(0);
+      expect(sEvents[0].targetIsBody).toBe(true);
+    } finally {
+      window.removeEventListener("keydown", listener);
+    }
+  });
+
   it('renders the "Open in Studio" deep link with current slide+phase', () => {
     renderInRouter(
       <PresenterModeProvider enabled={false}>
@@ -81,6 +111,15 @@ describe("<TopToolbar> (public viewer)", () => {
 });
 
 describe("<TopToolbar> (admin / presenter mode)", () => {
+  it("still renders the always-visible Settings button in admin mode", () => {
+    renderInRouter(
+      <PresenterModeProvider enabled={true}>
+        <TopToolbar slug="hello" currentSlide={0} currentPhase={0} />
+      </PresenterModeProvider>,
+    );
+    expect(screen.getByTestId("top-toolbar-settings")).toBeTruthy();
+  });
+
   it("renders Theme / Slides / Analytics buttons", () => {
     renderInRouter(
       <PresenterModeProvider enabled={true}>

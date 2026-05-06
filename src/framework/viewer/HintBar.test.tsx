@@ -33,7 +33,29 @@ describe("<HintBar />", () => {
     expect(text.toLowerCase()).toContain("fullscreen");
     expect(text.toLowerCase()).toContain("dark");
     expect(text.toLowerCase()).toContain("overview");
+    expect(text.toLowerCase()).toContain("settings");
     expect(text.toLowerCase()).toContain("help");
+  });
+
+  it("advertises the settings shortcut in BOTH public and presenter modes", () => {
+    const { unmount } = render(
+      <PresenterModeProvider enabled={false}>
+        <HintBar />
+      </PresenterModeProvider>,
+    );
+    expect(
+      (screen.getByTestId("hint-bar").textContent ?? "").toLowerCase(),
+    ).toContain("settings");
+    unmount();
+
+    render(
+      <PresenterModeProvider enabled={true}>
+        <HintBar />
+      </PresenterModeProvider>,
+    );
+    expect(
+      (screen.getByTestId("hint-bar").textContent ?? "").toLowerCase(),
+    ).toContain("settings");
   });
 
   it("does NOT render presenter shortcuts (P/Q/W/E) in public viewer mode", () => {

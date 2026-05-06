@@ -4,15 +4,22 @@
  * Renders a thin row of segments — one per slide — with the current slide
  * highlighted. Click any segment to jump to that slide.
  *
- * Always visible, regardless of layout or idle state (issue #30). The
- * parent `<Slide>` mounts this on every layout, and we no longer carry
- * `data-deck-chrome` so the auto-hide-on-idle controller leaves us alone.
- * A future settings-modal toggle to hide the bar entirely is tracked by
- * issue #32 and is out of scope here.
+ * Visibility is governed by the user-configurable `showSlideIndicators`
+ * setting (issue #32):
+ *
+ *   - **ON (default)**: always visible. Current behaviour after PR #40.
+ *
+ *   - **OFF**: gated by mouse proximity to the bottom edge of the
+ *     viewport via `useNearViewportBottom()` — the bar is hidden by
+ *     default and fades in when the cursor moves within ~80px of the
+ *     bottom edge, then fades out ~800ms after the cursor leaves the
+ *     zone. Same proximity behaviour as `<HintBar>`.
  */
 
 import { motion } from "framer-motion";
 import { easeStandard } from "@/lib/motion";
+import { useSettings } from "./useSettings";
+import { useNearViewportBottom } from "./useNearViewportEdge";
 
 export interface ProgressBarProps {
   total: number;
@@ -21,12 +28,22 @@ export interface ProgressBarProps {
 }
 
 export function ProgressBar({ total, current, onJump }: ProgressBarProps) {
+  const { settings } = useSettings();
+  const isNear = useNearViewportBottom();
+  // Always-visible mode bypasses the proximity gate. The hook is still
+  // called every render (Rules of Hooks), but its result is ignored when
+  // the setting is on.
+  const visible = settings.showSlideIndicators ? true : isNear;
+
   if (total <= 1) return null;
   return (
     <div
-      className="pointer-events-auto absolute inset-x-0 bottom-0 z-10 flex items-center gap-1 px-8 pb-3"
+      className={`absolute inset-x-0 bottom-0 z-10 flex items-center gap-1 px-8 pb-3 transition-opacity duration-200 ease-out ${
+        visible ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0"
+      }`}
       data-no-advance
       data-testid="progress-bar"
+      data-visible={visible ? "true" : "false"}
     >
       {Array.from({ length: total }, (_, i) => {
         const active = i === current;
@@ -40,6 +57,7 @@ export function ProgressBar({ total, current, onJump }: ProgressBarProps) {
             aria-current={active}
             onClick={() => onJump?.(i)}
             className="group relative flex-1 cursor-pointer py-3 focus:outline-none"
+            tabIndex={visible ? 0 : -1}
           >
             <motion.span
               className="block h-[3px] w-full rounded-full"
