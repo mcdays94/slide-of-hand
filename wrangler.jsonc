@@ -85,6 +85,44 @@
       "preview_id": "922249a7b3984630a04f430a47018d5c"
     }
   ],
+  /**
+   * Per-deck analytics (issue #19 / Bucket C3).
+   *
+   * `ANALYTICS` is a Cloudflare Analytics Engine dataset. The dataset is
+   * created on first write — no pre-provisioning needed. The binding gives
+   * `env.ANALYTICS.writeDataPoint({...})` access in the Worker.
+   *
+   * Schema (also documented in `worker/analytics.ts`):
+   *   - blob1 = deckSlug
+   *   - blob2 = slideId
+   *   - blob3 = eventType (view | slide_advance | phase_advance | jump | overview_open)
+   *   - blob4 = sessionId (anonymous per-tab UUID)
+   *   - double1 = durationMs (time on previous slide; 0 if N/A)
+   *   - double2 = phaseIndex (for phase_advance; 0 otherwise)
+   *   - index = deckSlug (sampled index)
+   *
+   * Reads go via the Cloudflare SQL API at
+   * `POST /accounts/{account_id}/analytics_engine/sql` using a Worker
+   * secret `CF_API_TOKEN`. See docs/deploy.md.
+   */
+  "analytics_engine_datasets": [
+    {
+      "binding": "ANALYTICS",
+      "dataset": "slide_of_hand_views"
+    }
+  ],
+  /**
+   * Plain (non-secret) Worker variables.
+   *
+   * `CF_ACCOUNT_ID` is the same value as the top-level `account_id` —
+   * duplicated here so the analytics read endpoint can construct the
+   * Cloudflare SQL API URL at request time. The account ID is not
+   * sensitive (it appears in dashboard URLs); only the API token is a
+   * secret (`wrangler secret put CF_API_TOKEN`).
+   */
+  "vars": {
+    "CF_ACCOUNT_ID": "1bcef46cbe9172d2569dcf7039048842"
+  },
   "observability": {
     "enabled": true
   }
