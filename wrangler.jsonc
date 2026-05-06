@@ -31,6 +31,23 @@
     "binding": "ASSETS",
     "not_found_handling": "single-page-application"
   },
+  /**
+   * Per-deck theme overrides (issue #12 / Bucket B1).
+   *
+   * One key per deck: `theme:<slug>` → JSON `{ version, tokens, updatedAt }`.
+   * Read by the public `GET /api/themes/<slug>` endpoint and written by the
+   * Access-gated `POST/DELETE /api/admin/themes/<slug>`.
+   *
+   * Both `id` and `preview_id` are configured so `wrangler dev` uses a
+   * separate preview namespace and doesn't pollute production data.
+   */
+  "kv_namespaces": [
+    {
+      "binding": "THEMES",
+      "id": "c17123b57dba4e11a1b6de6b84466cdb",
+      "preview_id": "1ae49a5fcede4be584eee1701bce33e3"
+    }
+  ],
   "observability": {
     "enabled": true
   }
