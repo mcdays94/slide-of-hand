@@ -1,16 +1,16 @@
-# Agents in ReAction
+# Agents in Slide of Hand
 
 Orientation for AI agents (Claude / OpenCode / Cursor / Aider / …) starting a session in this repo. Read once at session start; return only when stuck.
 
-ReAction is built on the principle that **agents are first-class deck authors**. The whole platform is shaped to make `prompt → JSX → animated deck` a fluent loop — no markdown vocabulary, no directive registry, no descriptor schema. A slide is a React component. A deck is a folder of TypeScript files. The framework is small, opinionated, and stays out of your way.
+Slide of Hand is built on the principle that **agents are first-class deck authors**. The whole platform is shaped to make `prompt → JSX → animated deck` a fluent loop — no markdown vocabulary, no directive registry, no descriptor schema. A slide is a React component. A deck is a folder of TypeScript files. The framework is small, opinionated, and stays out of your way.
 
 ---
 
-## What ReAction is, in one paragraph
+## What Slide of Hand is, in one paragraph
 
 A self-hosted deck platform that runs on Cloudflare Workers + Static Assets. Each deck is `src/decks/<visibility>/<slug>/index.tsx` and exports a typed `DeckMeta` plus an array of `SlideDef`s. The deployed app exposes a public landing page at `/` (lists `decks/public/*`), a viewer at `/decks/<slug>`, and an Access-protected `/admin` for editing and presenter ergonomics. Customer-specific or under-NDA decks live in `decks/private/*` (gitignored, local-only). The framework primitives — `<Slide>`, `<Reveal>`, `usePhase()`, layouts, keyboard navigation, overview mode — are small, opinionated, and stay out of your way.
 
-**Production:** <https://reaction.lusostreams.com> · `/admin/*` gated by Cloudflare Access · deploy + Access runbook lives at [`docs/deploy.md`](docs/deploy.md).
+**Production:** <https://slide-of-hand.lusostreams.com> · `/admin/*` gated by Cloudflare Access · deploy + Access runbook lives at [`docs/deploy.md`](docs/deploy.md).
 
 ---
 
@@ -172,7 +172,7 @@ import { secondSlide } from "./02-second";
 const deck: Deck = {
   meta: {
     slug: "hello",
-    title: "Hello, ReAction",
+    title: "Hello, Slide of Hand",
     description: "A two-slide demo to prove the framework works.",
     date: "2026-05-01",
     author: "Miguel Caetano Dias",
@@ -192,7 +192,7 @@ import { Reveal } from "@/framework/viewer/Reveal";
 
 export const titleSlide: SlideDef = {
   id: "title",
-  title: "Hello, ReAction",
+  title: "Hello, Slide of Hand",
   layout: "cover",
   phases: 1,
   notes: (
@@ -203,7 +203,7 @@ export const titleSlide: SlideDef = {
   ),
   render: () => (
     <div className="flex flex-col items-center gap-4">
-      <h1 className="text-7xl tracking-[-0.04em]">Hello, ReAction</h1>
+      <h1 className="text-7xl tracking-[-0.04em]">Hello, Slide of Hand</h1>
       <Reveal at={1}>
         <p className="text-xl text-cf-text-muted">JSX-first slides.</p>
       </Reveal>
@@ -297,7 +297,7 @@ This repo is built using the [Pocock orchestrator](https://github.com/mcdays94/p
 4. **Build**: dispatch `pocock-worker` subagents in parallel waves, one issue per worker, each on its own git worktree.
 
 For Wave 1, the worker must:
-- Operate strictly within the assigned worktree (`/tmp/pocock-workers/ReAction/<branch-slug>/`).
+- Operate strictly within the assigned worktree (`/tmp/pocock-workers/slide-of-hand/<branch-slug>/`).
 - Start its own dev server on the assigned port (`--host=127.0.0.1 --port=N`).
 - Use the snap → read → fix → snap visual TDD loop for any UI work.
 - Commit specific files (NEVER `git add -A`).
@@ -346,7 +346,7 @@ node scripts/agent-verify-deck.mjs <deck-slug>     # 0 errors expected
 
 These have specific failure modes; avoid them.
 
-- **Markdown deck files.** No `.md` slides. Slides are JSX. The audience for ReAction's authoring layer is "people who write React" — the author + agents. If you want non-developers to edit decks, that's a different product.
+- **Markdown deck files.** No `.md` slides. Slides are JSX. The audience for Slide of Hand's authoring layer is "people who write React" — the author + agents. If you want non-developers to edit decks, that's a different product.
 - **A directive vocabulary.** No `defineDirective`, no descriptor schema, no palette catalog. If you find yourself wanting to register a "directive" — that's a normal React component. Just import it.
 - **A bidirectional markdown ⇄ visual editor.** Editing happens in code in v1. The `/admin` Studio is preview + presenter mode only. Element inspection / drag-drop editing are out of scope unless explicitly added to a future PRD.
 - **`git add -A` / `git add .`.** Stage specific paths only.

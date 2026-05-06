@@ -1,5 +1,5 @@
 /**
- * ReAction Worker entry.
+ * Slide of Hand Worker entry.
  *
  * Most requests fall through to the `ASSETS` binding, which serves the
  * bundled SPA from `dist/`. The `not_found_handling: single-page-application`

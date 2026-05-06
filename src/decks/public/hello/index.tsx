@@ -16,9 +16,9 @@ import { thanksSlide } from "./05-thanks";
 const deck: Deck = {
   meta: {
     slug: "hello",
-    title: "Hello, ReAction",
+    title: "Hello, Slide of Hand",
     description:
-      "A short demo of the ReAction framework — phase reveals, layouts, presenter affordances.",
+      "A short demo of the Slide of Hand framework — phase reveals, layouts, presenter affordances.",
     date: "2026-05-01",
     author: "Miguel Caetano Dias",
     runtimeMinutes: 2,

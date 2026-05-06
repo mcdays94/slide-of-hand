@@ -1,7 +1,7 @@
 /**
  * Motion primitives — easings + presets.
  *
- * Every animation in ReAction MUST source its timing from this module.
+ * Every animation in Slide of Hand MUST source its timing from this module.
  * Inline cubic-bezier values (`transition={{ ease: [0.25, 0.46, ...] }}`) are
  * an anti-pattern: they fragment the design system and make systemic tweaks
  * impossible. See AGENTS.md § Anti-patterns.

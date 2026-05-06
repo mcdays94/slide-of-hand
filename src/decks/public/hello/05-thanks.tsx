@@ -24,7 +24,7 @@ export const thanksSlide: SlideDef = {
         <li>Thank the audience by name where possible</li>
         <li>
           Repo URL out loud:{" "}
-          <code>github.com/mcdays94/ReAction</code>
+          <code>github.com/mcdays94/slide-of-hand</code>
         </li>
         <li>
           Mention what's <em>not</em> in v1 (Cloudflare D1, R2, Hyperdrive —
@@ -35,7 +35,7 @@ export const thanksSlide: SlideDef = {
       <p>
         Want feedback? Direct them to{" "}
         <a
-          href="https://github.com/mcdays94/ReAction/discussions"
+          href="https://github.com/mcdays94/slide-of-hand/discussions"
           className="text-cf-orange underline"
         >
           Discussions
@@ -77,7 +77,7 @@ export const thanksSlide: SlideDef = {
           QR
         </div>
         <p className="font-mono text-sm text-cf-text-muted">
-          github.com/mcdays94/ReAction
+          github.com/mcdays94/slide-of-hand
         </p>
       </motion.div>
     </div>

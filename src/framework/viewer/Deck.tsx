@@ -35,7 +35,7 @@ import { usePresenterMode } from "@/framework/presenter/mode";
 import { PresenterAffordances } from "@/framework/presenter/PresenterAffordances";
 import { slideTransition } from "@/lib/motion";
 
-const THEME_STORAGE_KEY = "reaction-theme";
+const THEME_STORAGE_KEY = "slide-of-hand-theme";
 
 export interface DeckProps {
   slug: string;

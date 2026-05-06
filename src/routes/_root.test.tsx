@@ -4,7 +4,7 @@
  * Covers:
  *   - Sort order is `meta.date` descending
  *   - Empty state renders when no public decks are discovered
- *   - The page title is set to "ReAction" on mount
+ *   - The page title is set to "Slide of Hand" on mount
  *   - Cards link to `/decks/<slug>`
  */
 
@@ -82,10 +82,10 @@ describe("/ — public deck index", () => {
     expect(screen.queryByTestId("deck-card")).toBeNull();
   });
 
-  it('sets document.title to "ReAction"', async () => {
+  it('sets document.title to "Slide of Hand"', async () => {
     document.title = "Something else";
     await renderRoot([makeDeck("alpha", "2026-01-01")]);
-    expect(document.title).toBe("ReAction");
+    expect(document.title).toBe("Slide of Hand");
   });
 
   it("renders cards as links to /decks/<slug>", async () => {
