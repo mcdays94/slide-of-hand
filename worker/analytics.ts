@@ -4,12 +4,18 @@
  * Two endpoints:
  *
  *   POST /api/beacon                 — public ingestion (writes to AE)
- *   GET  /api/admin/analytics/<slug> — Access-gated read via SQL API
+ *   GET  /api/admin/analytics/<slug> — Access-gated read via SQL API (defense-in-depth: Worker also checks)
  *
- * Cloudflare Access guards `/admin/*` at the edge, so this Worker code
- * does NOT validate JWTs. The read endpoint reads `env.CF_API_TOKEN`
- * (a Worker secret) to call the Cloudflare SQL API on behalf of the
- * Access-authenticated author.
+ * Cloudflare Access guards `/api/admin/*` at the edge (see the
+ * `Slide of Hand Admin` Access app's `self_hosted_domains`). As of
+ * 2026-05-06 the Worker ALSO validates the `cf-access-authenticated-
+ * user-email` header on the admin read endpoint via
+ * `requireAccessAuth()` — defense-in-depth so a misconfigured Access
+ * app fails closed instead of open. See `worker/access-auth.ts` for
+ * the rationale.
+ *
+ * The read endpoint reads `env.CF_API_TOKEN` (a Worker secret) to call
+ * the Cloudflare SQL API on behalf of the Access-authenticated author.
  *
  * ── Storage shape (Cloudflare Analytics Engine) ────────────────────────
  *
@@ -49,6 +55,7 @@ import {
   type PerDayStats,
   type PerSlideStats,
 } from "../src/lib/analytics-types";
+import { requireAccessAuth } from "./access-auth";
 
 // ── Cloudflare runtime types ──────────────────────────────────────────────
 //
@@ -84,12 +91,21 @@ const NO_STORE_HEADERS = {
   "cache-control": "no-store",
 };
 
-// 5-minute edge cache for the analytics dashboard. Authors visiting their
-// dashboard tolerate slightly stale numbers — AE is eventually consistent
-// at 30-60s anyway, so chasing second-by-second freshness is wasted RPS.
+// Analytics dashboard responses must NOT be cached at any shared cache
+// (CF edge, ISP proxy, etc.) — they contain aggregated data behind the
+// Access gate, and a `public` cache directive would expose admin payloads
+// at the edge for the cache lifetime even if Access were misconfigured.
+// Defense-in-depth pairs with `requireAccessAuth()` in the read handler:
+// even on the rare path where Access fails open, the response can't be
+// cached and replayed to other clients.
+//
+// `private` says "browser MAY cache, shared caches MUST NOT." `no-store`
+// would forbid even the browser cache; `max-age=60` gives the author's
+// own browser a tiny cache window so a quick refresh doesn't hammer
+// the SQL API. Acceptable trade-off for v1.
 const READ_HEADERS = {
   "content-type": "application/json",
-  "cache-control": "public, max-age=300",
+  "cache-control": "private, max-age=60",
 };
 
 const MAX_BODY_BYTES = 2048;
@@ -434,6 +450,8 @@ export async function handleAnalytics(
 
   const readMatch = path.match(READ_PATH);
   if (readMatch) {
+    const denied = requireAccessAuth(request);
+    if (denied) return denied;
     const slug = decodeURIComponent(readMatch[1]);
     if (!isValidId(slug)) return badRequest("invalid slug");
     if (request.method !== "GET" && request.method !== "HEAD") {
