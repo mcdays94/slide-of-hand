@@ -33,6 +33,7 @@ import { ThemeSidebar } from "./ThemeSidebar";
 import { useDeckTheme } from "./useDeckTheme";
 import { SlideManager } from "./SlideManager";
 import { useDeckManifest } from "./useDeckManifest";
+import { useDeckAnalytics } from "./useDeckAnalytics";
 import { mergeSlides } from "@/lib/manifest-merge";
 import { usePresenterMode } from "@/framework/presenter/mode";
 import { PresenterAffordances } from "@/framework/presenter/PresenterAffordances";
@@ -132,6 +133,38 @@ export function Deck({ slug, title, slides }: DeckProps) {
   const themeOverride = useDeckTheme(slug);
   const presenterMode = usePresenterMode();
 
+  // ── Per-deck analytics (issue #19 / Bucket C3) ─────────────────────────
+  // Public + admin viewers both fire beacons; the author's own local
+  // dev runs are silenced inside the hook via the `__PROJECT_ROOT__`
+  // sentinel. No data identifies the audience — the session ID is a
+  // per-tab UUID held in `sessionStorage`.
+  const analytics = useDeckAnalytics(slug);
+
+  // Track the previous slide ID + the timestamp it became active so we
+  // can attribute durations correctly on advance. `prevSlideRef` starts
+  // null so the very first cursor effect emits a `view` without a prior
+  // `slide_advance` (no slide to attribute the duration to).
+  const prevSlideRef = useRef<string | null>(null);
+  const slideEnteredAtRef = useRef<number>(
+    typeof performance !== "undefined" ? performance.now() : 0,
+  );
+  const prevPhaseRef = useRef<number>(0);
+
+  // Wrap goto so any non-cursor-keyed jump (overview → N, slide footer
+  // links) emits a `jump` beacon. We fire BEFORE goto updates the
+  // cursor so the analytics module sees "jumped to slide N" as a
+  // separate event from the implied `view` that follows.
+  const gotoWithBeacon = useCallback(
+    (targetSlide: number, phase?: number) => {
+      const targetSlideDef = visibleSlides[targetSlide];
+      if (targetSlideDef && targetSlideDef.id !== prevSlideRef.current) {
+        analytics.trackJump(targetSlideDef.id);
+      }
+      goto(targetSlide, phase);
+    },
+    [goto, visibleSlides, analytics],
+  );
+
   // ── Overlays ────────────────────────────────────────────────────────────
   const [overviewOpen, setOverviewOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
@@ -146,11 +179,17 @@ export function Deck({ slug, title, slides }: DeckProps) {
   }, []);
 
   const toggleOverview = useCallback(() => {
-    setOverviewOpen((o) => !o);
+    setOverviewOpen((wasOpen) => {
+      const nowOpen = !wasOpen;
+      // Only beacon the open transition (not the close), since the audience
+      // may also press `O` to dismiss — that's not interesting to track.
+      if (nowOpen) analytics.trackOverviewOpen();
+      return nowOpen;
+    });
     setHelpOpen(false);
     setThemeSidebarOpen(false);
     setSlideManagerOpen(false);
-  }, []);
+  }, [analytics]);
 
   const toggleHelp = useCallback(() => {
     setHelpOpen((h) => !h);
@@ -324,6 +363,29 @@ export function Deck({ slug, title, slides }: DeckProps) {
     }
   }, [title, slide]);
 
+  // Analytics — fire beacons on cursor changes. We split slide / phase
+  // so a phase reveal does not also count as a slide advance.
+  useEffect(() => {
+    if (!slide) return;
+    const now =
+      typeof performance !== "undefined" ? performance.now() : Date.now();
+    const prevSlideId = prevSlideRef.current;
+    if (prevSlideId !== slide.id) {
+      const durationMs =
+        prevSlideId === null ? 0 : Math.max(0, now - slideEnteredAtRef.current);
+      analytics.trackSlideAdvance(prevSlideId, slide.id, durationMs);
+      prevSlideRef.current = slide.id;
+      slideEnteredAtRef.current = now;
+      prevPhaseRef.current = cursor.phase;
+    } else if (cursor.phase !== prevPhaseRef.current) {
+      // Phase change within the same slide.
+      if (cursor.phase > prevPhaseRef.current) {
+        analytics.trackPhaseAdvance(slide.id, cursor.phase);
+      }
+      prevPhaseRef.current = cursor.phase;
+    }
+  }, [slide, cursor.phase, analytics]);
+
   if (!slide) {
     return (
       <div
@@ -367,7 +429,7 @@ export function Deck({ slug, title, slides }: DeckProps) {
                 index={cursor.slide}
                 total={total}
                 phase={cursor.phase}
-                onJump={(i) => goto(i)}
+                onJump={(i) => gotoWithBeacon(i)}
               >
                 {slide.render({ phase: cursor.phase })}
               </Slide>
@@ -380,7 +442,7 @@ export function Deck({ slug, title, slides }: DeckProps) {
           slug={slug}
           slides={visibleSlides}
           current={cursor.slide}
-          onJump={(i) => goto(i)}
+          onJump={(i) => gotoWithBeacon(i)}
           onClose={closeOverlays}
         />
         <KeyboardHelp open={helpOpen} onClose={closeOverlays} />
