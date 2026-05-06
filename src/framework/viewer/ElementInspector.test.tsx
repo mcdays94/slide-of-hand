@@ -29,7 +29,10 @@ import {
   buildSelectionLabel,
   type InspectorSelection,
 } from "./ElementInspector";
-import type { ElementOverride } from "./useElementOverrides";
+import type {
+  AppliedOverride,
+  ElementOverride,
+} from "./useElementOverrides";
 
 afterEach(() => {
   cleanup();
@@ -587,5 +590,271 @@ describe("<ElementInspector>", () => {
     expect(
       screen.getByTestId("element-inspector-token-list-background"),
     ).not.toBeNull();
+  });
+});
+
+// ── Slice 5 (#47): override-list view ─────────────────────────────────
+
+const titleOverride: ElementOverride = {
+  slideId: "title",
+  selector: "h1:nth-child(1)",
+  fingerprint: { tag: "h1", text: "Hello, Slide of Hand" },
+  classOverrides: [{ from: "text-cf-text", to: "text-cf-orange" }],
+};
+
+const secondOverride: ElementOverride = {
+  slideId: "second",
+  selector: "p:nth-child(1)",
+  fingerprint: { tag: "p", text: "JSX-first slides." },
+  classOverrides: [{ from: "text-cf-text-muted", to: "text-cf-blue" }],
+};
+
+const multiSwapOverride: ElementOverride = {
+  slideId: "third",
+  selector: "section:nth-child(1)",
+  fingerprint: { tag: "section", text: "Multi" },
+  classOverrides: [
+    { from: "bg-cf-bg-100", to: "bg-cf-bg-200" },
+    { from: "text-cf-text", to: "text-cf-orange" },
+    { from: "text-2xl", to: "text-4xl" },
+  ],
+};
+
+function makeListProps(
+  appliedWithStatus: AppliedOverride[],
+  extras: Partial<{
+    onRemoveOne: ReturnType<typeof vi.fn>;
+    onClearOrphaned: ReturnType<typeof vi.fn>;
+    onNavigate: ReturnType<typeof vi.fn>;
+  }> = {},
+) {
+  const applied = appliedWithStatus.map((e) => e.override);
+  return {
+    open: true,
+    slug: "hello",
+    selection: null,
+    applied,
+    appliedWithStatus,
+    onApplyDraft: vi.fn(),
+    onClearDraft: vi.fn(),
+    onSave: vi.fn().mockResolvedValue({ ok: true }),
+    onRemoveOne:
+      extras.onRemoveOne ?? vi.fn().mockResolvedValue({ ok: true }),
+    onClearOrphaned:
+      extras.onClearOrphaned ?? vi.fn().mockResolvedValue({ ok: true }),
+    onNavigate: extras.onNavigate ?? vi.fn(),
+    onClose: vi.fn(),
+  };
+}
+
+describe("<ElementInspector> override-list view (slice 5)", () => {
+  it("renders the empty-state copy when no selection AND no overrides", () => {
+    render(<ElementInspector {...makeProps()} />);
+    expect(screen.getByTestId("element-inspector-empty")).not.toBeNull();
+    expect(screen.queryByTestId("element-inspector-list")).toBeNull();
+  });
+
+  it("renders the override-list view when no selection AND at least one override", () => {
+    const props = makeListProps([
+      { override: titleOverride, status: "matched" },
+      { override: secondOverride, status: "matched" },
+    ]);
+    render(<ElementInspector {...props} />);
+    expect(screen.queryByTestId("element-inspector-empty")).toBeNull();
+    expect(screen.getByTestId("element-inspector-list")).not.toBeNull();
+    // Both rows present with their slideIds visible.
+    expect(screen.getByText("title")).not.toBeNull();
+    expect(screen.getByText("second")).not.toBeNull();
+  });
+
+  it("formats each row as `slideId · TAG.from → to`", () => {
+    const props = makeListProps([
+      { override: titleOverride, status: "matched" },
+    ]);
+    render(<ElementInspector {...props} />);
+    expect(
+      screen.getByText("H1.text-cf-text → text-cf-orange"),
+    ).not.toBeNull();
+  });
+
+  it("multi-swap overrides show a `+N more` suffix on the row", () => {
+    const props = makeListProps([
+      { override: multiSwapOverride, status: "matched" },
+    ]);
+    render(<ElementInspector {...props} />);
+    // First swap is the bg pair; the other 2 collapse to "+2 more".
+    expect(
+      screen.getByText("SECTION.bg-cf-bg-100 → bg-cf-bg-200"),
+    ).not.toBeNull();
+    expect(screen.getByText("+2 more")).not.toBeNull();
+  });
+
+  it("× per-row calls onRemoveOne with that override", () => {
+    const onRemoveOne = vi.fn().mockResolvedValue({ ok: true });
+    const props = makeListProps(
+      [
+        { override: titleOverride, status: "matched" },
+        { override: secondOverride, status: "matched" },
+      ],
+      { onRemoveOne },
+    );
+    render(<ElementInspector {...props} />);
+    fireEvent.click(
+      screen.getByTestId(
+        `element-inspector-list-row-remove-${titleOverride.slideId}-${titleOverride.selector}`,
+      ),
+    );
+    expect(onRemoveOne).toHaveBeenCalledTimes(1);
+    expect(onRemoveOne).toHaveBeenCalledWith(titleOverride);
+  });
+
+  it("× hides when onRemoveOne is not provided", () => {
+    const props = {
+      open: true,
+      slug: "hello",
+      selection: null,
+      applied: [titleOverride],
+      appliedWithStatus: [{ override: titleOverride, status: "matched" as const }],
+      onApplyDraft: vi.fn(),
+      onClearDraft: vi.fn(),
+      onSave: vi.fn().mockResolvedValue({ ok: true }),
+      onClose: vi.fn(),
+    };
+    render(<ElementInspector {...props} />);
+    expect(
+      screen.queryByTestId(
+        `element-inspector-list-row-remove-${titleOverride.slideId}-${titleOverride.selector}`,
+      ),
+    ).toBeNull();
+  });
+
+  it("clicking the row body calls onNavigate with the slideId", () => {
+    const onNavigate = vi.fn();
+    const props = makeListProps(
+      [
+        { override: titleOverride, status: "matched" },
+        { override: secondOverride, status: "matched" },
+      ],
+      { onNavigate },
+    );
+    render(<ElementInspector {...props} />);
+    fireEvent.click(
+      screen.getByTestId(
+        `element-inspector-list-row-button-${secondOverride.slideId}-${secondOverride.selector}`,
+      ),
+    );
+    expect(onNavigate).toHaveBeenCalledTimes(1);
+    expect(onNavigate).toHaveBeenCalledWith("second");
+  });
+
+  it("orphaned entries render a ⚠ icon next to the row", () => {
+    const props = makeListProps([
+      { override: titleOverride, status: "matched" },
+      { override: secondOverride, status: "orphaned" },
+    ]);
+    render(<ElementInspector {...props} />);
+    // Matched row: no warn icon.
+    expect(
+      screen.queryByTestId(
+        `element-inspector-list-row-warn-${titleOverride.slideId}-${titleOverride.selector}`,
+      ),
+    ).toBeNull();
+    // Orphaned row: warn icon present.
+    expect(
+      screen.getByTestId(
+        `element-inspector-list-row-warn-${secondOverride.slideId}-${secondOverride.selector}`,
+      ),
+    ).not.toBeNull();
+  });
+
+  it("missing entries also render the ⚠ icon (any non-matched status)", () => {
+    const props = makeListProps([
+      { override: titleOverride, status: "missing" },
+    ]);
+    render(<ElementInspector {...props} />);
+    expect(
+      screen.getByTestId(
+        `element-inspector-list-row-warn-${titleOverride.slideId}-${titleOverride.selector}`,
+      ),
+    ).not.toBeNull();
+  });
+
+  it("orphaned rows mark the li with data-status=orphaned", () => {
+    const props = makeListProps([
+      { override: titleOverride, status: "orphaned" },
+    ]);
+    render(<ElementInspector {...props} />);
+    const row = screen.getByTestId(
+      `element-inspector-list-row-${titleOverride.slideId}-${titleOverride.selector}`,
+    );
+    expect(row.getAttribute("data-status")).toBe("orphaned");
+  });
+
+  it("'Clear all orphaned' is hidden when every entry is matched", () => {
+    const props = makeListProps([
+      { override: titleOverride, status: "matched" },
+      { override: secondOverride, status: "matched" },
+    ]);
+    render(<ElementInspector {...props} />);
+    expect(
+      screen.queryByTestId("element-inspector-clear-orphaned"),
+    ).toBeNull();
+  });
+
+  it("'Clear all orphaned' shows when at least one entry is orphaned/missing", () => {
+    const props = makeListProps([
+      { override: titleOverride, status: "matched" },
+      { override: secondOverride, status: "orphaned" },
+    ]);
+    render(<ElementInspector {...props} />);
+    expect(
+      screen.getByTestId("element-inspector-clear-orphaned"),
+    ).not.toBeNull();
+    // Count appears in the label.
+    expect(screen.getByText(/Clear all orphaned \(1\)/)).not.toBeNull();
+  });
+
+  it("'Clear all orphaned' calls onClearOrphaned when clicked", () => {
+    const onClearOrphaned = vi.fn().mockResolvedValue({ ok: true });
+    const props = makeListProps(
+      [
+        { override: titleOverride, status: "matched" },
+        { override: secondOverride, status: "orphaned" },
+        { override: multiSwapOverride, status: "missing" },
+      ],
+      { onClearOrphaned },
+    );
+    render(<ElementInspector {...props} />);
+    fireEvent.click(screen.getByTestId("element-inspector-clear-orphaned"));
+    expect(onClearOrphaned).toHaveBeenCalledTimes(1);
+  });
+
+  it("Save / Reset footer is hidden when no element is selected (list view active)", () => {
+    const props = makeListProps([
+      { override: titleOverride, status: "matched" },
+    ]);
+    render(<ElementInspector {...props} />);
+    expect(screen.queryByTestId("element-inspector-save")).toBeNull();
+    expect(screen.queryByTestId("element-inspector-reset")).toBeNull();
+  });
+
+  it("falls back to status='matched' for every entry when appliedWithStatus is omitted", () => {
+    // Backwards-compat: a parent that doesn't pass appliedWithStatus
+    // still gets a working list view (no warnings, no clear-orphaned).
+    const props = {
+      open: true,
+      slug: "hello",
+      selection: null,
+      applied: [titleOverride, secondOverride],
+      onApplyDraft: vi.fn(),
+      onClearDraft: vi.fn(),
+      onSave: vi.fn().mockResolvedValue({ ok: true }),
+      onClose: vi.fn(),
+    };
+    render(<ElementInspector {...props} />);
+    expect(screen.getByTestId("element-inspector-list")).not.toBeNull();
+    expect(
+      screen.queryByTestId("element-inspector-clear-orphaned"),
+    ).toBeNull();
   });
 });

@@ -23,6 +23,26 @@
  * No localStorage. KV is the source of truth; client-side state is
  * ephemeral and resets on a hard reload.
  *
+ * ## Slice 5 additions (#47)
+ *
+ * - `getOverrideStatus(override)` — synchronous DOM lookup that returns
+ *   `"matched" | "orphaned" | "missing"` for an override against the
+ *   currently-mounted slide root (`[data-slide-id="<id>"]`). When the
+ *   target slide is NOT mounted (audience is on a different slide),
+ *   returns `"matched"` — we have no information, so we default to the
+ *   non-warning state. The status flips to its real value as soon as
+ *   the user navigates to that slide and the shell mounts.
+ * - `appliedWithStatus` — a render-time projection of `applied` paired
+ *   with the per-entry status. Recomputed on every hook call (cheap;
+ *   four `querySelector` lookups per override max).
+ * - `removeOne(override)` — direct write that POSTs the persistent list
+ *   minus a single entry (matched on `slideId + selector`). Skips the
+ *   draft state entirely; the deletion lands in KV immediately.
+ * - `clearOrphaned()` — direct write that POSTs the persistent list
+ *   filtered to ONLY entries whose status is `matched` against the
+ *   currently-mounted slide. Entries whose slide isn't mounted are
+ *   conservatively kept (no information → no deletion).
+ *
  * ## Dev-mode auth header
  *
  * `wrangler dev` does NOT run Cloudflare Access locally, so the
@@ -39,6 +59,7 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
+import { findBySelector } from "@/lib/element-selector";
 
 /**
  * Mirrors `worker/element-overrides.ts`'s `ElementOverride` shape. Inlined
@@ -58,6 +79,19 @@ interface ElementOverridesApiResponse {
   overrides: ElementOverride[];
 }
 
+/**
+ * Per-entry status from `findBySelector` — paired with the override
+ * itself for the inspector's list view. `"matched"` is the optimistic
+ * default when the target slide isn't currently mounted (we don't have
+ * enough information to call it orphaned, so we don't).
+ */
+export type OverrideStatus = "matched" | "orphaned" | "missing";
+
+export interface AppliedOverride {
+  override: ElementOverride;
+  status: OverrideStatus;
+}
+
 export interface UseElementOverridesResult {
   /** The persisted overrides from KV. Empty array when none configured. */
   persistent: ElementOverride[];
@@ -73,6 +107,25 @@ export interface UseElementOverridesResult {
   refetch: () => Promise<void>;
   /** The currently-applied overrides (draft if dirty, else persistent). */
   applied: ElementOverride[];
+  /** `applied` paired with each entry's per-render `findBySelector` status. */
+  appliedWithStatus: AppliedOverride[];
+  /**
+   * Resolve a single override's status against the currently-mounted DOM.
+   * Returns `"matched"` if the override's slide isn't currently in the
+   * DOM (we have no information).
+   */
+  getOverrideStatus: (override: ElementOverride) => OverrideStatus;
+  /**
+   * Direct write — POST the persistent list minus this single entry,
+   * matched on `(slideId, selector)`. No draft state involved.
+   */
+  removeOne: (override: ElementOverride) => Promise<{ ok: boolean; status?: number }>;
+  /**
+   * Direct write — POST the persistent list filtered to entries whose
+   * current status is `matched`. Entries whose slide isn't currently
+   * mounted are KEPT (their status is unknown).
+   */
+  clearOrphaned: () => Promise<{ ok: boolean; status?: number }>;
 }
 
 /**
@@ -96,6 +149,45 @@ function adminWriteHeaders(): HeadersInit {
     }
   }
   return headers;
+}
+
+/**
+ * CSS-escape a slideId for use in an attribute selector. Slide IDs are
+ * kebab-case by convention so `CSS.escape` rarely mutates them, but
+ * defensive escaping is cheap and avoids the rare quotes-or-spaces
+ * footgun on invalid input.
+ */
+function escapeAttrValue(value: string): string {
+  if (typeof CSS !== "undefined" && typeof CSS.escape === "function") {
+    return CSS.escape(value);
+  }
+  // Fallback: replace double-quotes which would break the selector.
+  return value.replace(/"/g, '\\"');
+}
+
+/**
+ * Synchronously look up the status of a single override against the
+ * currently-mounted DOM. Used both directly (the inspector calls it
+ * during render) and indirectly (`appliedWithStatus`, `clearOrphaned`).
+ *
+ * Returns `"matched"` when the target slide isn't currently mounted —
+ * we have no DOM to interrogate, so we default to the non-warning
+ * state. The status flips to "orphaned" / "missing" the moment the
+ * user navigates to the offending slide and the shell mounts.
+ */
+function computeOverrideStatus(
+  override: ElementOverride,
+): OverrideStatus {
+  if (typeof document === "undefined") return "matched";
+  const slideRoot = document.querySelector(
+    `[data-slide-id="${escapeAttrValue(override.slideId)}"]`,
+  );
+  if (!slideRoot) return "matched";
+  return findBySelector(
+    slideRoot,
+    override.selector,
+    override.fingerprint,
+  ).status;
 }
 
 export function useElementOverrides(slug: string): UseElementOverridesResult {
@@ -166,7 +258,60 @@ export function useElementOverrides(slug: string): UseElementOverridesResult {
     [slug, refetch],
   );
 
+  /**
+   * Direct delete — match by `(slideId, selector)`, POST the filtered
+   * persistent list, then refetch. We deliberately skip the draft so
+   * the deletion is irreversible at the inspector layer (the row's
+   * tooltip warns the user). After the round-trip the local state
+   * mirrors KV.
+   *
+   * Operates on `persistent` (not `applied`) because a per-row × in
+   * the override-list view is fundamentally a "remove from KV" action
+   * — there's no concept of a "draft delete" that gets saved later.
+   */
+  const removeOne = useCallback(
+    async (override: ElementOverride) => {
+      const next = persistent.filter(
+        (o) =>
+          !(
+            o.slideId === override.slideId && o.selector === override.selector
+          ),
+      );
+      return save(next);
+    },
+    [persistent, save],
+  );
+
+  /**
+   * Direct bulk delete — POST the persistent list filtered to entries
+   * whose `findBySelector` status is currently `matched`. Entries
+   * whose slide isn't currently mounted (status defaults to `matched`)
+   * are KEPT — we don't have the information to call them orphaned, so
+   * we err on the side of preservation. The user can navigate to each
+   * slide to surface its real status before clicking again.
+   */
+  const clearOrphaned = useCallback(async () => {
+    const next = persistent.filter(
+      (o) => computeOverrideStatus(o) === "matched",
+    );
+    return save(next);
+  }, [persistent, save]);
+
   const applied = draft ?? persistent;
+  // `appliedWithStatus` is computed anew on every render — cheap (one
+  // `querySelector` per override; the deck typically has < 20). Done
+  // here rather than via `useMemo` because the result depends on the
+  // live DOM, not on React state, and there's no clean dependency
+  // signal to memoize against.
+  const appliedWithStatus: AppliedOverride[] = applied.map((o) => ({
+    override: o,
+    status: computeOverrideStatus(o),
+  }));
+
+  const getOverrideStatus = useCallback(
+    (o: ElementOverride): OverrideStatus => computeOverrideStatus(o),
+    [],
+  );
 
   return {
     persistent,
@@ -176,5 +321,9 @@ export function useElementOverrides(slug: string): UseElementOverridesResult {
     save,
     refetch,
     applied,
+    appliedWithStatus,
+    getOverrideStatus,
+    removeOne,
+    clearOrphaned,
   };
 }

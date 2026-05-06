@@ -43,6 +43,7 @@ export function Slide({
     <motion.section
       key={`${slide.id}-${index}`}
       data-slide-index={index}
+      data-slide-id={slide.id}
       data-slide-layout={layout}
       data-slide-phase={phase}
       data-testid="slide-shell"
