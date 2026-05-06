@@ -98,7 +98,7 @@ describe("<TopToolbar> (public viewer)", () => {
     );
   });
 
-  it("does NOT render the admin-only Theme / Slides / Analytics buttons", () => {
+  it("does NOT render the admin-only Theme / Slides / Inspect / Analytics buttons", () => {
     renderInRouter(
       <PresenterModeProvider enabled={false}>
         <TopToolbar slug="hello" currentSlide={0} currentPhase={0} />
@@ -106,6 +106,7 @@ describe("<TopToolbar> (public viewer)", () => {
     );
     expect(screen.queryByTestId("top-toolbar-theme")).toBeNull();
     expect(screen.queryByTestId("top-toolbar-slides")).toBeNull();
+    expect(screen.queryByTestId("top-toolbar-inspect")).toBeNull();
     expect(screen.queryByTestId("top-toolbar-analytics")).toBeNull();
   });
 });
@@ -172,6 +173,39 @@ describe("<TopToolbar> (admin / presenter mode)", () => {
       );
       fireEvent.click(screen.getByTestId("top-toolbar-slides"));
       expect(captured).toContain("m");
+    } finally {
+      window.removeEventListener("keydown", listener);
+    }
+  });
+
+  it("renders the Inspect button in the admin right cluster", () => {
+    renderInRouter(
+      <PresenterModeProvider enabled={true}>
+        <TopToolbar slug="hello" currentSlide={0} currentPhase={0} />
+      </PresenterModeProvider>,
+    );
+    const btn = screen.getByTestId("top-toolbar-inspect");
+    expect(btn).toBeTruthy();
+    expect((btn.textContent ?? "").toLowerCase()).toContain("inspect");
+    expect(btn.getAttribute("title")).toBe("Element inspector (I)");
+  });
+
+  it("Inspect button click synthesises an `i` keydown on document.body", () => {
+    const captured: Array<{ key: string; targetIsBody: boolean }> = [];
+    const listener = (e: KeyboardEvent) => {
+      captured.push({ key: e.key, targetIsBody: e.target === document.body });
+    };
+    window.addEventListener("keydown", listener);
+    try {
+      renderInRouter(
+        <PresenterModeProvider enabled={true}>
+          <TopToolbar slug="hello" currentSlide={0} currentPhase={0} />
+        </PresenterModeProvider>,
+      );
+      fireEvent.click(screen.getByTestId("top-toolbar-inspect"));
+      const iEvents = captured.filter((c) => c.key === "i");
+      expect(iEvents.length).toBeGreaterThan(0);
+      expect(iEvents[0].targetIsBody).toBe(true);
     } finally {
       window.removeEventListener("keydown", listener);
     }

@@ -1,30 +1,48 @@
 /**
- * `<ElementInspector>` — admin-only right-side overlay for swapping a
- * single element's text-color class. Triggered by the `I` key in
- * `<Deck>` and gated by `usePresenterMode()` so it never appears on the
- * public viewer.
+ * `<ElementInspector>` — admin-only right-side overlay for swapping
+ * Tailwind class tokens on a single element across the full SoH catalog.
+ * Triggered by the `I` key in `<Deck>` and gated by `usePresenterMode()`
+ * so it never appears on the public viewer.
  *
- * Slice-3 scope (#45): ONLY the `color` category from
- * `TAILWIND_TOKENS` is offered. Slice-4 (#46) will widen to the other
- * five categories (background / typography / spacing / border / sizing).
+ * Slice-4 scope (#46): widens the slice-3 tracer (color only) to cover
+ * all 6 token categories from `TAILWIND_TOKENS` (color, background,
+ * typography, spacing, border, sizing). Each category renders as a
+ * collapsible section in the sidebar; the section containing the
+ * element's current matching class is auto-opened on selection.
  *
  * Live-preview model (mirrors `<ThemeSidebar>`):
  *   - The user clicks an element on the slide; `<Deck>` passes the
  *     selection into this sidebar via `selection`.
- *   - The author picks a different color class; we mutate the live
- *     element's `className` immediately (`classList.replace(from, to)`)
- *     for a snappy preview, AND push a draft override list up through
- *     `onApplyDraft` so the same change persists across re-renders /
- *     route navigation.
+ *   - The author picks a different class from any category; we mutate
+ *     the live element's `className` immediately
+ *     (`classList.replace(from, to)`) for a snappy preview, AND push a
+ *     draft override list up through `onApplyDraft` so the same change
+ *     persists across re-renders / route navigation.
+ *   - Multiple categories accumulate into a single override entry's
+ *     `classOverrides` array — e.g. swap `text-cf-orange` AND
+ *     `bg-cf-bg-100` before saving and both ride along in one POST.
  *   - Save POSTs the list via `useElementOverrides.save`.
- *   - Close drops the draft AND reverts the live `className` mutation so
- *     leaving without saving leaves the DOM untouched.
+ *   - Close drops the draft AND reverts every in-session live
+ *     `className` mutation so leaving without saving leaves the DOM
+ *     untouched.
+ *
+ * Token-discovery rules:
+ *   - Each `TokenGroup` from `TAILWIND_TOKENS` is rendered in fixed
+ *     iteration order; the first group whose `classNames` matches a
+ *     class on the selected element is auto-opened.
+ *   - Within a group, the first matching class on the element is treated
+ *     as the "original" — that's what `from` records in the override.
+ *     Picking a different class in the same group swaps it in place.
+ *   - If a group has no matching class on the element, all of its
+ *     tokens are disabled — the inspector only swaps EXISTING classes,
+ *     it doesn't add new ones (the override schema is `{from, to}`,
+ *     not `{add}`).
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { easeEntrance } from "@/lib/motion";
-import { TAILWIND_TOKENS } from "@/lib/tailwind-tokens";
+import { TAILWIND_TOKENS, type TokenCategory } from "@/lib/tailwind-tokens";
 import type { ElementOverride } from "./useElementOverrides";
 
 /**
@@ -64,26 +82,43 @@ export interface ElementInspectorProps {
 
 type SaveState = "idle" | "saving" | "error";
 
-const COLOR_GROUP = TAILWIND_TOKENS.find((g) => g.category === "color");
-
 /**
- * Find the color-category class currently applied to `el`, or `null` if
- * none of the curated tokens are present. The picker uses this to seed
- * the radio selection AND to know what `from` value to record in the
- * override.
+ * Find the first class belonging to `group` that is currently applied to
+ * `el`, or `null` if none of the curated tokens are present. Used to
+ * seed each section's "original" class and to drive the auto-open
+ * heuristic.
  */
-function findCurrentColorClass(el: Element | null): string | null {
-  if (!el || !COLOR_GROUP) return null;
-  for (const cls of COLOR_GROUP.classNames) {
+function findClassForGroup(
+  el: Element | null,
+  classNames: readonly string[],
+): string | null {
+  if (!el) return null;
+  for (const cls of classNames) {
     if (el.classList.contains(cls)) return cls;
   }
   return null;
 }
 
 /**
+ * Build the originals / picks dictionaries for every category at the
+ * moment of selection. Both maps share keys; a `null` value means "no
+ * curated token from this category is on the element".
+ */
+function buildClassMaps(el: Element | null): Record<TokenCategory, string | null> {
+  const map = {} as Record<TokenCategory, string | null>;
+  for (const group of TAILWIND_TOKENS) {
+    map[group.category] = findClassForGroup(el, group.classNames);
+  }
+  return map;
+}
+
+/**
  * Build a tag+class badge label for the SelectionOverlay or sidebar
  * header. Format: `H1.text-cf-orange` (uppercase tag, dot-prefixed
  * class). When no swap-able class is present, just the tag.
+ *
+ * Kept exported for `<Deck>`'s SelectionOverlay label so the badge stays
+ * in sync with the inspector's notion of "what is this element wearing".
  */
 export function buildSelectionLabel(
   fingerprint: { tag: string },
@@ -111,21 +146,52 @@ function findMatchingOverride(
 }
 
 /**
- * Replace (or append) an override matching `(slideId, selector)` in the
- * list. Returns a new array — caller pushes it to `onApplyDraft`.
+ * Replace (or remove) the override entry for `(slideId, selector)`. If
+ * the new entry has no `classOverrides` (all swaps reverted to their
+ * originals) it is dropped from the list entirely so re-selecting the
+ * element shows a clean "no draft" state.
  */
-function upsertOverride(
+function upsertOrRemoveOverride(
   list: ElementOverride[],
-  override: ElementOverride,
+  slideId: string,
+  selector: string,
+  next: ElementOverride | null,
 ): ElementOverride[] {
   const idx = list.findIndex(
-    (o) =>
-      o.slideId === override.slideId && o.selector === override.selector,
+    (o) => o.slideId === slideId && o.selector === selector,
   );
-  if (idx === -1) return [...list, override];
-  const next = list.slice();
-  next[idx] = override;
-  return next;
+  if (next === null) {
+    if (idx === -1) return list;
+    const out = list.slice();
+    out.splice(idx, 1);
+    return out;
+  }
+  if (idx === -1) return [...list, next];
+  const out = list.slice();
+  out[idx] = next;
+  return out;
+}
+
+function ChevronIcon({ open }: { open: boolean }) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width="12"
+      height="12"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={`h-3 w-3 transition-transform duration-150 ${
+        open ? "rotate-90" : ""
+      }`}
+      aria-hidden="true"
+    >
+      <polyline points="9 18 15 12 9 6" />
+    </svg>
+  );
 }
 
 export function ElementInspector({
@@ -137,92 +203,160 @@ export function ElementInspector({
   onSave,
   onClose,
 }: ElementInspectorProps) {
-  // The "original" class is the one the element had at the moment of
-  // selection (BEFORE any in-session swap). We track it separately so
-  // Reset can revert the live DOM mutation back to the source state.
-  const [originalClass, setOriginalClass] = useState<string | null>(null);
-  // The currently-picked class for THIS selection. Drives the radio.
-  const [pickedClass, setPickedClass] = useState<string | null>(null);
+  // Per-category "original" class — the value the element wore at the
+  // moment of selection. Drives `from` in the override entry and the
+  // disabled-state of each section's tokens (a section with no original
+  // can't swap anything).
+  const [originals, setOriginals] = useState<Record<TokenCategory, string | null>>(
+    () => buildClassMaps(null),
+  );
+  // Per-category currently-picked class. Drives the radio selection AND
+  // is used to compute the next-pick swap (`replace(picked, next)`).
+  const [picks, setPicks] = useState<Record<TokenCategory, string | null>>(
+    () => buildClassMaps(null),
+  );
+  // Which section headers are expanded. Auto-open populates this on
+  // selection; the user can toggle others manually.
+  const [openSections, setOpenSections] = useState<Set<TokenCategory>>(
+    () => new Set(),
+  );
   const [saveState, setSaveState] = useState<SaveState>("idle");
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
 
   // Re-seed when selection swaps (or clears).
   useEffect(() => {
     if (!selection) {
-      setOriginalClass(null);
-      setPickedClass(null);
+      setOriginals(buildClassMaps(null));
+      setPicks(buildClassMaps(null));
+      setOpenSections(new Set());
       setSaveState("idle");
       setStatusMessage(null);
       return;
     }
-    // Read the element's current color class. If a saved override
-    // already targets this element, the element's class on mount has
-    // ALREADY been swapped (the deck-level applier ran), so this reads
-    // the post-swap value — which is what we want.
-    const current = findCurrentColorClass(selection.element);
-    setOriginalClass(current);
-    setPickedClass(current);
+    const seeded = buildClassMaps(selection.element);
+    setOriginals(seeded);
+    setPicks(seeded);
     setSaveState("idle");
     setStatusMessage(null);
+    // Auto-open the FIRST category that has a matching class on the
+    // element. Iterate in TAILWIND_TOKENS' declared order for a stable
+    // UX (e.g. an h1 with both `text-cf-orange` and `text-6xl` opens
+    // Color, not Typography — color is declared first).
+    const firstHit = TAILWIND_TOKENS.find(
+      (g) => seeded[g.category] !== null,
+    );
+    setOpenSections(firstHit ? new Set([firstHit.category]) : new Set());
   }, [selection]);
 
-  const colorTokens = useMemo(
-    () => COLOR_GROUP?.classNames ?? [],
-    [],
-  );
-
-  const onPick = useCallback(
-    (next: string) => {
-      if (!selection || !originalClass) return;
-      if (next === pickedClass) return;
-
-      // Mutate the live DOM element so the change is visible immediately.
-      // We swap from the CURRENT class (whatever the picker last set)
-      // to the new class, NOT from `originalClass`, so consecutive picks
-      // chain correctly.
-      const current = pickedClass ?? originalClass;
-      if (current && selection.element.classList.contains(current)) {
-        selection.element.classList.replace(current, next);
-      } else {
-        // Defensive: if the original isn't on the element any more
-        // (e.g. external mutation), just add the new class.
-        selection.element.classList.add(next);
+  /**
+   * Recompute the override entry for the current selection from the
+   * supplied `picks` + the immutable `originals`. Each category whose
+   * pick differs from its original contributes one swap. Returns `null`
+   * when no category has any swap (the entry should be dropped).
+   */
+  const buildOverrideForSelection = useCallback(
+    (
+      currentPicks: Record<TokenCategory, string | null>,
+    ): ElementOverride | null => {
+      if (!selection) return null;
+      const swaps: Array<{ from: string; to: string }> = [];
+      for (const group of TAILWIND_TOKENS) {
+        const orig = originals[group.category];
+        const pick = currentPicks[group.category];
+        if (orig && pick && pick !== orig) {
+          swaps.push({ from: orig, to: pick });
+        }
       }
-      setPickedClass(next);
-
-      // Push the override up through the draft list so it survives
-      // re-renders and is captured in the eventual Save.
-      const override: ElementOverride = {
+      if (swaps.length === 0) return null;
+      return {
         slideId: selection.slideId,
         selector: selection.selector,
         fingerprint: selection.fingerprint,
-        classOverrides: [{ from: originalClass, to: next }],
+        classOverrides: swaps,
       };
-      onApplyDraft(upsertOverride(applied, override));
     },
-    [selection, originalClass, pickedClass, applied, onApplyDraft],
+    [selection, originals],
   );
 
-  const onResetSelection = useCallback(() => {
-    if (!selection || !originalClass) return;
-    const current = pickedClass ?? originalClass;
-    if (
-      current &&
-      current !== originalClass &&
-      selection.element.classList.contains(current)
-    ) {
-      selection.element.classList.replace(current, originalClass);
-    }
-    setPickedClass(originalClass);
-    // Drop the draft entry for this selection.
-    const next = applied.filter(
-      (o) =>
-        !(
-          o.slideId === selection.slideId && o.selector === selection.selector
+  const onPick = useCallback(
+    (category: TokenCategory, next: string) => {
+      if (!selection) return;
+      const orig = originals[category];
+      if (!orig) return; // section without original can't swap
+      const current = picks[category] ?? orig;
+      if (next === current) return;
+
+      // Mutate the live DOM element so the change is visible immediately.
+      // Swap from the CURRENT picked class (whatever the picker last set
+      // for THIS category) to the new pick — consecutive picks chain
+      // correctly within the category.
+      if (selection.element.classList.contains(current)) {
+        selection.element.classList.replace(current, next);
+      } else {
+        // Defensive: external mutation removed the source class.
+        selection.element.classList.add(next);
+      }
+
+      const nextPicks: Record<TokenCategory, string | null> = {
+        ...picks,
+        [category]: next,
+      };
+      setPicks(nextPicks);
+
+      const override = buildOverrideForSelection(nextPicks);
+      onApplyDraft(
+        upsertOrRemoveOverride(
+          applied,
+          selection.slideId,
+          selection.selector,
+          override,
         ),
+      );
+    },
+    [
+      selection,
+      originals,
+      picks,
+      applied,
+      onApplyDraft,
+      buildOverrideForSelection,
+    ],
+  );
+
+  /**
+   * Revert every in-session live DOM mutation for the active selection,
+   * restoring the element to its original (authored-in-code) class set.
+   * Used by Reset and Close.
+   */
+  const revertLiveMutations = useCallback(() => {
+    if (!selection) return;
+    for (const group of TAILWIND_TOKENS) {
+      const orig = originals[group.category];
+      const pick = picks[group.category];
+      if (
+        orig &&
+        pick &&
+        pick !== orig &&
+        selection.element.classList.contains(pick)
+      ) {
+        selection.element.classList.replace(pick, orig);
+      }
+    }
+  }, [selection, originals, picks]);
+
+  const onResetSelection = useCallback(() => {
+    if (!selection) return;
+    revertLiveMutations();
+    setPicks(originals);
+    onApplyDraft(
+      upsertOrRemoveOverride(
+        applied,
+        selection.slideId,
+        selection.selector,
+        null,
+      ),
     );
-    onApplyDraft(next);
-  }, [selection, originalClass, pickedClass, applied, onApplyDraft]);
+  }, [selection, originals, revertLiveMutations, applied, onApplyDraft]);
 
   const onSaveClick = useCallback(async () => {
     setSaveState("saving");
@@ -242,32 +376,50 @@ export function ElementInspector({
   }, [applied, onSave]);
 
   const onCloseClick = useCallback(() => {
-    // Revert any in-session live DOM mutation for the active selection
-    // so closing-without-saving never leaves the audience-facing markup
-    // changed.
-    if (selection && originalClass) {
-      const current = pickedClass ?? originalClass;
-      if (
-        current &&
-        current !== originalClass &&
-        selection.element.classList.contains(current)
-      ) {
-        selection.element.classList.replace(current, originalClass);
-      }
-    }
+    revertLiveMutations();
     onClearDraft();
     onClose();
-  }, [selection, originalClass, pickedClass, onClearDraft, onClose]);
+  }, [revertLiveMutations, onClearDraft, onClose]);
 
+  const toggleSection = useCallback((category: TokenCategory) => {
+    setOpenSections((prev) => {
+      const next = new Set(prev);
+      if (next.has(category)) next.delete(category);
+      else next.add(category);
+      return next;
+    });
+  }, []);
+
+  /**
+   * Header label = tag + the element's currently-picked color class
+   * (preferring color since that's the most identifying mutation; falls
+   * back to whatever the first non-null pick is, then just the tag).
+   */
   const headerLabel = useMemo(() => {
     if (!selection) return "";
-    return buildSelectionLabel(selection.fingerprint, pickedClass);
-  }, [selection, pickedClass]);
+    const colorPick = picks.color ?? null;
+    if (colorPick) return buildSelectionLabel(selection.fingerprint, colorPick);
+    const firstPick = TAILWIND_TOKENS.map((g) => picks[g.category]).find(
+      (p) => p !== null && p !== undefined,
+    );
+    return buildSelectionLabel(selection.fingerprint, firstPick ?? null);
+  }, [selection, picks]);
 
   const hasDraft = useMemo(() => {
     if (!selection) return false;
-    return Boolean(findMatchingOverride(applied, selection.slideId, selection.selector));
+    return Boolean(
+      findMatchingOverride(applied, selection.slideId, selection.selector),
+    );
   }, [applied, selection]);
+
+  const canReset = useMemo(() => {
+    if (!selection) return false;
+    return TAILWIND_TOKENS.some((g) => {
+      const orig = originals[g.category];
+      const pick = picks[g.category];
+      return Boolean(orig && pick && pick !== orig);
+    });
+  }, [selection, originals, picks]);
 
   return (
     <AnimatePresence>
@@ -329,56 +481,107 @@ export function ElementInspector({
             )}
 
             {selection && (
-              <fieldset className="flex flex-col gap-4">
-                <legend className="cf-tag">Text color</legend>
-                <p className="text-xs text-cf-text-muted">
-                  {originalClass ? (
-                    <>
-                      Original:{" "}
-                      <code
-                        data-testid="element-inspector-original"
-                        className="font-mono"
+              <div className="flex flex-col gap-2">
+                {TAILWIND_TOKENS.map((group) => {
+                  const orig = originals[group.category];
+                  const pick = picks[group.category];
+                  const isOpen = openSections.has(group.category);
+                  const sectionDirty = Boolean(
+                    orig && pick && pick !== orig,
+                  );
+                  return (
+                    <section
+                      key={group.category}
+                      data-testid={`element-inspector-section-${group.category}`}
+                      data-open={isOpen ? "true" : "false"}
+                      data-dirty={sectionDirty ? "true" : "false"}
+                      className="rounded-md border border-cf-border bg-cf-bg-100"
+                    >
+                      <button
+                        type="button"
+                        data-interactive
+                        data-testid={`element-inspector-section-toggle-${group.category}`}
+                        onClick={() => toggleSection(group.category)}
+                        aria-expanded={isOpen}
+                        className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left"
                       >
-                        {originalClass}
-                      </code>
-                    </>
-                  ) : (
-                    <>This element has no curated text-color class.</>
-                  )}
-                </p>
-                <ul
-                  className="flex flex-col gap-1"
-                  data-testid="element-inspector-color-list"
-                >
-                  {colorTokens.map((cls) => {
-                    const checked = pickedClass === cls;
-                    return (
-                      <li key={cls}>
-                        <label
-                          className={`flex cursor-pointer items-center gap-2 rounded px-2 py-1 text-sm ${
-                            checked
-                              ? "bg-cf-bg-300 text-cf-text"
-                              : "text-cf-text-muted hover:bg-cf-bg-200"
-                          }`}
+                        <span className="flex items-center gap-2">
+                          <ChevronIcon open={isOpen} />
+                          <span className="cf-tag">{group.label}</span>
+                          {sectionDirty && (
+                            <span
+                              aria-hidden="true"
+                              className="inline-block h-1.5 w-1.5 rounded-full bg-cf-orange"
+                            />
+                          )}
+                        </span>
+                        <span className="font-mono text-[10px] uppercase tracking-[0.1em] text-cf-text-subtle">
+                          {orig ? (pick === orig ? orig : `${orig} → ${pick}`) : "—"}
+                        </span>
+                      </button>
+                      {isOpen && (
+                        <fieldset
+                          data-testid={`element-inspector-section-content-${group.category}`}
+                          className="flex flex-col gap-2 border-t border-cf-border px-3 py-3"
                         >
-                          <input
-                            type="radio"
-                            data-interactive
-                            data-testid={`element-inspector-color-${cls}`}
-                            name="text-color"
-                            value={cls}
-                            checked={checked}
-                            disabled={!originalClass}
-                            onChange={() => onPick(cls)}
-                            className="accent-cf-orange"
-                          />
-                          <span className="font-mono">{cls}</span>
-                        </label>
-                      </li>
-                    );
-                  })}
-                </ul>
-              </fieldset>
+                          <p className="text-xs text-cf-text-muted">
+                            {orig ? (
+                              <>
+                                Original:{" "}
+                                <code
+                                  data-testid={`element-inspector-original-${group.category}`}
+                                  className="font-mono"
+                                >
+                                  {orig}
+                                </code>
+                              </>
+                            ) : (
+                              <>
+                                This element has no curated{" "}
+                                {group.label.toLowerCase()} class.
+                              </>
+                            )}
+                          </p>
+                          <ul
+                            className="flex flex-col gap-1"
+                            data-testid={`element-inspector-token-list-${group.category}`}
+                          >
+                            {group.classNames.map((cls) => {
+                              const checked = pick === cls;
+                              return (
+                                <li key={cls}>
+                                  <label
+                                    className={`flex cursor-pointer items-center gap-2 rounded px-2 py-1 text-sm ${
+                                      checked
+                                        ? "bg-cf-bg-300 text-cf-text"
+                                        : "text-cf-text-muted hover:bg-cf-bg-200"
+                                    }`}
+                                  >
+                                    <input
+                                      type="radio"
+                                      data-interactive
+                                      data-testid={`element-inspector-token-${cls}`}
+                                      name={`token-${group.category}`}
+                                      value={cls}
+                                      checked={checked}
+                                      disabled={!orig}
+                                      onChange={() =>
+                                        onPick(group.category, cls)
+                                      }
+                                      className="accent-cf-orange"
+                                    />
+                                    <span className="font-mono">{cls}</span>
+                                  </label>
+                                </li>
+                              );
+                            })}
+                          </ul>
+                        </fieldset>
+                      )}
+                    </section>
+                  );
+                })}
+              </div>
             )}
 
             {statusMessage && (
@@ -410,9 +613,7 @@ export function ElementInspector({
                 data-interactive
                 data-testid="element-inspector-reset"
                 onClick={onResetSelection}
-                disabled={
-                  !selection || pickedClass === originalClass || !originalClass
-                }
+                disabled={!canReset}
                 className="cf-btn-ghost disabled:cursor-not-allowed disabled:opacity-50"
               >
                 Reset selection

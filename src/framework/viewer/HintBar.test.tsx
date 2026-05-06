@@ -88,6 +88,29 @@ describe("<HintBar />", () => {
     expect(text.toLowerCase()).toContain("navigate");
   });
 
+  it("advertises the I → inspect shortcut in presenter mode", () => {
+    render(
+      <PresenterModeProvider enabled={true}>
+        <HintBar />
+      </PresenterModeProvider>,
+    );
+    const text = (screen.getByTestId("hint-bar").textContent ?? "").toLowerCase();
+    expect(text).toContain("inspect");
+    // The `I` glyph immediately precedes the `inspect` label in the
+    // span sequence (CSS gap, no whitespace between them).
+    expect(text).toContain("iinspect");
+  });
+
+  it("does NOT advertise the I → inspect shortcut in public mode", () => {
+    render(
+      <PresenterModeProvider enabled={false}>
+        <HintBar />
+      </PresenterModeProvider>,
+    );
+    const text = (screen.getByTestId("hint-bar").textContent ?? "").toLowerCase();
+    expect(text).not.toContain("inspect");
+  });
+
   it('does NOT carry data-deck-chrome (post-#30: managed by useNearViewportBottom, not AutoHideChrome)', () => {
     render(<HintBar />);
     const bar = screen.getByTestId("hint-bar");

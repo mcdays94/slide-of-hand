@@ -48,6 +48,7 @@ const PRESENTER_HINTS: Hint[] = [
   { keys: "Q", label: "laser" },
   { keys: "W", label: "magnify" },
   { keys: "E", label: "marker" },
+  { keys: "I", label: "inspect" },
 ];
 
 export function HintBar() {

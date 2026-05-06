@@ -23,6 +23,7 @@ const SHORTCUTS: Array<[string, string]> = [
   ["Q / W / E", "Laser / magnifier / marker (slice #7)"],
   ["T", "Theme overrides (admin only)"],
   ["M", "Slide manager (admin only)"],
+  ["I", "Element inspector (admin only)"],
   ["Esc", "Close overlays / exit tool"],
 ];
 
