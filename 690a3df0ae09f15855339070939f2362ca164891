@@ -1,0 +1,29 @@
+AGENTS.md
+  98a367e98b008ae5 13
+docs/deploy.md
+  98a367e98b008ae5 3,49,52,64,73,87-88,92,94,104,115,121,124,128,133,135,187,189,195,236,238,325,331,379-380,382,384
+README.md
+  98a367e98b008ae5 7
+wrangler.jsonc
+  98a367e98b008ae5 9,17,38
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "690a3df0ae09f15855339070939f2362ca164891",
+  "prompts": {
+    "98a367e98b008ae5": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_2077bd95cffepOw4IvqFsV7eWM",
+        "model": "anthropic/claude-opus-4-7"
+      },
+      "human_author": "mdias",
+      "messages": [],
+      "total_additions": 32,
+      "total_deletions": 32,
+      "accepted_lines": 32,
+      "overriden_lines": 0
+    }
+  }
+}
