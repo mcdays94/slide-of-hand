@@ -4,26 +4,84 @@
  * Toggled with `O`. Shows a grid of slides with the current slide highlighted;
  * clicking a tile jumps to that slide and closes the overlay.
  *
- * The thumbnails render a tiny preview (slide id + title) rather than a true
- * pixel-perfect snapshot — pixel snapshots would require html2canvas or a
- * second reactive render of every slide, both of which are out of scope for
- * this slice. A future slice can swap in real thumbnails.
+ * Tiles render real PNG thumbnails produced by `npm run thumbnails`
+ * (`public/thumbnails/<slug>/<NN>.png`). When a thumbnail isn't present
+ * (fresh clone, never run, or new slide added since the last build) the tile
+ * falls back to the legacy text-only preview — kicker (`01 · cover`) plus
+ * slide title — so the grid stays usable without thumbnails. Production
+ * deploys never depend on thumbnails being present; they are a UX nicety.
  */
 
+import { useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import type { SlideDef } from "./types";
 import { easeEntrance } from "@/lib/motion";
 
 export interface OverviewProps {
   open: boolean;
+  /** Deck slug — drives the thumbnail URL `/thumbnails/<slug>/<NN>.png`. */
+  slug: string;
   slides: SlideDef[];
   current: number;
   onJump: (slide: number) => void;
   onClose: () => void;
 }
 
+interface OverviewTileProps {
+  slug: string;
+  slide: SlideDef;
+  index: number;
+  active: boolean;
+  onClick: () => void;
+}
+
+function OverviewTile({
+  slug,
+  slide,
+  index,
+  active,
+  onClick,
+}: OverviewTileProps) {
+  const [imageFailed, setImageFailed] = useState(false);
+  const thumbSrc = `/thumbnails/${slug}/${String(index + 1).padStart(2, "0")}.png`;
+  const showImage = !imageFailed;
+
+  return (
+    <button
+      type="button"
+      data-interactive
+      onClick={onClick}
+      className={`cf-card group relative flex aspect-video flex-col justify-between overflow-hidden text-left transition-colors ${
+        active
+          ? "border-cf-orange ring-2 ring-cf-orange/40"
+          : "hover:border-dashed"
+      }`}
+    >
+      {showImage ? (
+        <img
+          src={thumbSrc}
+          alt=""
+          loading="lazy"
+          onError={() => setImageFailed(true)}
+          className="absolute inset-0 h-full w-full object-cover"
+        />
+      ) : (
+        <div className="flex h-full w-full flex-col justify-between p-3">
+          <span className="font-mono text-[10px] uppercase tracking-[0.25em] text-cf-text-subtle">
+            {String(index + 1).padStart(2, "0")} · {slide.layout ?? "default"}
+          </span>
+          <span className="line-clamp-2 text-sm font-medium tracking-tight text-cf-text">
+            {slide.title || slide.id}
+          </span>
+        </div>
+      )}
+    </button>
+  );
+}
+
 export function Overview({
   open,
+  slug,
   slides,
   current,
   onJump,
@@ -52,32 +110,19 @@ export function Overview({
             Esc
           </button>
           <div className="grid w-full max-w-6xl grid-cols-3 gap-4 sm:grid-cols-4 lg:grid-cols-5">
-            {slides.map((slide, i) => {
-              const active = i === current;
-              return (
-                <button
-                  key={slide.id}
-                  type="button"
-                  data-interactive
-                  onClick={() => {
-                    onJump(i);
-                    onClose();
-                  }}
-                  className={`cf-card group flex aspect-video flex-col justify-between p-3 text-left transition-colors ${
-                    active
-                      ? "border-cf-orange ring-2 ring-cf-orange/40"
-                      : "hover:border-dashed"
-                  }`}
-                >
-                  <span className="font-mono text-[10px] uppercase tracking-[0.25em] text-cf-text-subtle">
-                    {String(i + 1).padStart(2, "0")} · {slide.layout ?? "default"}
-                  </span>
-                  <span className="line-clamp-2 text-sm font-medium tracking-tight text-cf-text">
-                    {slide.title || slide.id}
-                  </span>
-                </button>
-              );
-            })}
+            {slides.map((slide, i) => (
+              <OverviewTile
+                key={slide.id}
+                slug={slug}
+                slide={slide}
+                index={i}
+                active={i === current}
+                onClick={() => {
+                  onJump(i);
+                  onClose();
+                }}
+              />
+            ))}
           </div>
         </motion.div>
       )}

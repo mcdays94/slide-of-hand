@@ -38,6 +38,11 @@ RESUME_PROMPT.md
 test-results/
 coverage/
 
+# Thumbnails — build artefacts produced by `npm run thumbnails`. Regenerated
+# before deploy; not committed. Production gracefully falls back to text
+# tiles when these are absent.
+public/thumbnails/
+
 # OS
 Thumbs.db
 ehthumbs.db
