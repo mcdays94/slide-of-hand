@@ -1,0 +1,31 @@
+src/framework/viewer/TopToolbar.test.tsx
+  98a367e98b008ae5 1-182
+src/framework/viewer/TopToolbar.tsx
+  98a367e98b008ae5 1-333
+src/framework/viewer/Deck.tsx
+  98a367e98b008ae5 33,233-238,240,474-478
+src/framework/viewer/useNearViewportEdge.test.tsx
+  98a367e98b008ae5 1-131
+src/framework/viewer/useNearViewportEdge.ts
+  98a367e98b008ae5 1-75
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "ce9d52fef3263a2580396e0e9d3e4458fd898bbd",
+  "prompts": {
+    "98a367e98b008ae5": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_2077bd95cffepOw4IvqFsV7eWM",
+        "model": "anthropic/claude-opus-4-7"
+      },
+      "human_author": "mdias",
+      "messages": [],
+      "total_additions": 734,
+      "total_deletions": 2,
+      "accepted_lines": 734,
+      "overriden_lines": 0
+    }
+  }
+}
