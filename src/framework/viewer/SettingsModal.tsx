@@ -1,0 +1,200 @@
+/**
+ * `<SettingsModal>` — centred overlay for editing per-browser viewer
+ * preferences (issue #32).
+ *
+ * v1 ships a single setting: `showSlideIndicators` (default ON). When
+ * OFF, `<ProgressBar>` follows the same mouse-proximity gating as
+ * `<HintBar>` instead of being permanently visible.
+ *
+ * Adding a 2nd / 3rd setting is a one-property change in
+ * `@/lib/settings.ts` plus a new `<SettingsRow>` here. The form
+ * scaffolding stays lean — no array-driven row generator, no "settings
+ * schema". Just append rows.
+ *
+ * Closes on:
+ *   - the X button
+ *   - clicking the backdrop (anywhere outside the panel)
+ *   - the Esc key (handled by `<Deck>`'s top-level keydown listener,
+ *     which calls our `onClose` via `closeOverlays`)
+ */
+
+import {
+  AnimatePresence,
+  motion,
+  type HTMLMotionProps,
+} from "framer-motion";
+import { useId, type MouseEvent, type ReactNode } from "react";
+import { easeStandard } from "@/lib/motion";
+import { useSettings } from "./useSettings";
+
+export interface SettingsModalProps {
+  open: boolean;
+  onClose: () => void;
+}
+
+const backdropMotion: HTMLMotionProps<"div"> = {
+  initial: { opacity: 0 },
+  animate: { opacity: 1 },
+  exit: { opacity: 0 },
+  transition: { duration: 0.2, ease: easeStandard },
+};
+
+const panelMotion: HTMLMotionProps<"div"> = {
+  initial: { opacity: 0, y: 8 },
+  animate: { opacity: 1, y: 0 },
+  exit: { opacity: 0, y: 8 },
+  transition: { duration: 0.2, ease: easeStandard },
+};
+
+interface SettingsRowProps {
+  /** Stable id used to associate the label and the toggle. */
+  inputId: string;
+  label: string;
+  description: string;
+  checked: boolean;
+  onChange: (next: boolean) => void;
+  testId?: string;
+}
+
+function SettingsRow({
+  inputId,
+  label,
+  description,
+  checked,
+  onChange,
+  testId,
+}: SettingsRowProps) {
+  return (
+    <div className="flex items-start justify-between gap-6 py-4">
+      <div className="flex-1">
+        <label
+          htmlFor={inputId}
+          className="block text-sm font-medium text-cf-text"
+        >
+          {label}
+        </label>
+        <p className="mt-1 text-xs text-cf-text-muted">{description}</p>
+      </div>
+      <button
+        id={inputId}
+        type="button"
+        role="switch"
+        aria-checked={checked}
+        aria-label={label}
+        data-interactive
+        data-testid={testId}
+        onClick={() => onChange(!checked)}
+        className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full border border-cf-border transition-colors duration-200 ease-out focus:outline-none focus-visible:ring-2 focus-visible:ring-cf-orange ${
+          checked ? "bg-cf-orange" : "bg-cf-bg-200"
+        }`}
+      >
+        <span
+          aria-hidden="true"
+          className={`inline-block h-4 w-4 transform rounded-full bg-cf-bg-100 shadow-sm transition-transform duration-200 ease-out ${
+            checked ? "translate-x-6" : "translate-x-1"
+          }`}
+        />
+      </button>
+    </div>
+  );
+}
+
+export function SettingsModal({ open, onClose }: SettingsModalProps) {
+  const { settings, setSetting } = useSettings();
+  const showIndicatorsId = useId();
+
+  // Click-on-backdrop closes; clicks on the inner panel must NOT bubble
+  // to the backdrop. We compare currentTarget vs target so a click that
+  // started inside the panel but ended on the backdrop (drag-select)
+  // doesn't accidentally close.
+  const onBackdropClick = (e: MouseEvent<HTMLDivElement>) => {
+    if (e.target === e.currentTarget) onClose();
+  };
+
+  // The modal is mounted UNCONDITIONALLY so AnimatePresence can play the
+  // exit animation. We render nothing (no panel, no overlay) when
+  // `open` is false; AnimatePresence handles the rest.
+  return (
+    <AnimatePresence>
+      {open && (
+        <SettingsModalContent
+          showIndicators={settings.showSlideIndicators}
+          showIndicatorsId={showIndicatorsId}
+          onToggleShowIndicators={(next) =>
+            setSetting("showSlideIndicators", next)
+          }
+          onBackdropClick={onBackdropClick}
+          onClose={onClose}
+        />
+      )}
+    </AnimatePresence>
+  );
+}
+
+interface SettingsModalContentProps {
+  showIndicators: boolean;
+  showIndicatorsId: string;
+  onToggleShowIndicators: (next: boolean) => void;
+  onBackdropClick: (e: MouseEvent<HTMLDivElement>) => void;
+  onClose: () => void;
+}
+
+function SettingsModalContent({
+  showIndicators,
+  showIndicatorsId,
+  onToggleShowIndicators,
+  onBackdropClick,
+  onClose,
+}: SettingsModalContentProps): ReactNode {
+  return (
+    <motion.div
+      key="settings-modal-backdrop"
+      data-testid="settings-modal"
+      data-no-advance
+      onClick={onBackdropClick}
+      className="absolute inset-0 z-50 flex items-center justify-center bg-cf-bg-100/80 px-6 py-12 backdrop-blur-sm"
+      {...backdropMotion}
+    >
+      <motion.div
+        data-testid="settings-modal-panel"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="settings-modal-title"
+        className="cf-card w-full max-w-md p-8"
+        {...panelMotion}
+      >
+        <div className="mb-6 flex items-start justify-between gap-4">
+          <div>
+            <p className="cf-tag mb-2">Preferences</p>
+            <h2
+              id="settings-modal-title"
+              className="text-2xl font-medium tracking-[-0.025em]"
+            >
+              Settings
+            </h2>
+          </div>
+          <button
+            type="button"
+            aria-label="Close settings"
+            data-interactive
+            data-testid="settings-modal-close"
+            onClick={onClose}
+            className="cf-btn-ghost"
+          >
+            Esc
+          </button>
+        </div>
+        <div className="divide-y divide-cf-border border-y border-cf-border">
+          <SettingsRow
+            inputId={showIndicatorsId}
+            label="Show slide indicators always"
+            description="Keep the bottom progress bar visible at all times. When off, it fades in only when your cursor approaches the bottom of the screen."
+            checked={showIndicators}
+            onChange={onToggleShowIndicators}
+            testId="settings-modal-toggle-show-indicators"
+          />
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}

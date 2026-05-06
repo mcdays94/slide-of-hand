@@ -38,6 +38,7 @@ const PUBLIC_HINTS: Hint[] = [
   { keys: "F", label: "fullscreen" },
   { keys: "D", label: "dark" },
   { keys: "O", label: "overview" },
+  { keys: "S", label: "settings" },
   { keys: "?", label: "help" },
 ];
 

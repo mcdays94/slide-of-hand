@@ -29,6 +29,8 @@ import { Slide } from "./Slide";
 import { PhaseProvider } from "./PhaseContext";
 import { Overview } from "./Overview";
 import { KeyboardHelp } from "./KeyboardHelp";
+import { SettingsModal } from "./SettingsModal";
+import { SettingsProvider } from "./useSettings";
 import { ThemeSidebar } from "./ThemeSidebar";
 import { TopToolbar } from "./TopToolbar";
 import { useDeckTheme } from "./useDeckTheme";
@@ -171,12 +173,14 @@ export function Deck({ slug, title, slides }: DeckProps) {
   const [helpOpen, setHelpOpen] = useState(false);
   const [themeSidebarOpen, setThemeSidebarOpen] = useState(false);
   const [slideManagerOpen, setSlideManagerOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const closeOverlays = useCallback(() => {
     setOverviewOpen(false);
     setHelpOpen(false);
     setThemeSidebarOpen(false);
     setSlideManagerOpen(false);
+    setSettingsOpen(false);
   }, []);
 
   const toggleOverview = useCallback(() => {
@@ -190,6 +194,7 @@ export function Deck({ slug, title, slides }: DeckProps) {
     setHelpOpen(false);
     setThemeSidebarOpen(false);
     setSlideManagerOpen(false);
+    setSettingsOpen(false);
   }, [analytics]);
 
   const toggleHelp = useCallback(() => {
@@ -197,6 +202,7 @@ export function Deck({ slug, title, slides }: DeckProps) {
     setOverviewOpen(false);
     setThemeSidebarOpen(false);
     setSlideManagerOpen(false);
+    setSettingsOpen(false);
   }, []);
 
   const toggleThemeSidebar = useCallback(() => {
@@ -204,6 +210,7 @@ export function Deck({ slug, title, slides }: DeckProps) {
     setOverviewOpen(false);
     setHelpOpen(false);
     setSlideManagerOpen(false);
+    setSettingsOpen(false);
   }, []);
 
   const closeThemeSidebar = useCallback(() => {
@@ -215,6 +222,7 @@ export function Deck({ slug, title, slides }: DeckProps) {
     setOverviewOpen(false);
     setHelpOpen(false);
     setThemeSidebarOpen(false);
+    setSettingsOpen(false);
   }, []);
 
   const closeSlideManager = useCallback(() => {
@@ -223,6 +231,18 @@ export function Deck({ slug, title, slides }: DeckProps) {
     // visible deck to the persisted manifest.
     manifestHook.clearDraft();
   }, [manifestHook]);
+
+  const toggleSettings = useCallback(() => {
+    setSettingsOpen((o) => !o);
+    setOverviewOpen(false);
+    setHelpOpen(false);
+    setThemeSidebarOpen(false);
+    setSlideManagerOpen(false);
+  }, []);
+
+  const closeSettings = useCallback(() => {
+    setSettingsOpen(false);
+  }, []);
 
   // ── Keyboard ───────────────────────────────────────────────────────────
   useEffect(() => {
@@ -303,6 +323,13 @@ export function Deck({ slug, title, slides }: DeckProps) {
             toggleSlideManager();
           }
           break;
+        case "s":
+        case "S":
+          // Settings modal — public + admin both, since settings are
+          // per-browser preferences.
+          e.preventDefault();
+          toggleSettings();
+          break;
         case "f":
         case "F":
           e.preventDefault();
@@ -315,7 +342,13 @@ export function Deck({ slug, title, slides }: DeckProps) {
           }
           break;
         case "Escape":
-          if (overviewOpen || helpOpen || themeSidebarOpen || slideManagerOpen) {
+          if (
+            overviewOpen ||
+            helpOpen ||
+            themeSidebarOpen ||
+            slideManagerOpen ||
+            settingsOpen
+          ) {
             e.preventDefault();
             closeOverlays();
           }
@@ -336,11 +369,13 @@ export function Deck({ slug, title, slides }: DeckProps) {
     toggleTheme,
     toggleThemeSidebar,
     toggleSlideManager,
+    toggleSettings,
     presenterMode,
     overviewOpen,
     helpOpen,
     themeSidebarOpen,
     slideManagerOpen,
+    settingsOpen,
     closeOverlays,
   ]);
 
@@ -349,14 +384,27 @@ export function Deck({ slug, title, slides }: DeckProps) {
 
   const onSurfaceClick = useCallback(
     (e: React.MouseEvent<HTMLDivElement>) => {
-      if (overviewOpen || helpOpen || themeSidebarOpen || slideManagerOpen)
+      if (
+        overviewOpen ||
+        helpOpen ||
+        themeSidebarOpen ||
+        slideManagerOpen ||
+        settingsOpen
+      )
         return;
       if (shouldSuppressAdvance(e.target)) return;
       // Right-click / middle-click should never advance.
       if (e.button !== 0) return;
       next();
     },
-    [next, overviewOpen, helpOpen, themeSidebarOpen, slideManagerOpen],
+    [
+      next,
+      overviewOpen,
+      helpOpen,
+      themeSidebarOpen,
+      slideManagerOpen,
+      settingsOpen,
+    ],
   );
 
   const slide = visibleSlides[cursor.slide];
@@ -394,12 +442,14 @@ export function Deck({ slug, title, slides }: DeckProps) {
 
   if (!slide) {
     return (
-      <div
-        className="flex min-h-screen items-center justify-center bg-cf-bg-100 text-cf-text"
-        role="alert"
-      >
-        <p className="cf-tag">Empty deck</p>
-      </div>
+      <SettingsProvider>
+        <div
+          className="flex min-h-screen items-center justify-center bg-cf-bg-100 text-cf-text"
+          role="alert"
+        >
+          <p className="cf-tag">Empty deck</p>
+        </div>
+      </SettingsProvider>
     );
   }
 
@@ -410,6 +460,7 @@ export function Deck({ slug, title, slides }: DeckProps) {
   };
 
   return (
+    <SettingsProvider>
     <div
       ref={surfaceRef}
       data-deck-slug={slug}
@@ -452,6 +503,7 @@ export function Deck({ slug, title, slides }: DeckProps) {
           onClose={closeOverlays}
         />
         <KeyboardHelp open={helpOpen} onClose={closeOverlays} />
+        <SettingsModal open={settingsOpen} onClose={closeSettings} />
         {presenterMode && (
           <ThemeSidebar
             open={themeSidebarOpen}
@@ -477,5 +529,6 @@ export function Deck({ slug, title, slides }: DeckProps) {
         currentPhase={cursor.phase}
       />
     </div>
+    </SettingsProvider>
   );
 }
