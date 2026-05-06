@@ -150,6 +150,37 @@ function ListIcon() {
   );
 }
 
+function WandIcon() {
+  // Magic-wand glyph: a slim diagonal staff with a sparkle at the tip.
+  // Mirrors the stroke-only / 14×14 line-icon language of the other
+  // top-bar icons (PaletteIcon, ListIcon, ChartIcon).
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="h-3.5 w-3.5"
+      aria-hidden="true"
+    >
+      <path d="M15 4V2" />
+      <path d="M15 16v-2" />
+      <path d="M8 9h2" />
+      <path d="M20 9h2" />
+      <path d="M17.8 11.8 19 13" />
+      <path d="M15 9h0" />
+      <path d="M17.8 6.2 19 5" />
+      <path d="m3 21 9-9" />
+      <path d="M12.2 6.2 11 5" />
+    </svg>
+  );
+}
+
 function ChartIcon() {
   return (
     <svg
@@ -285,6 +316,9 @@ export function TopToolbar({
   const onSettings = useCallback(() => {
     dispatchSyntheticKey("s");
   }, []);
+  const onInspect = useCallback(() => {
+    dispatchSyntheticKey("i");
+  }, []);
 
   // Build the deep link to the admin viewer at the current cursor.
   const studioDeepLink = `/admin/decks/${encodeURIComponent(
@@ -339,6 +373,14 @@ export function TopToolbar({
             >
               <ListIcon />
               <span>Slides</span>
+            </BarButton>
+            <BarButton
+              onClick={onInspect}
+              title="Element inspector (I)"
+              testId="top-toolbar-inspect"
+            >
+              <WandIcon />
+              <span>Inspect</span>
             </BarButton>
             <BarButton
               to={`/admin/decks/${encodeURIComponent(slug)}/analytics`}
