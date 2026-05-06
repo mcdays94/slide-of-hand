@@ -43,7 +43,10 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { easeEntrance } from "@/lib/motion";
 import { TAILWIND_TOKENS, type TokenCategory } from "@/lib/tailwind-tokens";
-import type { ElementOverride } from "./useElementOverrides";
+import type {
+  AppliedOverride,
+  ElementOverride,
+} from "./useElementOverrides";
 
 /**
  * The currently-inspected element + the metadata `<Deck>` captured when
@@ -68,6 +71,15 @@ export interface ElementInspectorProps {
   selection: InspectorSelection | null;
   /** Currently-applied list (persistent + any in-flight draft). */
   applied: ElementOverride[];
+  /**
+   * Optional — `applied` paired with each entry's `findBySelector` status.
+   * When provided, the override-list view (rendered when `selection` is
+   * null) uses this to decorate orphaned/missing entries with a warning
+   * icon and to enable the "Clear all orphaned" footer button. When
+   * absent, every entry is treated as "matched" (no decorations,
+   * footer button hidden).
+   */
+  appliedWithStatus?: AppliedOverride[];
   /** Push a new draft list up to `useElementOverrides`. */
   onApplyDraft: (overrides: ElementOverride[]) => void;
   /** Drop the draft so applied falls back to persistent. */
@@ -76,6 +88,28 @@ export interface ElementInspectorProps {
   onSave: (
     overrides: ElementOverride[],
   ) => Promise<{ ok: boolean; status?: number }>;
+  /**
+   * Optional — direct delete for a single override. The override-list
+   * view's `×` button calls this. When absent, the per-row × button
+   * is hidden.
+   */
+  onRemoveOne?: (
+    override: ElementOverride,
+  ) => Promise<{ ok: boolean; status?: number }>;
+  /**
+   * Optional — direct delete for every override whose status is
+   * `orphaned` or `missing`. The footer "Clear all orphaned" button
+   * calls this. When absent, the button is hidden.
+   */
+  onClearOrphaned?: () => Promise<{ ok: boolean; status?: number }>;
+  /**
+   * Optional — when the user clicks an override row in the list view,
+   * navigate the deck to that slide. Receives the `slideId` (matching
+   * a `SlideDef.id`); the parent (`<Deck>`) resolves it to a slide
+   * index and calls `goto`. When absent, clicking the row body is a
+   * no-op (the × still works).
+   */
+  onNavigate?: (slideId: string) => void;
   /** Close the sidebar (called on Esc / Close button). */
   onClose: () => void;
 }
@@ -194,13 +228,181 @@ function ChevronIcon({ open }: { open: boolean }) {
   );
 }
 
+/**
+ * Format a single override entry as a label for the override-list view:
+ * `<slideId> · <TAG>.<from> → <to>`. Multi-swap entries collapse the
+ * trailing classes into a `+N more` suffix so the row stays one line.
+ */
+function formatOverrideRowLabel(o: ElementOverride): {
+  slideLabel: string;
+  swapLabel: string;
+  moreCount: number;
+} {
+  const tag = o.fingerprint.tag.toUpperCase();
+  const first = o.classOverrides[0];
+  const swapLabel = first
+    ? `${tag}.${first.from} → ${first.to}`
+    : tag;
+  const moreCount = Math.max(0, o.classOverrides.length - 1);
+  return {
+    slideLabel: o.slideId,
+    swapLabel,
+    moreCount,
+  };
+}
+
+/**
+ * Stable key for an override row — `(slideId, selector)` together
+ * identify the entry uniquely (a slide can have multiple selectors,
+ * but a given slide+selector pair has at most one override).
+ */
+function overrideKey(o: ElementOverride): string {
+  return `${o.slideId}::${o.selector}`;
+}
+
+interface OverrideListViewProps {
+  appliedWithStatus: AppliedOverride[];
+  onRemoveOne?: (
+    override: ElementOverride,
+  ) => Promise<{ ok: boolean; status?: number }>;
+  onClearOrphaned?: () => Promise<{ ok: boolean; status?: number }>;
+  onNavigate?: (slideId: string) => void;
+}
+
+/**
+ * The override-list view, shown in the inspector body whenever no
+ * element is selected AND at least one override exists. Each row:
+ *
+ *   ⚠? slide-id · TAG.from → to (+N more) [×]
+ *
+ * Clicking the row body navigates to the slide. Clicking the × removes
+ * the single entry from KV directly. The footer "Clear all orphaned"
+ * button is only rendered when at least one entry is orphaned/missing.
+ */
+function OverrideListView({
+  appliedWithStatus,
+  onRemoveOne,
+  onClearOrphaned,
+  onNavigate,
+}: OverrideListViewProps) {
+  const orphanCount = appliedWithStatus.filter(
+    (e) => e.status !== "matched",
+  ).length;
+
+  const handleRowClick = (slideId: string) => {
+    if (onNavigate) onNavigate(slideId);
+  };
+
+  const handleRemove = async (override: ElementOverride) => {
+    if (!onRemoveOne) return;
+    await onRemoveOne(override);
+  };
+
+  const handleClearOrphaned = async () => {
+    if (!onClearOrphaned) return;
+    await onClearOrphaned();
+  };
+
+  return (
+    <div className="flex flex-col gap-3" data-testid="element-inspector-list">
+      <p className="text-sm text-cf-text-muted">
+        {appliedWithStatus.length === 1
+          ? "1 override saved for this deck."
+          : `${appliedWithStatus.length} overrides saved for this deck.`}
+        {" "}Click a row to jump to its slide, or × to remove.
+      </p>
+      <ul className="flex flex-col gap-1">
+        {appliedWithStatus.map(({ override, status }) => {
+          const { slideLabel, swapLabel, moreCount } = formatOverrideRowLabel(
+            override,
+          );
+          const isOrphan = status !== "matched";
+          return (
+            <li
+              key={overrideKey(override)}
+              data-testid={`element-inspector-list-row-${slideLabel}-${override.selector}`}
+              data-status={status}
+              className={`group flex items-center gap-2 rounded border border-cf-border px-2 py-1.5 text-sm ${
+                isOrphan
+                  ? "border-dashed text-cf-text-muted"
+                  : "text-cf-text"
+              }`}
+            >
+              <button
+                type="button"
+                data-interactive
+                data-testid={`element-inspector-list-row-button-${slideLabel}-${override.selector}`}
+                onClick={() => handleRowClick(override.slideId)}
+                className="flex flex-1 items-center gap-2 text-left"
+                title={
+                  isOrphan
+                    ? `Override is ${status} — the source element shifted or was removed. Click to navigate.`
+                    : `Jump to slide ${slideLabel}`
+                }
+              >
+                {isOrphan && (
+                  <span
+                    data-testid={`element-inspector-list-row-warn-${slideLabel}-${override.selector}`}
+                    aria-label={`override ${status}`}
+                    className="select-none text-cf-orange"
+                  >
+                    ⚠
+                  </span>
+                )}
+                <span className="font-mono text-[10px] uppercase tracking-[0.1em] text-cf-text-subtle">
+                  {slideLabel}
+                </span>
+                <span className="font-mono text-xs">{swapLabel}</span>
+                {moreCount > 0 && (
+                  <span className="font-mono text-[10px] text-cf-text-subtle">
+                    +{moreCount} more
+                  </span>
+                )}
+              </button>
+              {onRemoveOne && (
+                <button
+                  type="button"
+                  data-interactive
+                  data-testid={`element-inspector-list-row-remove-${slideLabel}-${override.selector}`}
+                  onClick={() => handleRemove(override)}
+                  aria-label={`Remove override on slide ${slideLabel}`}
+                  title="Remove this override · cannot be undone"
+                  className="cf-btn-ghost px-2 py-0.5 text-xs"
+                >
+                  ×
+                </button>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+      {orphanCount > 0 && onClearOrphaned && (
+        <button
+          type="button"
+          data-interactive
+          data-testid="element-inspector-clear-orphaned"
+          onClick={handleClearOrphaned}
+          title="Remove overrides that no longer match. This is irreversible."
+          className="cf-btn-ghost self-start text-xs"
+        >
+          Clear all orphaned ({orphanCount})
+        </button>
+      )}
+    </div>
+  );
+}
+
 export function ElementInspector({
   open,
   selection,
   applied,
+  appliedWithStatus,
   onApplyDraft,
   onClearDraft,
   onSave,
+  onRemoveOne,
+  onClearOrphaned,
+  onNavigate,
   onClose,
 }: ElementInspectorProps) {
   // Per-category "original" class — the value the element wore at the
@@ -471,13 +673,25 @@ export function ElementInspector({
           </header>
 
           <div className="flex flex-1 flex-col overflow-y-auto px-5 py-5">
-            {!selection && (
+            {!selection && applied.length === 0 && (
               <p
                 data-testid="element-inspector-empty"
                 className="text-sm text-cf-text-muted"
               >
                 Click an element on the slide to inspect it.
               </p>
+            )}
+
+            {!selection && applied.length > 0 && (
+              <OverrideListView
+                appliedWithStatus={
+                  appliedWithStatus ??
+                  applied.map((o) => ({ override: o, status: "matched" as const }))
+                }
+                onRemoveOne={onRemoveOne}
+                onClearOrphaned={onClearOrphaned}
+                onNavigate={onNavigate}
+              />
             )}
 
             {selection && (
@@ -597,28 +811,30 @@ export function ElementInspector({
               </p>
             )}
 
-            <footer className="mt-auto flex flex-col gap-2 border-t border-cf-border pt-4">
-              <button
-                type="button"
-                data-interactive
-                data-testid="element-inspector-save"
-                onClick={onSaveClick}
-                disabled={!hasDraft || saveState === "saving"}
-                className="cf-btn-ghost disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {saveState === "saving" ? "Saving…" : "Save"}
-              </button>
-              <button
-                type="button"
-                data-interactive
-                data-testid="element-inspector-reset"
-                onClick={onResetSelection}
-                disabled={!canReset}
-                className="cf-btn-ghost disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                Reset selection
-              </button>
-            </footer>
+            {selection && (
+              <footer className="mt-auto flex flex-col gap-2 border-t border-cf-border pt-4">
+                <button
+                  type="button"
+                  data-interactive
+                  data-testid="element-inspector-save"
+                  onClick={onSaveClick}
+                  disabled={!hasDraft || saveState === "saving"}
+                  className="cf-btn-ghost disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {saveState === "saving" ? "Saving…" : "Save"}
+                </button>
+                <button
+                  type="button"
+                  data-interactive
+                  data-testid="element-inspector-reset"
+                  onClick={onResetSelection}
+                  disabled={!canReset}
+                  className="cf-btn-ghost disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Reset selection
+                </button>
+              </footer>
+            )}
           </div>
         </motion.aside>
       )}

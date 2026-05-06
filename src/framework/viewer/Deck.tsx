@@ -678,9 +678,26 @@ export function Deck({ slug, title, slides }: DeckProps) {
             slug={slug}
             selection={selection}
             applied={elementOverrides.applied}
+            appliedWithStatus={elementOverrides.appliedWithStatus}
             onApplyDraft={elementOverrides.applyDraft}
             onClearDraft={elementOverrides.clearDraft}
             onSave={elementOverrides.save}
+            onRemoveOne={elementOverrides.removeOne}
+            onClearOrphaned={elementOverrides.clearOrphaned}
+            onNavigate={(slideId) => {
+              // Slice 5 (#47) — clicking an override row in the list
+              // view jumps the deck to that slide. Resolves slideId →
+              // index against the current visible slides; if the slide
+              // is hidden by the manifest or removed entirely, the
+              // navigate is a no-op (the row stays visible in the list
+              // until the user removes it).
+              const targetIndex = visibleSlides.findIndex(
+                (s) => s.id === slideId,
+              );
+              if (targetIndex !== -1 && targetIndex !== cursor.slide) {
+                gotoWithBeacon(targetIndex);
+              }
+            }}
             onClose={closeInspector}
           />
         )}
