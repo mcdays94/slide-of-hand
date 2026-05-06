@@ -1,0 +1,25 @@
+src/framework/tools/Magnifier.test.tsx
+  98a367e98b008ae5 2,8-9,37-48,66-67,70,72-73,80-89,95-96,102-105,116,124,126-136,138-140,142-144,147,150-152,154-156,158-160,163,165-173,175,177,180,182-186,188-190,192
+src/framework/tools/Magnifier.tsx
+  98a367e98b008ae5 2,4,6-13,15-18,20-21,23-37,40,44-48,50,70,72,79,100,111,113-123,125-127,129,131,133-143,145-147,150-153,155-158,161-164,166-174,176-194,196-266,268-287,289,291-310,315-323,325-334,337-338,340-379,382-397,399-415,417-439
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "a95ba7f89055180cce73149d475e07ca460bc139",
+  "prompts": {
+    "98a367e98b008ae5": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_2077bd95cffepOw4IvqFsV7eWM",
+        "model": "anthropic/claude-opus-4-7"
+      },
+      "human_author": "mdias",
+      "messages": [],
+      "total_additions": 796,
+      "total_deletions": 361,
+      "accepted_lines": 796,
+      "overriden_lines": 0
+    }
+  }
+}
