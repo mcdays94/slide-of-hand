@@ -108,7 +108,7 @@ Cloudflare Access has no Wrangler-side config. This step is dashboard-only.
 4. Policies → **Add a policy**:
    - **Policy name:** `Allow Miguel`
    - **Action:** `Allow`
-   - **Configure rules → Include → Emails:** `amtccdias@gmail.com`
+   - **Configure rules → Include → Emails:** `<your-email@example.com>` (or your work-domain email; in this account the live policy uses `email_domain: cloudflare.com`)
    - Leave everything else default
 5. Save.
 
