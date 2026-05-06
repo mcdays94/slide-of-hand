@@ -37,6 +37,14 @@ import { useDeckTheme } from "./useDeckTheme";
 import { SlideManager } from "./SlideManager";
 import { useDeckManifest } from "./useDeckManifest";
 import { useDeckAnalytics } from "./useDeckAnalytics";
+import {
+  ElementInspector,
+  buildSelectionLabel,
+  type InspectorSelection,
+} from "./ElementInspector";
+import { SelectionOverlay } from "./SelectionOverlay";
+import { useElementOverrides } from "./useElementOverrides";
+import { computeSelector, fingerprint, findBySelector } from "@/lib/element-selector";
 import { mergeSlides } from "@/lib/manifest-merge";
 import { usePresenterMode } from "@/framework/presenter/mode";
 import { PresenterAffordances } from "@/framework/presenter/PresenterAffordances";
@@ -113,6 +121,8 @@ export function Deck({ slug, title, slides }: DeckProps) {
   const { cursor, total, next, prev, first, last, goto } =
     useDeckState(deckShape);
 
+  const slide = visibleSlides[cursor.slide];
+
   // ── Theme ───────────────────────────────────────────────────────────────
   const [theme, setTheme] = useState<Theme>(readInitialTheme);
 
@@ -135,6 +145,12 @@ export function Deck({ slug, title, slides }: DeckProps) {
   // sidebar that EDITS the override is gated by `usePresenterMode()` below.
   const themeOverride = useDeckTheme(slug);
   const presenterMode = usePresenterMode();
+
+  // ── Per-deck element overrides (issue #14 / Slice 3, #45) ──────────────
+  // Both public + admin viewers fetch + apply: the audience also sees a
+  // saved class swap. The inspector that AUTHORS overrides is gated to
+  // presenter mode.
+  const elementOverrides = useElementOverrides(slug);
 
   // ── Per-deck analytics (issue #19 / Bucket C3) ─────────────────────────
   // Public + admin viewers both fire beacons; the author's own local
@@ -174,6 +190,16 @@ export function Deck({ slug, title, slides }: DeckProps) {
   const [themeSidebarOpen, setThemeSidebarOpen] = useState(false);
   const [slideManagerOpen, setSlideManagerOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+
+  // ── Element inspector (#45) ─────────────────────────────────────────────
+  // `inspectMode` true = clicks select instead of advancing; cursor is
+  // crosshair via the `data-inspect-mode` attribute on the deck root.
+  // `inspectorOpen` true = sidebar is mounted; we keep them separate so
+  // the sidebar can stay open while the user clicks around to swap
+  // selections without re-pressing `I`.
+  const [inspectMode, setInspectMode] = useState(false);
+  const [inspectorOpen, setInspectorOpen] = useState(false);
+  const [selection, setSelection] = useState<InspectorSelection | null>(null);
 
   const closeOverlays = useCallback(() => {
     setOverviewOpen(false);
@@ -243,6 +269,35 @@ export function Deck({ slug, title, slides }: DeckProps) {
   const closeSettings = useCallback(() => {
     setSettingsOpen(false);
   }, []);
+
+  const toggleInspector = useCallback(() => {
+    setInspectMode((m) => {
+      const next = !m;
+      // Opening inspect mode also opens the sidebar (empty state). Closing
+      // inspect mode closes the sidebar and discards any in-flight draft.
+      if (next) {
+        setInspectorOpen(true);
+        // Close the other admin overlays so the sidebar has the right edge.
+        setOverviewOpen(false);
+        setHelpOpen(false);
+        setThemeSidebarOpen(false);
+        setSlideManagerOpen(false);
+        setSettingsOpen(false);
+      } else {
+        setInspectorOpen(false);
+        setSelection(null);
+        elementOverrides.clearDraft();
+      }
+      return next;
+    });
+  }, [elementOverrides]);
+
+  const closeInspector = useCallback(() => {
+    setInspectMode(false);
+    setInspectorOpen(false);
+    setSelection(null);
+    elementOverrides.clearDraft();
+  }, [elementOverrides]);
 
   // ── Keyboard ───────────────────────────────────────────────────────────
   useEffect(() => {
@@ -323,6 +378,14 @@ export function Deck({ slug, title, slides }: DeckProps) {
             toggleSlideManager();
           }
           break;
+        case "i":
+        case "I":
+          // Element inspector — admin (presenter mode) only.
+          if (presenterMode) {
+            e.preventDefault();
+            toggleInspector();
+          }
+          break;
         case "s":
         case "S":
           // Settings modal — public + admin both, since settings are
@@ -342,7 +405,10 @@ export function Deck({ slug, title, slides }: DeckProps) {
           }
           break;
         case "Escape":
-          if (
+          if (inspectMode || inspectorOpen) {
+            e.preventDefault();
+            closeInspector();
+          } else if (
             overviewOpen ||
             helpOpen ||
             themeSidebarOpen ||
@@ -370,12 +436,16 @@ export function Deck({ slug, title, slides }: DeckProps) {
     toggleThemeSidebar,
     toggleSlideManager,
     toggleSettings,
+    toggleInspector,
+    closeInspector,
     presenterMode,
     overviewOpen,
     helpOpen,
     themeSidebarOpen,
     slideManagerOpen,
     settingsOpen,
+    inspectMode,
+    inspectorOpen,
     closeOverlays,
   ]);
 
@@ -384,12 +454,49 @@ export function Deck({ slug, title, slides }: DeckProps) {
 
   const onSurfaceClick = useCallback(
     (e: React.MouseEvent<HTMLDivElement>) => {
+      // ── Inspect mode (#45) ─────────────────────────────────────────────
+      // In inspect mode every click on the slide subtree selects an
+      // element instead of advancing. We branch BEFORE the suppress check
+      // so clicks on `<a>` / `<button>` inside slide content are ALSO
+      // capturable — those are exactly the kinds of element an author
+      // wants to recolor mid-talk.
+      if (inspectMode) {
+        if (!(e.target instanceof Element)) return;
+        // Don't capture clicks on the inspector sidebar itself or any
+        // other admin chrome flagged with `data-no-advance` /
+        // `data-interactive` OUTSIDE the slide subtree.
+        const slideRoot = e.target.closest("[data-slide-index]");
+        if (!slideRoot) return;
+        // Right-click / middle-click do not select either.
+        if (e.button !== 0) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const el = e.target;
+        try {
+          const sel = computeSelector(el, slideRoot);
+          const fp = fingerprint(el);
+          const slideId = slide?.id ?? "";
+          if (!slideId) return;
+          setSelection({
+            element: el,
+            slideId,
+            selector: sel,
+            fingerprint: fp,
+          });
+          setInspectorOpen(true);
+        } catch {
+          /* element not under slideRoot — silently ignore */
+        }
+        return;
+      }
+
       if (
         overviewOpen ||
         helpOpen ||
         themeSidebarOpen ||
         slideManagerOpen ||
-        settingsOpen
+        settingsOpen ||
+        inspectorOpen
       )
         return;
       if (shouldSuppressAdvance(e.target)) return;
@@ -404,10 +511,11 @@ export function Deck({ slug, title, slides }: DeckProps) {
       themeSidebarOpen,
       slideManagerOpen,
       settingsOpen,
+      inspectMode,
+      inspectorOpen,
+      slide,
     ],
   );
-
-  const slide = visibleSlides[cursor.slide];
 
   // Update document title for each slide; nice to have for tabs.
   useEffect(() => {
@@ -416,6 +524,46 @@ export function Deck({ slug, title, slides }: DeckProps) {
       document.title = slideTitle ? `${title} · ${slideTitle}` : title;
     }
   }, [title, slide]);
+
+  // ── Apply element overrides on slide mount (#45) ───────────────────────
+  // Walks each applied override that matches the CURRENT slide, finds
+  // the target element via Slice 2's `findBySelector`, and swaps the
+  // `from` class for the `to` class. Runs whenever the slide changes
+  // (so a new slide picks up its overrides) or the applied list changes
+  // (so a draft preview lands without a reload). Re-running is safe:
+  // `classList.replace` is a no-op if the source class isn't present.
+  useEffect(() => {
+    if (!slide) return;
+    if (typeof document === "undefined") return;
+    // Defer to the next frame so the slide DOM is mounted before we read
+    // it. AnimatePresence cross-fades; the element exists on the same
+    // tick but a microtask delay is the safer pattern.
+    const handle = window.requestAnimationFrame(() => {
+      const slideRoot = document.querySelector(
+        `[data-slide-index="${cursor.slide}"]`,
+      );
+      if (!slideRoot) return;
+      for (const override of elementOverrides.applied) {
+        if (override.slideId !== slide.id) continue;
+        const found = findBySelector(
+          slideRoot,
+          override.selector,
+          override.fingerprint,
+        );
+        if (found.status !== "matched" || !found.el) continue;
+        for (const swap of override.classOverrides) {
+          if (found.el.classList.contains(swap.from)) {
+            found.el.classList.replace(swap.from, swap.to);
+          } else if (!found.el.classList.contains(swap.to)) {
+            // Source class not present (already swapped, or external
+            // mutation) — additive add so the override still lands.
+            found.el.classList.add(swap.to);
+          }
+        }
+      }
+    });
+    return () => window.cancelAnimationFrame(handle);
+  }, [slide, cursor.slide, elementOverrides.applied]);
 
   // Analytics — fire beacons on cursor changes. We split slide / phase
   // so a phase reveal does not also count as a slide advance.
@@ -464,8 +612,11 @@ export function Deck({ slug, title, slides }: DeckProps) {
     <div
       ref={surfaceRef}
       data-deck-slug={slug}
+      data-inspect-mode={inspectMode ? "true" : undefined}
       onClick={onSurfaceClick}
-      className="relative flex h-screen min-h-screen w-screen items-center justify-center overflow-hidden bg-cf-bg-200 dark:bg-cf-bg-200"
+      className={`relative flex h-screen min-h-screen w-screen items-center justify-center overflow-hidden bg-cf-bg-200 dark:bg-cf-bg-200 ${
+        inspectMode ? "cursor-crosshair" : ""
+      }`}
     >
       <div
         className="relative h-full w-full max-h-screen max-w-[100vw] shadow-[0_0_0_1px_var(--color-cf-border)]"
@@ -519,6 +670,33 @@ export function Deck({ slug, title, slides }: DeckProps) {
             sourceSlides={slides}
             manifest={manifestHook}
             onClose={closeSlideManager}
+          />
+        )}
+        {presenterMode && (
+          <ElementInspector
+            open={inspectorOpen}
+            slug={slug}
+            selection={selection}
+            applied={elementOverrides.applied}
+            onApplyDraft={elementOverrides.applyDraft}
+            onClearDraft={elementOverrides.clearDraft}
+            onSave={elementOverrides.save}
+            onClose={closeInspector}
+          />
+        )}
+        {presenterMode && inspectMode && (
+          <SelectionOverlay
+            target={selection?.element ?? null}
+            label={
+              selection
+                ? buildSelectionLabel(
+                    selection.fingerprint,
+                    Array.from(selection.element.classList).find((c) =>
+                      c.startsWith("text-cf-"),
+                    ) ?? null,
+                  )
+                : ""
+            }
           />
         )}
         <PresenterAffordances />
