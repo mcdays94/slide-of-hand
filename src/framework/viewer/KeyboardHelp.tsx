@@ -21,6 +21,7 @@ const SHORTCUTS: Array<[string, string]> = [
   ["P", "Open presenter window (slice #5)"],
   ["Q / W / E", "Laser / magnifier / marker (slice #7)"],
   ["T", "Theme overrides (admin only)"],
+  ["M", "Slide manager (admin only)"],
   ["Esc", "Close overlays / exit tool"],
 ];
 

@@ -275,6 +275,105 @@ Wrangler serves the bundled SPA + `/api/*` endpoints with the **preview** KV nam
 
 ---
 
+## Slide manifests (KV)
+
+Per-deck slide manifests — reorder, hide/show, rename, and replace
+speaker notes — are persisted in a separate KV namespace. The binding
+lives in `wrangler.jsonc` alongside `THEMES`:
+
+```jsonc
+"kv_namespaces": [
+  { "binding": "THEMES",    "id": "...", "preview_id": "..." },
+  { "binding": "MANIFESTS", "id": "...", "preview_id": "..." }
+]
+```
+
+The IDs are committed to the repo. They survive every deploy — bindings
+are stable, KV data persists across Worker versions and rollbacks. To
+recreate them from scratch (e.g. for a fork):
+
+```bash
+npx wrangler kv namespace create MANIFESTS
+npx wrangler kv namespace create MANIFESTS --preview
+# Paste the resulting IDs into wrangler.jsonc.
+```
+
+### Manifest shape
+
+One key per deck: `manifest:<slug>` → JSON
+
+```json
+{
+  "version": 1,
+  "order": ["title", "what-is-this", "phase-demo", "section", "thanks"],
+  "overrides": {
+    "title":         { "title": "New title", "hidden": false },
+    "what-is-this":  { "notes": "**Updated** notes\n\n* point 1" }
+  },
+  "updatedAt": "2026-05-06T10:00:00.000Z"
+}
+```
+
+`order` lists every slide ID in display order. `overrides` is sparse —
+only slides with at least one override appear. Each override may carry
+optional `hidden` (boolean), `title` (≤ 200 chars), and `notes`
+(markdown, ≤ 10000 chars). Notes render in the presenter window via
+`react-markdown`.
+
+### How manifests flow in production
+
+1. **Author** opens `https://slide-of-hand.lusostreams.com/admin/decks/<slug>`,
+   presses `M`, drags a slide to reorder / toggles hidden / renames /
+   edits notes (live preview, no save), clicks **Save**.
+2. **Worker** receives `POST /api/admin/manifests/<slug>` (Access-gated),
+   validates the body shape (kebab-case IDs, no duplicates, length
+   limits), writes `manifest:<slug>` to KV.
+3. **Public visitors** at `https://slide-of-hand.lusostreams.com/decks/<slug>`
+   fetch `GET /api/manifests/<slug>` on viewer mount; `<Deck>` runs
+   `mergeSlides(sourceSlides, manifest)` and the reordered / overridden
+   list takes effect. Same `cache-control: public, max-age=60` as the
+   theme API.
+
+### Fail-soft drift handling
+
+The merge step (`src/lib/manifest-merge.tsx`) is intentionally tolerant
+of drift between a saved manifest and the current source slide list:
+
+- **Slide deleted from source after manifest was written** — the
+  manifest's reference to that ID is silently skipped (with a
+  `console.warn` for debugging).
+- **Slide added to source after manifest was written** — the new slide
+  is appended at the end of the merged list, so it stays visible without
+  forcing the author to re-save.
+
+Saving from the sidebar always writes a complete `order` reflecting the
+current source list, which heals drift.
+
+### Inspecting / managing entries
+
+```bash
+npx wrangler kv key list --binding=MANIFESTS
+npx wrangler kv key get  --binding=MANIFESTS manifest:hello
+npx wrangler kv key delete --binding=MANIFESTS manifest:hello
+```
+
+For the local preview namespace (used by `wrangler dev`), pass
+`--preview`:
+
+```bash
+npx wrangler kv key list --binding=MANIFESTS --preview
+```
+
+### Out of scope (v1)
+
+The sidebar deliberately omits **duplicate** and **delete**, because
+those imply source-edit (creating new slide files, removing them) which
+fights the KV-override pattern. The author opens the IDE for those
+operations — the `vscode://` deep-link button on the admin landing page
+makes that one click.
+
+---
+
 ## Reference
 
 - **Production URL:** <https://slide-of-hand.lusostreams.com>
