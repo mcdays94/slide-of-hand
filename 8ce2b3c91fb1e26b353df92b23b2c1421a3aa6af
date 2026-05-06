@@ -1,0 +1,31 @@
+src/framework/tools/Marker.test.tsx
+  98a367e98b008ae5 41-42,49,51-56,59,63,73-76,79
+src/framework/viewer/Slide.tsx
+  98a367e98b008ae5 84-97
+src/framework/viewer/useDeckState.ts
+  98a367e98b008ae5 217-234
+src/framework/tools/Marker.tsx
+  98a367e98b008ae5 88-91,93-97,102,109-110,112,123,126,135-151,225-233,235-266,283,285-286,315-316,318-324,326-329,331,339-340,362-365,368
+src/framework/tools/PresenterTools.test.tsx
+  98a367e98b008ae5 95,120,128,130
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "8ce2b3c91fb1e26b353df92b23b2c1421a3aa6af",
+  "prompts": {
+    "98a367e98b008ae5": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_2077bd95cffepOw4IvqFsV7eWM",
+        "model": "anthropic/claude-opus-4-7"
+      },
+      "human_author": "mdias",
+      "messages": [],
+      "total_additions": 150,
+      "total_deletions": 41,
+      "accepted_lines": 150,
+      "overriden_lines": 0
+    }
+  }
+}
