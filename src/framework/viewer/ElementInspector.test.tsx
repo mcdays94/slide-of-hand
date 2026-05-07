@@ -728,7 +728,10 @@ describe("<ElementInspector> override-list view (slice 5)", () => {
     ).toBeNull();
   });
 
-  it("clicking the row body calls onNavigate with the slideId", () => {
+  it("clicking the row body calls onNavigate with the full override (#53)", () => {
+    // The contract widened in #53 so the parent (`<Deck>`) can
+    // auto-select the matching element after navigation. The full
+    // override carries selector + fingerprint + slideId.
     const onNavigate = vi.fn();
     const props = makeListProps(
       [
@@ -744,7 +747,54 @@ describe("<ElementInspector> override-list view (slice 5)", () => {
       ),
     );
     expect(onNavigate).toHaveBeenCalledTimes(1);
-    expect(onNavigate).toHaveBeenCalledWith("second");
+    expect(onNavigate).toHaveBeenCalledWith(secondOverride);
+  });
+
+  it("clicking × does NOT call onNavigate (delete is not navigate, #53)", () => {
+    // The × button is direct delete; auto-select after row-click only
+    // applies to the row body, not the trailing × control.
+    const onNavigate = vi.fn();
+    const onRemoveOne = vi.fn().mockResolvedValue({ ok: true });
+    const props = makeListProps(
+      [
+        { override: titleOverride, status: "matched" },
+        { override: secondOverride, status: "matched" },
+      ],
+      { onNavigate, onRemoveOne },
+    );
+    render(<ElementInspector {...props} />);
+    fireEvent.click(
+      screen.getByTestId(
+        `element-inspector-list-row-remove-${titleOverride.slideId}-${titleOverride.selector}`,
+      ),
+    );
+    expect(onRemoveOne).toHaveBeenCalledTimes(1);
+    expect(onNavigate).not.toHaveBeenCalled();
+  });
+
+  it("renders a transient selection notice when selectionNotice is set (#53 graceful fail)", () => {
+    // After a row-click navigation lands on an orphaned/missing
+    // element, the parent surfaces a notice. The inspector renders
+    // it above the list view.
+    const props = {
+      ...makeListProps([{ override: titleOverride, status: "matched" }]),
+      selectionNotice:
+        "Element no longer found on this slide — review or delete the override.",
+    };
+    render(<ElementInspector {...props} />);
+    const notice = screen.getByTestId("element-inspector-selection-notice");
+    expect(notice).not.toBeNull();
+    expect(notice.textContent).toContain("Element no longer found");
+  });
+
+  it("hides the selection notice when selectionNotice is null/absent", () => {
+    const props = makeListProps([
+      { override: titleOverride, status: "matched" },
+    ]);
+    render(<ElementInspector {...props} />);
+    expect(
+      screen.queryByTestId("element-inspector-selection-notice"),
+    ).toBeNull();
   });
 
   it("orphaned entries render a ⚠ icon next to the row", () => {

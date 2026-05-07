@@ -267,6 +267,15 @@ export function Deck({ slug, title, slides }: DeckProps) {
   const [inspectMode, setInspectMode] = useState(false);
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [selection, setSelection] = useState<InspectorSelection | null>(null);
+  // ── Pending row-click selection (#53) ──────────────────────────────────
+  // When the user clicks an override row in the inspector list, we
+  // store the override here AND call gotoWithBeacon. After the slide
+  // mounts (one rAF later), an effect consumes pendingSelection by
+  // running findBySelector against the new slide root — if it matches,
+  // we synthesise selection state; if not, we surface a notice.
+  const [pendingSelection, setPendingSelection] =
+    useState<ElementOverride | null>(null);
+  const [selectionNotice, setSelectionNotice] = useState<string | null>(null);
 
   const closeOverlays = useCallback(() => {
     setOverviewOpen(false);
@@ -353,6 +362,8 @@ export function Deck({ slug, title, slides }: DeckProps) {
       } else {
         setInspectorOpen(false);
         setSelection(null);
+        setPendingSelection(null);
+        setSelectionNotice(null);
         elementOverrides.clearDraft();
       }
       return next;
@@ -363,6 +374,8 @@ export function Deck({ slug, title, slides }: DeckProps) {
     setInspectMode(false);
     setInspectorOpen(false);
     setSelection(null);
+    setPendingSelection(null);
+    setSelectionNotice(null);
     elementOverrides.clearDraft();
   }, [elementOverrides]);
 
@@ -550,6 +563,11 @@ export function Deck({ slug, title, slides }: DeckProps) {
             selector: sel,
             fingerprint: fp,
           });
+          // The user manually selected something — any pending
+          // row-click navigation is now stale, and any prior
+          // notice ("element no longer found") no longer applies.
+          setPendingSelection(null);
+          setSelectionNotice(null);
           setInspectorOpen(true);
         } catch {
           /* element not under slideRoot — silently ignore */
@@ -620,9 +638,8 @@ export function Deck({ slug, title, slides }: DeckProps) {
   // `requestAnimationFrame` fires too early — the new slide's DOM
   // doesn't exist yet, so `querySelector` returns null and the
   // applier silently no-ops. To bridge that gap we retry on each
-  // animation frame for up to ~1500ms (longer than the transition
-  // duration, generous enough to survive frame-rate throttling in
-  // headless test runners) and run the applier as soon as the
+  // animation frame for up to ~30 frames (~500ms; longer than the
+  // transition duration) and run the applier as soon as the
   // `[data-slide-index]` for the current cursor appears.
   const prevAppliedRef = useRef<ElementOverride[]>([]);
   useEffect(() => {
@@ -683,6 +700,77 @@ export function Deck({ slug, title, slides }: DeckProps) {
       window.cancelAnimationFrame(frameHandle);
     };
   }, [slide, cursor.slide, elementOverrides.applied]);
+
+  // ── Pending row-click selection consumer (#53) ─────────────────────────
+  // When inspector dispatches a row-click navigation, we set
+  // `pendingSelection` and let `gotoWithBeacon` flip the cursor. Once
+  // the new slide is the visible one, defer to a rAF retry loop so
+  // AnimatePresence's mode="wait" exit-then-enter has a chance to
+  // mount the new slide root, then locate the element via
+  // `findBySelector` and synthesise the inspector selection state.
+  // Same retry policy as the live applier — see comment there.
+  useEffect(() => {
+    if (!pendingSelection) return;
+    if (!slide) return;
+    if (slide.id !== pendingSelection.slideId) return; // wait for the cursor
+    if (typeof document === "undefined") return;
+
+    let cancelled = false;
+    let frameHandle = 0;
+    // Bound by elapsed time — see live-applier comment above.
+    const startedAt = performance.now();
+    const MAX_WAIT_MS = 1500;
+
+    const tick = () => {
+      if (cancelled) return;
+      const slideRoot = document.querySelector(
+        `[data-slide-index="${cursor.slide}"]`,
+      );
+      if (!slideRoot) {
+        if (performance.now() - startedAt < MAX_WAIT_MS) {
+          frameHandle = window.requestAnimationFrame(tick);
+          return;
+        }
+        // Gave up — the new slide never mounted. Drop pending so we
+        // don't loop forever, and surface a notice so the user
+        // understands the click did something.
+        setPendingSelection(null);
+        setSelectionNotice(
+          "Couldn't find that slide — try reloading and selecting again.",
+        );
+        return;
+      }
+      const found = findBySelector(
+        slideRoot,
+        pendingSelection.selector,
+        pendingSelection.fingerprint,
+      );
+      if (found.status === "matched" && found.el) {
+        setSelection({
+          element: found.el,
+          slideId: pendingSelection.slideId,
+          selector: pendingSelection.selector,
+          fingerprint: pendingSelection.fingerprint,
+        });
+        setSelectionNotice(null);
+      } else {
+        // Orphaned / missing — keep the user on the slide but explain
+        // the situation. The notice is cleared on next manual select
+        // or close.
+        setSelection(null);
+        setSelectionNotice(
+          "Element no longer found on this slide — review or delete the override.",
+        );
+      }
+      setPendingSelection(null);
+    };
+
+    frameHandle = window.requestAnimationFrame(tick);
+    return () => {
+      cancelled = true;
+      window.cancelAnimationFrame(frameHandle);
+    };
+  }, [pendingSelection, slide, cursor.slide]);
 
   // Analytics — fire beacons on cursor changes. We split slide / phase
   // so a phase reveal does not also count as a slide advance.
@@ -803,17 +891,39 @@ export function Deck({ slug, title, slides }: DeckProps) {
             onSave={elementOverrides.save}
             onRemoveOne={elementOverrides.removeOne}
             onClearOrphaned={elementOverrides.clearOrphaned}
-            onNavigate={(slideId) => {
-              // Slice 5 (#47) — clicking an override row in the list
-              // view jumps the deck to that slide. Resolves slideId →
-              // index against the current visible slides; if the slide
-              // is hidden by the manifest or removed entirely, the
-              // navigate is a no-op (the row stays visible in the list
-              // until the user removes it).
+            selectionNotice={selectionNotice}
+            onNavigate={(override) => {
+              // Slice 5 (#47) + #53: clicking an override row in the
+              // list view jumps the deck to that slide AND queues an
+              // auto-select so the inspector lands with the matching
+              // element selected. Resolves slideId → index against the
+              // current visible slides; if the slide is hidden by the
+              // manifest or removed entirely, the navigate is a no-op
+              // (the row stays visible in the list until the user
+              // removes it).
               const targetIndex = visibleSlides.findIndex(
-                (s) => s.id === slideId,
+                (s) => s.id === override.slideId,
               );
-              if (targetIndex !== -1 && targetIndex !== cursor.slide) {
+              if (targetIndex === -1) {
+                // Slide isn't in the deck right now — surface a notice
+                // so the user understands why the click didn't move
+                // them anywhere.
+                setPendingSelection(null);
+                setSelectionNotice(
+                  "Slide is hidden or no longer in this deck — review or delete the override.",
+                );
+                return;
+              }
+              // Clear any prior selection / notice so the post-mount
+              // effect renders a clean state, then queue the pending
+              // selection. If we're already on the target slide, the
+              // pending-selection effect runs immediately (its
+              // dependencies fire on the state change). Otherwise it
+              // waits for the cursor to flip.
+              setSelection(null);
+              setSelectionNotice(null);
+              setPendingSelection(override);
+              if (targetIndex !== cursor.slide) {
                 gotoWithBeacon(targetIndex);
               }
             }}
