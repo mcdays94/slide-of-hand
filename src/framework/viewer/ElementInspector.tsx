@@ -104,12 +104,23 @@ export interface ElementInspectorProps {
   onClearOrphaned?: () => Promise<{ ok: boolean; status?: number }>;
   /**
    * Optional — when the user clicks an override row in the list view,
-   * navigate the deck to that slide. Receives the `slideId` (matching
-   * a `SlideDef.id`); the parent (`<Deck>`) resolves it to a slide
-   * index and calls `goto`. When absent, clicking the row body is a
-   * no-op (the × still works).
+   * navigate the deck to that slide AND surface the full override so
+   * the parent (`<Deck>`) can auto-select the matching element on the
+   * new slide (#53). The parent resolves `override.slideId` to a slide
+   * index and calls `goto`, then runs `findBySelector` against the
+   * mounted slide root to synthesise the inspector selection state.
+   * When absent, clicking the row body is a no-op (the × still works).
    */
-  onNavigate?: (slideId: string) => void;
+  onNavigate?: (override: ElementOverride) => void;
+  /**
+   * Optional — a transient notice rendered above the empty/list state.
+   * Set by `<Deck>` after a row-click navigation when the target
+   * element resolves to `orphaned` / `missing`, so the user gets an
+   * explanation instead of silent failure (#53 graceful fail). The
+   * inspector renders it but does not own its lifetime — the parent
+   * clears the notice on the next selection / close.
+   */
+  selectionNotice?: string | null;
   /** Close the sidebar (called on Esc / Close button). */
   onClose: () => void;
 }
@@ -266,7 +277,7 @@ interface OverrideListViewProps {
     override: ElementOverride,
   ) => Promise<{ ok: boolean; status?: number }>;
   onClearOrphaned?: () => Promise<{ ok: boolean; status?: number }>;
-  onNavigate?: (slideId: string) => void;
+  onNavigate?: (override: ElementOverride) => void;
 }
 
 /**
@@ -289,8 +300,8 @@ function OverrideListView({
     (e) => e.status !== "matched",
   ).length;
 
-  const handleRowClick = (slideId: string) => {
-    if (onNavigate) onNavigate(slideId);
+  const handleRowClick = (override: ElementOverride) => {
+    if (onNavigate) onNavigate(override);
   };
 
   const handleRemove = async (override: ElementOverride) => {
@@ -332,7 +343,7 @@ function OverrideListView({
                 type="button"
                 data-interactive
                 data-testid={`element-inspector-list-row-button-${slideLabel}-${override.selector}`}
-                onClick={() => handleRowClick(override.slideId)}
+                onClick={() => handleRowClick(override)}
                 className="flex flex-1 items-center gap-2 text-left"
                 title={
                   isOrphan
@@ -403,6 +414,7 @@ export function ElementInspector({
   onRemoveOne,
   onClearOrphaned,
   onNavigate,
+  selectionNotice,
   onClose,
 }: ElementInspectorProps) {
   // Per-category "original" class — the value the element wore at the
@@ -673,6 +685,16 @@ export function ElementInspector({
           </header>
 
           <div className="flex flex-1 flex-col overflow-y-auto px-5 py-5">
+            {!selection && selectionNotice && (
+              <p
+                data-testid="element-inspector-selection-notice"
+                role="status"
+                className="mb-3 rounded border border-dashed border-cf-orange/40 bg-cf-bg-200/50 px-3 py-2 text-xs text-cf-text-muted"
+              >
+                {selectionNotice}
+              </p>
+            )}
+
             {!selection && applied.length === 0 && (
               <p
                 data-testid="element-inspector-empty"

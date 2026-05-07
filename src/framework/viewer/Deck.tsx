@@ -43,7 +43,10 @@ import {
   type InspectorSelection,
 } from "./ElementInspector";
 import { SelectionOverlay } from "./SelectionOverlay";
-import { useElementOverrides } from "./useElementOverrides";
+import {
+  useElementOverrides,
+  type ElementOverride,
+} from "./useElementOverrides";
 import { computeSelector, fingerprint, findBySelector } from "@/lib/element-selector";
 import { mergeSlides } from "@/lib/manifest-merge";
 import { usePresenterMode } from "@/framework/presenter/mode";
@@ -76,6 +79,70 @@ function readInitialTheme(): Theme {
     /* storage may be denied */
   }
   return "light";
+}
+
+/**
+ * Two overrides identify the SAME entry iff they share `(slideId,
+ * selector)`. Used by the diff-based live applier to compute add/remove
+ * deltas across `applied` changes.
+ *
+ * Exported for unit-testing the diff helpers in isolation (#54).
+ */
+export function sameOverrideKey(
+  a: ElementOverride,
+  b: ElementOverride,
+): boolean {
+  return a.slideId === b.slideId && a.selector === b.selector;
+}
+
+/**
+ * Live-DOM apply: locate the override's target element under
+ * `slideRoot` and swap each `from` class for its `to`. No-op if the
+ * element isn't found (the override's slide isn't currently mounted)
+ * or the `from` class is already absent (already swapped).
+ *
+ * Exported for unit-testing the diff helpers in isolation (#54).
+ */
+export function applyOverride(slideRoot: Element, ov: ElementOverride): void {
+  const found = findBySelector(slideRoot, ov.selector, ov.fingerprint);
+  if (found.status !== "matched" || !found.el) return;
+  for (const swap of ov.classOverrides) {
+    if (found.el.classList.contains(swap.from)) {
+      found.el.classList.replace(swap.from, swap.to);
+    } else if (!found.el.classList.contains(swap.to)) {
+      // Source class not present (already swapped, or external
+      // mutation) — additive add so the override still lands.
+      found.el.classList.add(swap.to);
+    }
+  }
+}
+
+/**
+ * Live-DOM revert: locate the override's target element under
+ * `slideRoot` and swap each `to` class BACK to its `from`. Used by
+ * the diff applier when an override has been removed from the
+ * applied list (per-row × in the inspector list view, or
+ * "Clear all orphaned" — #54).
+ *
+ * Note: we use the override's stored `fingerprint` for lookup. After
+ * an apply, the live element's text fingerprint is unchanged (we
+ * only mutate classes), so the fingerprint check still passes here
+ * even though one of its classes has flipped.
+ *
+ * Exported for unit-testing the diff helpers in isolation (#54).
+ */
+export function revertOverride(slideRoot: Element, ov: ElementOverride): void {
+  const found = findBySelector(slideRoot, ov.selector, ov.fingerprint);
+  if (found.status !== "matched" || !found.el) return;
+  for (const swap of ov.classOverrides) {
+    if (found.el.classList.contains(swap.to)) {
+      found.el.classList.replace(swap.to, swap.from);
+    } else if (!found.el.classList.contains(swap.from)) {
+      // Defensive: external mutation already removed `to`. Restore
+      // `from` so the element doesn't end up with neither class.
+      found.el.classList.add(swap.from);
+    }
+  }
 }
 
 /**
@@ -200,6 +267,15 @@ export function Deck({ slug, title, slides }: DeckProps) {
   const [inspectMode, setInspectMode] = useState(false);
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [selection, setSelection] = useState<InspectorSelection | null>(null);
+  // ── Pending row-click selection (#53) ──────────────────────────────────
+  // When the user clicks an override row in the inspector list, we
+  // store the override here AND call gotoWithBeacon. After the slide
+  // mounts (one rAF later), an effect consumes pendingSelection by
+  // running findBySelector against the new slide root — if it matches,
+  // we synthesise selection state; if not, we surface a notice.
+  const [pendingSelection, setPendingSelection] =
+    useState<ElementOverride | null>(null);
+  const [selectionNotice, setSelectionNotice] = useState<string | null>(null);
 
   const closeOverlays = useCallback(() => {
     setOverviewOpen(false);
@@ -286,6 +362,8 @@ export function Deck({ slug, title, slides }: DeckProps) {
       } else {
         setInspectorOpen(false);
         setSelection(null);
+        setPendingSelection(null);
+        setSelectionNotice(null);
         elementOverrides.clearDraft();
       }
       return next;
@@ -296,6 +374,8 @@ export function Deck({ slug, title, slides }: DeckProps) {
     setInspectMode(false);
     setInspectorOpen(false);
     setSelection(null);
+    setPendingSelection(null);
+    setSelectionNotice(null);
     elementOverrides.clearDraft();
   }, [elementOverrides]);
 
@@ -483,6 +563,11 @@ export function Deck({ slug, title, slides }: DeckProps) {
             selector: sel,
             fingerprint: fp,
           });
+          // The user manually selected something — any pending
+          // row-click navigation is now stale, and any prior
+          // notice ("element no longer found") no longer applies.
+          setPendingSelection(null);
+          setSelectionNotice(null);
           setInspectorOpen(true);
         } catch {
           /* element not under slideRoot — silently ignore */
@@ -525,45 +610,167 @@ export function Deck({ slug, title, slides }: DeckProps) {
     }
   }, [title, slide]);
 
-  // ── Apply element overrides on slide mount (#45) ───────────────────────
-  // Walks each applied override that matches the CURRENT slide, finds
-  // the target element via Slice 2's `findBySelector`, and swaps the
-  // `from` class for the `to` class. Runs whenever the slide changes
-  // (so a new slide picks up its overrides) or the applied list changes
-  // (so a draft preview lands without a reload). Re-running is safe:
-  // `classList.replace` is a no-op if the source class isn't present.
+  // ── Apply / revert element overrides on diff (#45 + #54) ───────────────
+  // Diff-based applier: tracks the previously-applied list in a ref so
+  // each `applied` change can compute additions vs removals and only
+  // mutate the DOM for the delta.
+  //
+  // Semantics:
+  //   - For overrides newly REMOVED from `applied`: swap each `to` →
+  //     `from` on the live element so the live DOM reverts immediately
+  //     (#54 — without this the element keeps its swapped class until
+  //     the slide remounts).
+  //   - For overrides newly ADDED to `applied`: swap each `from` → `to`
+  //     so the apply behaviour from slice 3 still holds.
+  //   - For overrides present in both: do nothing — already applied.
+  //
+  // The ref carries overrides for ALL slides, not just the currently-
+  // mounted one. When `findBySelector` can't locate an element (because
+  // its slide isn't in the DOM right now), `applyOverride` /
+  // `revertOverride` simply no-op. That's intentional: when the user
+  // navigates to a different slide, the new slide's overrides are NOT
+  // in `prev` (assuming this is the first time we've seen them on that
+  // slide root) and they get applied via the "newly added" branch.
+  //
+  // ── Slide-change retry ─────────────────────────────────────────────
+  // `<AnimatePresence mode="wait">` runs the OUTGOING slide's exit
+  // animation (~350ms) BEFORE mounting the incoming slide. A single
+  // `requestAnimationFrame` fires too early — the new slide's DOM
+  // doesn't exist yet, so `querySelector` returns null and the
+  // applier silently no-ops. To bridge that gap we retry on each
+  // animation frame for up to ~30 frames (~500ms; longer than the
+  // transition duration) and run the applier as soon as the
+  // `[data-slide-index]` for the current cursor appears.
+  const prevAppliedRef = useRef<ElementOverride[]>([]);
   useEffect(() => {
     if (!slide) return;
     if (typeof document === "undefined") return;
-    // Defer to the next frame so the slide DOM is mounted before we read
-    // it. AnimatePresence cross-fades; the element exists on the same
-    // tick but a microtask delay is the safer pattern.
-    const handle = window.requestAnimationFrame(() => {
+
+    let cancelled = false;
+    let frameHandle = 0;
+    // Bound the retry by elapsed time so frame-rate throttling
+    // (background tabs, headless test runners) doesn't curtail the
+    // wait below the AnimatePresence exit duration (~350ms).
+    const startedAt = performance.now();
+    const MAX_WAIT_MS = 1500;
+
+    const tick = () => {
+      if (cancelled) return;
       const slideRoot = document.querySelector(
         `[data-slide-index="${cursor.slide}"]`,
       );
-      if (!slideRoot) return;
-      for (const override of elementOverrides.applied) {
-        if (override.slideId !== slide.id) continue;
-        const found = findBySelector(
-          slideRoot,
-          override.selector,
-          override.fingerprint,
-        );
-        if (found.status !== "matched" || !found.el) continue;
-        for (const swap of override.classOverrides) {
-          if (found.el.classList.contains(swap.from)) {
-            found.el.classList.replace(swap.from, swap.to);
-          } else if (!found.el.classList.contains(swap.to)) {
-            // Source class not present (already swapped, or external
-            // mutation) — additive add so the override still lands.
-            found.el.classList.add(swap.to);
-          }
+      if (!slideRoot) {
+        if (performance.now() - startedAt < MAX_WAIT_MS) {
+          frameHandle = window.requestAnimationFrame(tick);
+        }
+        return;
+      }
+      const prev = prevAppliedRef.current;
+      const curr = elementOverrides.applied;
+
+      // Newly REMOVED — revert live class swaps.
+      for (const ov of prev) {
+        if (!curr.some((c) => sameOverrideKey(c, ov))) {
+          revertOverride(slideRoot, ov);
         }
       }
-    });
-    return () => window.cancelAnimationFrame(handle);
+      // Newly ADDED — apply live class swaps.
+      for (const ov of curr) {
+        if (!prev.some((p) => sameOverrideKey(p, ov))) {
+          applyOverride(slideRoot, ov);
+        }
+      }
+      // Slide change: ensure overrides for the newly-mounted slide are
+      // applied even if they were already in `prev` (the previous
+      // application was against a different slide root and didn't take
+      // — `findBySelector` returned null). Idempotent: `applyOverride`
+      // is a no-op if the `from` class isn't present and the `to` is.
+      for (const ov of curr) {
+        if (ov.slideId === slide.id) {
+          applyOverride(slideRoot, ov);
+        }
+      }
+
+      prevAppliedRef.current = curr;
+    };
+
+    frameHandle = window.requestAnimationFrame(tick);
+    return () => {
+      cancelled = true;
+      window.cancelAnimationFrame(frameHandle);
+    };
   }, [slide, cursor.slide, elementOverrides.applied]);
+
+  // ── Pending row-click selection consumer (#53) ─────────────────────────
+  // When inspector dispatches a row-click navigation, we set
+  // `pendingSelection` and let `gotoWithBeacon` flip the cursor. Once
+  // the new slide is the visible one, defer to a rAF retry loop so
+  // AnimatePresence's mode="wait" exit-then-enter has a chance to
+  // mount the new slide root, then locate the element via
+  // `findBySelector` and synthesise the inspector selection state.
+  // Same retry policy as the live applier — see comment there.
+  useEffect(() => {
+    if (!pendingSelection) return;
+    if (!slide) return;
+    if (slide.id !== pendingSelection.slideId) return; // wait for the cursor
+    if (typeof document === "undefined") return;
+
+    let cancelled = false;
+    let frameHandle = 0;
+    // Bound by elapsed time — see live-applier comment above.
+    const startedAt = performance.now();
+    const MAX_WAIT_MS = 1500;
+
+    const tick = () => {
+      if (cancelled) return;
+      const slideRoot = document.querySelector(
+        `[data-slide-index="${cursor.slide}"]`,
+      );
+      if (!slideRoot) {
+        if (performance.now() - startedAt < MAX_WAIT_MS) {
+          frameHandle = window.requestAnimationFrame(tick);
+          return;
+        }
+        // Gave up — the new slide never mounted. Drop pending so we
+        // don't loop forever, and surface a notice so the user
+        // understands the click did something.
+        setPendingSelection(null);
+        setSelectionNotice(
+          "Couldn't find that slide — try reloading and selecting again.",
+        );
+        return;
+      }
+      const found = findBySelector(
+        slideRoot,
+        pendingSelection.selector,
+        pendingSelection.fingerprint,
+      );
+      if (found.status === "matched" && found.el) {
+        setSelection({
+          element: found.el,
+          slideId: pendingSelection.slideId,
+          selector: pendingSelection.selector,
+          fingerprint: pendingSelection.fingerprint,
+        });
+        setSelectionNotice(null);
+      } else {
+        // Orphaned / missing — keep the user on the slide but explain
+        // the situation. The notice is cleared on next manual select
+        // or close.
+        setSelection(null);
+        setSelectionNotice(
+          "Element no longer found on this slide — review or delete the override.",
+        );
+      }
+      setPendingSelection(null);
+    };
+
+    frameHandle = window.requestAnimationFrame(tick);
+    return () => {
+      cancelled = true;
+      window.cancelAnimationFrame(frameHandle);
+    };
+  }, [pendingSelection, slide, cursor.slide]);
 
   // Analytics — fire beacons on cursor changes. We split slide / phase
   // so a phase reveal does not also count as a slide advance.
@@ -684,17 +891,39 @@ export function Deck({ slug, title, slides }: DeckProps) {
             onSave={elementOverrides.save}
             onRemoveOne={elementOverrides.removeOne}
             onClearOrphaned={elementOverrides.clearOrphaned}
-            onNavigate={(slideId) => {
-              // Slice 5 (#47) — clicking an override row in the list
-              // view jumps the deck to that slide. Resolves slideId →
-              // index against the current visible slides; if the slide
-              // is hidden by the manifest or removed entirely, the
-              // navigate is a no-op (the row stays visible in the list
-              // until the user removes it).
+            selectionNotice={selectionNotice}
+            onNavigate={(override) => {
+              // Slice 5 (#47) + #53: clicking an override row in the
+              // list view jumps the deck to that slide AND queues an
+              // auto-select so the inspector lands with the matching
+              // element selected. Resolves slideId → index against the
+              // current visible slides; if the slide is hidden by the
+              // manifest or removed entirely, the navigate is a no-op
+              // (the row stays visible in the list until the user
+              // removes it).
               const targetIndex = visibleSlides.findIndex(
-                (s) => s.id === slideId,
+                (s) => s.id === override.slideId,
               );
-              if (targetIndex !== -1 && targetIndex !== cursor.slide) {
+              if (targetIndex === -1) {
+                // Slide isn't in the deck right now — surface a notice
+                // so the user understands why the click didn't move
+                // them anywhere.
+                setPendingSelection(null);
+                setSelectionNotice(
+                  "Slide is hidden or no longer in this deck — review or delete the override.",
+                );
+                return;
+              }
+              // Clear any prior selection / notice so the post-mount
+              // effect renders a clean state, then queue the pending
+              // selection. If we're already on the target slide, the
+              // pending-selection effect runs immediately (its
+              // dependencies fire on the state change). Otherwise it
+              // waits for the cursor to flip.
+              setSelection(null);
+              setSelectionNotice(null);
+              setPendingSelection(override);
+              if (targetIndex !== cursor.slide) {
                 gotoWithBeacon(targetIndex);
               }
             }}
