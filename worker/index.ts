@@ -16,6 +16,9 @@
  *     `/api/admin/analytics/<slug>` (Access-gated read) — `worker/analytics.ts`
  *   - `/api/element-overrides/<slug>` (public read) and
  *     `/api/admin/element-overrides/<slug>` (Access-gated write) — `worker/element-overrides.ts`
+ *   - `/api/decks*` (public read + admin write) — `worker/decks.ts` (issue #57)
+ *   - `/images/*` (public serve) and `/api/admin/images/*`
+ *     (Access-gated upload/index) — `worker/images.ts` (issue #58)
  *
  * Cloudflare Access enforces auth at the edge for everything under
  * `/admin/*`; the Worker does not validate JWTs itself.
@@ -27,12 +30,16 @@ import {
   handleElementOverrides,
   type ElementOverridesEnv,
 } from "./element-overrides";
+import { handleDecks, type DecksEnv } from "./decks";
+import { handleImages, type ImagesEnv } from "./images";
 
 export interface Env
   extends ThemesEnv,
     ManifestsEnv,
     AnalyticsEnv,
-    ElementOverridesEnv {
+    ElementOverridesEnv,
+    DecksEnv,
+    ImagesEnv {
   ASSETS: Fetcher;
 }
 
@@ -49,6 +56,10 @@ export default {
       env,
     );
     if (elementOverridesResponse) return elementOverridesResponse;
+    const decksResponse = await handleDecks(request, env);
+    if (decksResponse) return decksResponse;
+    const imagesResponse = await handleImages(request, env);
+    if (imagesResponse) return imagesResponse;
     return env.ASSETS.fetch(request);
   },
 } satisfies ExportedHandler<Env>;

@@ -76,10 +76,21 @@
    * `GET /api/element-overrides/<slug>`, written by
    * `POST/DELETE /api/admin/element-overrides/<slug>`.
    *
-   * Each has a separate preview namespace so `wrangler dev` doesn't
-   * pollute production data. (Preview ID for ELEMENT_OVERRIDES will be
-   * filled in by the orchestrator on first deploy; `wrangler dev` runs
-   * fine without it because the in-memory mock takes over.)
+   * `DECKS` (issue #57 / deck creator Slice 1) — `deck:<slug>` keys
+   * + a single `decks-list` denormalized index. Read by
+   * `GET /api/decks` and `GET /api/decks/<slug>` (public, with private-
+   * deck filtering); admin variants under `/api/admin/decks/*`.
+   *
+   * `IMAGES_INDEX` (issue #58 / deck creator Slice 2) — side-channel
+   * `images-index:<slug>` keys listing the per-deck image library
+   * (R2 contents indexed for the admin picker UI).
+   *
+   * Each MAY have a separate preview namespace so `wrangler dev` doesn't
+   * pollute production data. (Newer namespaces (ELEMENT_OVERRIDES, DECKS,
+   * IMAGES_INDEX) skip preview IDs because the in-memory mock used by
+   * `wrangler dev` and the vitest-pool-workers harness covers dev/test
+   * scenarios; only THEMES/MANIFESTS retain preview namespaces from
+   * before that pattern was simplified.)
    */
   "kv_namespaces": [
     {
@@ -95,6 +106,29 @@
     {
       "binding": "ELEMENT_OVERRIDES",
       "id": "eee93f0ffcd646e1b6ee7ffc6391ace9"
+    },
+    {
+      "binding": "DECKS",
+      "id": "7e406e8a48554c9db76712ce06f7096f"
+    },
+    {
+      "binding": "IMAGES_INDEX",
+      "id": "8bd30c9791d84826a5d1b17201114602"
+    }
+  ],
+  /**
+   * Deck images (issue #58 / deck creator Slice 2).
+   *
+   * Content-addressed image storage at `decks/<slug>/<sha256>.<ext>`.
+   * Uploaded via `POST /api/admin/images/<slug>` (Access-gated,
+   * multipart). Served via `GET /images/<path...>` (public,
+   * `Cache-Control: public, max-age=31536000, immutable`). Indexed
+   * per-deck via the `IMAGES_INDEX` KV namespace above.
+   */
+  "r2_buckets": [
+    {
+      "binding": "IMAGES",
+      "bucket_name": "slide-of-hand-images"
     }
   ],
   /**
