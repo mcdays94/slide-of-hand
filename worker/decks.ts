@@ -13,6 +13,10 @@
  *   GET    /api/decks/<slug>          — public, returns the full DataDeck record.
  *                                       404 for missing OR private slugs (no leak).
  *   GET    /api/admin/decks           — Access-gated, returns ALL decks (public + private).
+ *   GET    /api/admin/decks/<slug>    — Access-gated, returns the FULL DataDeck record for
+ *                                       editing. Mirrors the public read endpoint but
+ *                                       does NOT filter on visibility — so the editor
+ *                                       can load a private deck. Added for Slice 6 (#62).
  *   POST   /api/admin/decks/<slug>    — Access-gated, creates or replaces the deck record;
  *                                       updates the `decks-list` index.
  *   DELETE /api/admin/decks/<slug>    — Access-gated, removes the deck record AND its
@@ -469,6 +473,26 @@ async function handleAdminList(env: DecksEnv): Promise<Response> {
   });
 }
 
+/**
+ * Admin read of a single deck record by slug. Identical to the public
+ * read but WITHOUT the visibility filter — Access-gated so only
+ * authenticated authors get to see private decks. Used by the Slice 6
+ * editor (`useDeckEditor`) to load a deck for editing.
+ */
+async function handleAdminRead(
+  slug: string,
+  env: DecksEnv,
+): Promise<Response> {
+  const stored = (await env.DECKS.get(KV_DECK(slug), "json")) as
+    | DataDeck
+    | null;
+  if (!stored) return notFound();
+  return new Response(JSON.stringify(stored), {
+    status: 200,
+    headers: NO_STORE_HEADERS,
+  });
+}
+
 async function handleAdminWrite(
   slug: string,
   request: Request,
@@ -529,9 +553,12 @@ export async function handleDecks(
     const match = path.match(ADMIN_ITEM_PATH)!;
     const slug = decodeURIComponent(match[1]);
     if (!isValidSlug(slug)) return badRequest("invalid slug");
+    if (request.method === "GET" || request.method === "HEAD") {
+      return handleAdminRead(slug, env);
+    }
     if (request.method === "POST") return handleAdminWrite(slug, request, env);
     if (request.method === "DELETE") return handleAdminDelete(slug, env);
-    return methodNotAllowed(["POST", "DELETE"]);
+    return methodNotAllowed(["GET", "HEAD", "POST", "DELETE"]);
   }
 
   if (ADMIN_LIST_PATH.test(path)) {

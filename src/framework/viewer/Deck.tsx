@@ -23,6 +23,7 @@ import {
   type CSSProperties,
 } from "react";
 import { AnimatePresence, motion } from "framer-motion";
+import { useLocation, useNavigate } from "react-router-dom";
 import type { SlideDef } from "./types";
 import { useDeckState } from "./useDeckState";
 import { Slide } from "./Slide";
@@ -162,6 +163,16 @@ function shouldSuppressAdvance(target: EventTarget | null): boolean {
 }
 
 export function Deck({ slug, title, slides }: DeckProps) {
+  // ── Edit-mode toggle (Slice 6 / #62) ────────────────────────────────────
+  // The `R` key flips `?edit=1` on the URL, but ONLY when the route is
+  // `/admin/decks/<slug>` (build-time decks aren't editable in Slice 6,
+  // and the public viewer should never enter edit mode). The route
+  // component (`admin/decks.$slug.tsx`) consumes `?edit=1` to mount
+  // `<EditMode>` — this hook just toggles the query param.
+  const location = useLocation();
+  const navigate = useNavigate();
+  const isAdminDeckRoute = /^\/admin\/decks\/[^/]+\/?$/.test(location.pathname);
+
   // ── Per-deck slide manifest (issue #13 / Bucket B2) ─────────────────────
   // The manifest layers reorder + hidden + title + notes overrides on top
   // of the source slide list. Public viewers fetch + apply silently; the
@@ -473,6 +484,27 @@ export function Deck({ slug, title, slides }: DeckProps) {
           e.preventDefault();
           toggleSettings();
           break;
+        case "r":
+        case "R":
+          // Toggle edit mode — admin deck route only. Slice 6 / #62.
+          // Only KV-backed decks can enter edit mode; the route
+          // component decides whether `?edit=1` mounts `<EditMode>`
+          // or falls through to `<Deck>` (e.g. for build-time decks).
+          if (isAdminDeckRoute) {
+            e.preventDefault();
+            const params = new URLSearchParams(location.search);
+            if (params.get("edit") === "1") {
+              params.delete("edit");
+            } else {
+              params.set("edit", "1");
+            }
+            const qs = params.toString();
+            navigate(
+              `${location.pathname}${qs ? `?${qs}` : ""}`,
+              { replace: false },
+            );
+          }
+          break;
         case "f":
         case "F":
           e.preventDefault();
@@ -527,6 +559,10 @@ export function Deck({ slug, title, slides }: DeckProps) {
     inspectMode,
     inspectorOpen,
     closeOverlays,
+    isAdminDeckRoute,
+    location.pathname,
+    location.search,
+    navigate,
   ]);
 
   // ── Click-to-advance ────────────────────────────────────────────────────

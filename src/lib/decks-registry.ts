@@ -38,6 +38,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { Deck, DeckMeta } from "@/framework/viewer/types";
 import type { DataDeck, DataDeckMeta, Visibility } from "./deck-record";
+import { adminWriteHeaders } from "./admin-fetch";
 
 type GlobModule = { default: Deck };
 type GlobResult = Record<string, GlobModule>;
@@ -365,3 +366,62 @@ export function useDataDeck(slug: string): UseDataDeckResult {
 // public `DeckMeta` shape so the route can hand it to UI components that
 // expect the framework-level type. Exported for tests.
 export { dataDeckMetaToDeckMeta };
+
+/**
+ * Admin variant of `useDataDeck` — reads from `/api/admin/decks/<slug>`.
+ *
+ * Shape and semantics mirror `useDataDeck` exactly, with two changes:
+ *
+ *   1. Hits the admin endpoint, which is Access-gated AND does NOT
+ *      filter on visibility. Private decks are visible to authenticated
+ *      authors; the public hook would 404 them.
+ *   2. Sends the admin-write auth header. In dev (localhost) this is
+ *      the placeholder Access email; in production the browser does
+ *      not set it, and Access at the edge populates the real header.
+ *
+ * Used by the admin deck route (Slice 6 / #62) so the read-only viewer
+ * for KV decks can show private content. The public route (`/decks/<slug>`)
+ * keeps using `useDataDeck`, which preserves the visibility filter.
+ */
+export function useAdminDataDeck(slug: string): UseDataDeckResult {
+  const [deck, setDeck] = useState<DataDeck | null>(null);
+  const [isLoading, setIsLoading] = useState(slug.length > 0);
+  const [notFound, setNotFound] = useState(false);
+
+  const fetchDeck = useCallback(async () => {
+    if (!slug) {
+      setDeck(null);
+      setNotFound(false);
+      setIsLoading(false);
+      return;
+    }
+    const url = `/api/admin/decks/${encodeURIComponent(slug)}`;
+    try {
+      const res = await fetch(url, {
+        cache: "no-store",
+        headers: adminWriteHeaders(),
+      });
+      if (!res.ok) {
+        setDeck(null);
+        setNotFound(true);
+        return;
+      }
+      const body = (await res.json()) as DataDeck;
+      setDeck(body);
+      setNotFound(false);
+    } catch {
+      setDeck(null);
+      setNotFound(true);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [slug]);
+
+  useEffect(() => {
+    setIsLoading(slug.length > 0);
+    setNotFound(false);
+    void fetchDeck();
+  }, [fetchDeck, slug]);
+
+  return { deck, isLoading, notFound, refetch: fetchDeck };
+}

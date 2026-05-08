@@ -568,12 +568,75 @@ describe("routing", () => {
     expect(res.status).toBe(405);
   });
 
-  it("returns 405 for GET on a single admin item write path", async () => {
+  it("returns 405 for PUT on a single admin item path", async () => {
     const { env } = makeEnv();
+    const res = await call(
+      adminRequest("https://example.com/api/admin/decks/hello", {
+        method: "PUT",
+      }),
+      env,
+    );
+    expect(res.status).toBe(405);
+  });
+});
+
+// ---------------------------------------------------------------- //
+// GET /api/admin/decks/<slug> (admin read — Slice 6 / #62)
+// ---------------------------------------------------------------- //
+
+describe("GET /api/admin/decks/<slug>", () => {
+  it("rejects without cf-access-authenticated-user-email with 403", async () => {
+    const { env } = makeEnv();
+    const res = await call(
+      new Request("https://example.com/api/admin/decks/hello"),
+      env,
+    );
+    expect(res.status).toBe(403);
+  });
+
+  it("returns 404 when the deck does not exist", async () => {
+    const { env } = makeEnv();
+    const res = await call(
+      adminRequest("https://example.com/api/admin/decks/missing"),
+      env,
+    );
+    expect(res.status).toBe(404);
+  });
+
+  it("returns the full DataDeck for a private deck (admin can read)", async () => {
+    const { env, kv } = makeEnv();
+    const deck = makeDeck("secret", "private");
+    await kv.put("deck:secret", JSON.stringify(deck));
+
+    const res = await call(
+      adminRequest("https://example.com/api/admin/decks/secret"),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toEqual(deck);
+  });
+
+  it("returns the full DataDeck for a public deck", async () => {
+    const { env, kv } = makeEnv();
+    const deck = makeDeck("hello", "public");
+    await kv.put("deck:hello", JSON.stringify(deck));
+
     const res = await call(
       adminRequest("https://example.com/api/admin/decks/hello"),
       env,
     );
-    expect(res.status).toBe(405);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toEqual(deck);
+  });
+
+  it("rejects an invalid slug with 400", async () => {
+    const { env } = makeEnv();
+    const res = await call(
+      adminRequest("https://example.com/api/admin/decks/Not-Allowed"),
+      env,
+    );
+    expect(res.status).toBe(400);
   });
 });
