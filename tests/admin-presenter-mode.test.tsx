@@ -43,6 +43,14 @@ vi.mock("@/lib/decks-registry", () => ({
     notFound: false,
     refetch: async () => {},
   }),
+  // Slice 6 (#62): the admin route now reads the admin-variant hook
+  // so private KV decks resolve. Same shape as `useDataDeck`.
+  useAdminDataDeck: () => ({
+    deck: null,
+    isLoading: false,
+    notFound: false,
+    refetch: async () => {},
+  }),
   useDataDeckList: () => ({ decks: [], isLoading: false }),
 }));
 

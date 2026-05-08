@@ -16,6 +16,7 @@ import {
   buildRegistry,
   mergeDeckLists,
   useDataDeck,
+  useAdminDataDeck,
   useDataDeckList,
 } from "./decks-registry";
 import type { Deck, DeckMeta } from "@/framework/viewer/types";
@@ -344,5 +345,60 @@ describe("useDataDeck", () => {
     rerender({ slug: "another" });
     await waitFor(() => expect(result.current.deck?.meta.slug).toBe("another"));
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+const ORIGINAL_HOSTNAME = window.location.hostname;
+function setHostname(value: string) {
+  Object.defineProperty(window.location, "hostname", {
+    value,
+    configurable: true,
+  });
+}
+
+describe("useAdminDataDeck", () => {
+  afterEach(() => {
+    setHostname(ORIGINAL_HOSTNAME);
+  });
+
+  it("fetches /api/admin/decks/<slug> on mount", async () => {
+    const fetchMock = mockFetch(sampleDataDeck);
+    vi.stubGlobal("fetch", fetchMock);
+    const { result } = renderHook(() => useAdminDataDeck("kv-only"));
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/admin/decks/kv-only",
+      expect.objectContaining({ cache: "no-store" }),
+    );
+    expect(result.current.deck?.meta.slug).toBe("kv-only");
+    expect(result.current.notFound).toBe(false);
+  });
+
+  it("injects the dev-auth header on localhost", async () => {
+    setHostname("localhost");
+    const fetchMock = mockFetch(sampleDataDeck);
+    vi.stubGlobal("fetch", fetchMock);
+    renderHook(() => useAdminDataDeck("kv-only"));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const init = fetchMock.mock.calls[0][1] as RequestInit;
+    const headers = init.headers as Record<string, string>;
+    expect(headers["cf-access-authenticated-user-email"]).toBe("dev@local");
+  });
+
+  it("flags notFound on 404 response", async () => {
+    vi.stubGlobal("fetch", mockFetch({ error: "not found" }, false));
+    const { result } = renderHook(() => useAdminDataDeck("missing"));
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(result.current.deck).toBeNull();
+    expect(result.current.notFound).toBe(true);
+  });
+
+  it("does not fetch when slug is empty", async () => {
+    const fetchMock = mockFetch(sampleDataDeck);
+    vi.stubGlobal("fetch", fetchMock);
+    const { result } = renderHook(() => useAdminDataDeck(""));
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result.current.deck).toBeNull();
   });
 });
