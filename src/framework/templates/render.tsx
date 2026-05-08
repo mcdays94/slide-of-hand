@@ -31,12 +31,13 @@
  * by passing `{ value: SlotValue; node: ReactNode }` instead.
  */
 
-import type { ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import type { DataSlide } from "@/lib/deck-record";
 import type { SlotValue } from "@/lib/slot-types";
 import { validateSlotsAgainstTemplate } from "@/lib/template-types";
 import { Reveal } from "@/framework/viewer/Reveal";
 import { PhaseProvider } from "@/framework/viewer/PhaseContext";
+import { highlight } from "@/lib/shiki";
 import {
   templateRegistry as defaultRegistry,
   type TemplateRegistry,
@@ -118,6 +119,53 @@ export function renderDataSlide(
 }
 
 /**
+ * Lazy Shiki-rendered code block. Mounts a plain `<pre><code>` synchronously
+ * on first paint, then swaps in the highlighted Shiki HTML once the shared
+ * dynamic-import resolves. This keeps the public bundle lean: a deck without
+ * a code slot never triggers the import (Shiki only loads on the first
+ * code-slot mount, server-pushed via Vite's chunk graph).
+ *
+ * `dangerouslySetInnerHTML` is safe here: `highlight()` (in `src/lib/shiki.ts`)
+ * always escapes user code — the Shiki-success branch wraps it in `<span>`
+ * tokens that already escape the source, and the fallback branch escapes
+ * manually. Neither path emits unescaped user input.
+ */
+function ShikiCodeBlock({ code, lang }: { code: string; lang: string }) {
+  const [html, setHtml] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const out = await highlight(code, lang);
+      if (cancelled) return;
+      setHtml(out);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [code, lang]);
+
+  if (html === null) {
+    // First paint, before Shiki has resolved — render the un-highlighted
+    // text in a structurally-equivalent <pre><code> so layout doesn't
+    // shift on resolution. Includes the `language-<lang>` class so
+    // Prism-style consumers (or our own tests) can still see it.
+    return (
+      <pre>
+        <code className={`language-${lang}`}>{code}</code>
+      </pre>
+    );
+  }
+
+  return (
+    <div
+      className="cf-shiki"
+      // eslint-disable-next-line react/no-danger -- Shiki escapes user code into trusted HTML; see ShikiCodeBlock JSDoc + src/lib/shiki.ts
+      dangerouslySetInnerHTML={{ __html: html }}
+    />
+  );
+}
+
+/**
  * Render a single `SlotValue` to a `ReactNode`. Kept simple — Slice 7
  * (image slot editor) and Slice 8 (code/list/stat editors) will refine
  * the visual treatment.
@@ -135,11 +183,7 @@ export function renderSlot(value: SlotValue): ReactNode {
     case "image":
       return <img src={value.src} alt={value.alt} />;
     case "code":
-      return (
-        <pre>
-          <code className={`language-${value.lang}`}>{value.value}</code>
-        </pre>
-      );
+      return <ShikiCodeBlock code={value.value} lang={value.lang} />;
     case "list":
       return (
         <ul>

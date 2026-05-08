@@ -11,13 +11,15 @@
  * Shiki is lazy-loaded via dynamic import on first mount of the editor.
  * That keeps the public viewer bundle lean — neither the deck index nor
  * a deck-without-code-slides should pull Shiki. The highlighter is a
- * module-level singleton; subsequent CodeSlotEditor mounts within the
- * same session reuse it and emit highlighted HTML synchronously
- * (well — same tick after the first await resolves).
+ * module-level singleton (now in `src/lib/shiki.ts` — also reused by
+ * the renderer's `<ShikiCodeBlock>` for KV-backed decks); subsequent
+ * CodeSlotEditor mounts within the same session reuse it and emit
+ * highlighted HTML synchronously after the first await resolves.
  *
  * Languages: a NARROW allowlist (TS/JS family + a few common back-end
- * langs + JSON/HTML/CSS/SH/SQL/YAML/MD). Loading every Shiki language
- * adds ~300 KB to the bundle; the allowlist keeps it ~one grammar each.
+ * langs + JSON/HTML/CSS/SH/SQL/YAML/MD), defined once in
+ * `src/lib/shiki.ts`. Loading every Shiki language adds ~300 KB to the
+ * bundle; the allowlist keeps it ~one grammar each.
  *
  * Filename-hint auto-detect: when the user types/pastes a snippet and
  * the FIRST line is a comment containing a path with a known extension
@@ -36,6 +38,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { SlotSpec } from "@/lib/template-types";
 import type { SlotValue } from "@/lib/slot-types";
+import { highlight } from "@/lib/shiki";
 
 export interface CodeSlotEditorProps {
   name: string;
@@ -121,97 +124,10 @@ export function detectLangFromHint(value: string): string | null {
   return EXT_TO_LANG[ext] ?? null;
 }
 
-// ── Shiki singleton ──────────────────────────────────────────────────────
-//
-// We cache the highlighter instance + the in-flight Promise at module
-// scope. Multiple CodeSlotEditor instances sharing the same session reuse
-// the same highlighter; concurrent first-mounts share the same Promise.
-//
-// Bundle-size posture: we deliberately do NOT import from the top-level
-// `"shiki"` entry, which would pull in EVERY language Shiki ships
-// (~6 MB raw, hundreds of chunks at build time). Instead we go through
-// `shiki/core` + the JavaScript regex engine (no WASM blob) and
-// dynamically import ONLY the 15 grammars in our allowlist + a single
-// theme. Net: ~tens of KB per grammar (gzipped) loaded lazily on first
-// code-slot edit.
-//
-// Tests mock `"shiki/core"`, the engine, and each granular lang/theme
-// import. See CodeSlotEditor.test.tsx — the mock surface is small
-// because we exercise a single stable function (`createHighlighterCore`).
-
-interface ShikiHighlighter {
-  codeToHtml: (code: string, opts: { lang: string; theme: string }) => string;
-}
-
-let highlighterPromise: Promise<ShikiHighlighter> | null = null;
-
-async function getHighlighter(): Promise<ShikiHighlighter> {
-  if (!highlighterPromise) {
-    highlighterPromise = (async () => {
-      const [
-        { createHighlighterCore },
-        { createJavaScriptRegexEngine },
-        themeGitHubLight,
-        langTs,
-        langJs,
-        langTsx,
-        langJsx,
-        langJson,
-        langHtml,
-        langCss,
-        langSh,
-        langSql,
-        langPython,
-        langRuby,
-        langGo,
-        langRust,
-        langYaml,
-        langMd,
-      ] = await Promise.all([
-        import("shiki/core"),
-        import("shiki/engine/javascript"),
-        import("@shikijs/themes/github-light"),
-        import("@shikijs/langs/typescript"),
-        import("@shikijs/langs/javascript"),
-        import("@shikijs/langs/tsx"),
-        import("@shikijs/langs/jsx"),
-        import("@shikijs/langs/json"),
-        import("@shikijs/langs/html"),
-        import("@shikijs/langs/css"),
-        import("@shikijs/langs/bash"),
-        import("@shikijs/langs/sql"),
-        import("@shikijs/langs/python"),
-        import("@shikijs/langs/ruby"),
-        import("@shikijs/langs/go"),
-        import("@shikijs/langs/rust"),
-        import("@shikijs/langs/yaml"),
-        import("@shikijs/langs/markdown"),
-      ]);
-      return (await createHighlighterCore({
-        engine: createJavaScriptRegexEngine(),
-        themes: [themeGitHubLight.default],
-        langs: [
-          langTs.default,
-          langJs.default,
-          langTsx.default,
-          langJsx.default,
-          langJson.default,
-          langHtml.default,
-          langCss.default,
-          langSh.default,
-          langSql.default,
-          langPython.default,
-          langRuby.default,
-          langGo.default,
-          langRust.default,
-          langYaml.default,
-          langMd.default,
-        ],
-      })) as ShikiHighlighter;
-    })();
-  }
-  return highlighterPromise;
-}
+// Shiki singleton + dynamic-import surface lives in `src/lib/shiki.ts`
+// — see that module for the bundle-size rationale + the allowlist of
+// 15 grammars. Tests mock the same granular shiki imports the module
+// pulls under the hood; see CodeSlotEditor.test.tsx for the mock shape.
 
 export function CodeSlotEditor({
   name,
@@ -226,7 +142,9 @@ export function CodeSlotEditor({
   // auto-detect from overwriting a deliberate choice.
   const userPickedLang = useRef(value.lang !== DEFAULT_LANG);
 
-  // Render the preview whenever code or lang changes.
+  // Render the preview whenever code or lang changes. The shared
+  // `highlight()` helper handles the Shiki dynamic-import + the
+  // unknown-language fallback internally; we just rendle its output.
   useEffect(() => {
     let cancelled = false;
     if (value.value.length === 0) {
@@ -236,27 +154,9 @@ export function CodeSlotEditor({
       };
     }
     void (async () => {
-      try {
-        const hl = await getHighlighter();
-        if (cancelled) return;
-        const html = hl.codeToHtml(value.value, {
-          lang: value.lang,
-          theme: "github-light",
-        });
-        if (cancelled) return;
-        setHighlightedHtml(html);
-      } catch {
-        // If Shiki fails (e.g. unknown lang) fall back to a plain
-        // <pre> render so the editor still functions.
-        if (cancelled) return;
-        const escaped = value.value
-          .replace(/&/g, "&amp;")
-          .replace(/</g, "&lt;")
-          .replace(/>/g, "&gt;");
-        setHighlightedHtml(
-          `<pre class="shiki-fallback"><code>${escaped}</code></pre>`,
-        );
-      }
+      const html = await highlight(value.value, value.lang);
+      if (cancelled) return;
+      setHighlightedHtml(html);
     })();
     return () => {
       cancelled = true;

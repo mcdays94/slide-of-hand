@@ -5,12 +5,52 @@
  * animation frames (mirrors `src/framework/viewer/Reveal.test.tsx`).
  */
 
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanup, render, waitFor } from "@testing-library/react";
 import type { DataSlide } from "@/lib/deck-record";
 import type { SlideTemplate } from "@/lib/template-types";
 
+// Mock the Shiki granular imports so the lazy `<ShikiCodeBlock>` resolves
+// to a deterministic highlighted output without pulling the real grammar
+// bundles. Mirrors the mock surface in CodeSlotEditor.test.tsx.
+vi.mock("shiki/core", () => ({
+  createHighlighterCore: vi.fn(async () => ({
+    codeToHtml: (code: string, opts: { lang: string; theme: string }) => {
+      const escaped = code
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+      // Emit a span-style structure resembling real Shiki output so the
+      // existence-check tests are exercising something that approximates
+      // the production render shape.
+      return `<pre class="shiki" data-lang="${opts.lang}" style="background-color:#fff;color:#24292e"><code><span style="color:#24292e">${escaped}</span></code></pre>`;
+    },
+  })),
+}));
+vi.mock("shiki/engine/javascript", () => ({
+  createJavaScriptRegexEngine: vi.fn(() => ({})),
+}));
+vi.mock("@shikijs/themes/github-light", () => ({ default: {} }));
+vi.mock("@shikijs/langs/typescript", () => ({ default: [] }));
+vi.mock("@shikijs/langs/javascript", () => ({ default: [] }));
+vi.mock("@shikijs/langs/tsx", () => ({ default: [] }));
+vi.mock("@shikijs/langs/jsx", () => ({ default: [] }));
+vi.mock("@shikijs/langs/json", () => ({ default: [] }));
+vi.mock("@shikijs/langs/html", () => ({ default: [] }));
+vi.mock("@shikijs/langs/css", () => ({ default: [] }));
+vi.mock("@shikijs/langs/bash", () => ({ default: [] }));
+vi.mock("@shikijs/langs/sql", () => ({ default: [] }));
+vi.mock("@shikijs/langs/python", () => ({ default: [] }));
+vi.mock("@shikijs/langs/ruby", () => ({ default: [] }));
+vi.mock("@shikijs/langs/go", () => ({ default: [] }));
+vi.mock("@shikijs/langs/rust", () => ({ default: [] }));
+vi.mock("@shikijs/langs/yaml", () => ({ default: [] }));
+vi.mock("@shikijs/langs/markdown", () => ({ default: [] }));
+
 afterEach(() => cleanup());
+beforeEach(() => {
+  vi.clearAllMocks();
+});
 
 vi.mock("framer-motion", () => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -265,7 +305,10 @@ describe("renderDataSlide", () => {
     expect(img?.getAttribute("alt")).toBe("the hero");
   });
 
-  it("renders a code slot as <pre><code> with a language class", () => {
+  it("renders a code slot as <pre><code> with a language class on first paint", () => {
+    // Before the lazy Shiki import resolves, `<ShikiCodeBlock>` falls back
+    // to a structurally-equivalent <pre><code class="language-<lang>"> so
+    // first paint never goes blank.
     const slide: DataSlide = {
       id: "s",
       template: "kitchen-sink",
@@ -283,6 +326,60 @@ describe("renderDataSlide", () => {
     const code = pre?.querySelector("code");
     expect(code?.className).toContain("language-tsx");
     expect(code?.textContent).toBe("const x = 1;");
+  });
+
+  it("renders Shiki HTML for a code slot once the lazy import resolves (#73 follow-up)", async () => {
+    const slide: DataSlide = {
+      id: "s",
+      template: "kitchen-sink",
+      slots: {
+        hero: { kind: "image", src: "/x.png", alt: "x" },
+        snippet: { kind: "code", lang: "python", value: "print('hi')" },
+        bullets: { kind: "list", items: ["a"] },
+        metric: { kind: "stat", value: "1" },
+      },
+    };
+    const { container } = render(
+      <>{renderDataSlide(slide, 0, testRegistry)}</>,
+    );
+    // The mocked Shiki output sets `data-lang` on the <pre>; wait for it.
+    await waitFor(() => {
+      expect(container.querySelector("pre.shiki")).not.toBeNull();
+    });
+    const pre = container.querySelector("pre.shiki") as HTMLPreElement;
+    expect(pre.getAttribute("data-lang")).toBe("python");
+    // Highlighted output must include the user's code (escaped, wrapped
+    // in spans by the mock).
+    expect(pre.textContent).toContain("print('hi')");
+    // Real Shiki emits inline `style="color:..."` markers — the mock
+    // mirrors that so we can sanity-check the structure.
+    expect(pre.innerHTML).toContain("<span");
+  });
+
+  it("escapes HTML in the lazy first-paint code render so user input cannot inject markup", () => {
+    const slide: DataSlide = {
+      id: "s",
+      template: "kitchen-sink",
+      slots: {
+        hero: { kind: "image", src: "/x.png", alt: "x" },
+        snippet: {
+          kind: "code",
+          lang: "html",
+          value: "<script>alert(1)</script>",
+        },
+        bullets: { kind: "list", items: ["a"] },
+        metric: { kind: "stat", value: "1" },
+      },
+    };
+    const { container } = render(
+      <>{renderDataSlide(slide, 0, testRegistry)}</>,
+    );
+    // First paint is a plain <pre><code>{...}</code></pre>; React already
+    // escapes children, so a literal "<script>" string lives in textContent
+    // and CANNOT have produced a real <script> element.
+    expect(container.querySelector("script")).toBeNull();
+    const code = container.querySelector("pre code");
+    expect(code?.textContent).toContain("<script>");
   });
 
   it("renders a list slot as <ul> with one <li> per item", () => {
