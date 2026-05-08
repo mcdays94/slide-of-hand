@@ -8,33 +8,28 @@
  * Layout:
  *
  *      ┌────────────────────────────────────────────────────────┐
- *      │ [N of M] [Save] [Reset] [Close]    Slide [N] template ▾│
+ *      │ [Title] [Unsaved] [Save] [Reset] [Close]               │
  *      ├──────────────────────────┬─────────────────────────────┤
  *      │                          │                             │
  *      │    LIVE PREVIEW (50%)    │   SLOT EDITORS (50%)        │
  *      │                          │                             │
  *      │  renderDataSlide(slide)  │   <SlotEditor>×N            │
  *      │                          │                             │
- *      └──────────────────────────┴─────────────────────────────┘
+ *      ├──────────────────────────┴─────────────────────────────┤
+ *      │  <Filmstrip>  thumbnails + drag reorder + + / × / ⎘    │
+ *      └────────────────────────────────────────────────────────┘
  *
  * The preview pane renders the currently-selected slide via
- * `renderDataSlide` directly — NOT `<DataDeck>`. The deviation from the
- * issue spec ("using `<DataDeck>`") is deliberate:
+ * `renderDataSlide` directly — NOT `<DataDeck>`. See the Slice 6
+ * comment in git history for why; tl;dr `<DataDeck>` brings keyboard
+ * nav and click-to-advance that fights the editor's UX, and the
+ * direct-render path stays in sync with the right-pane selection.
  *
- *   - `<DataDeck>` wraps the full `<Deck>` (with click-to-advance,
- *     keyboard nav, presenter affordances). Mounting that inside the
- *     editor pulls in chrome that fights the editor's own UX (typing
- *     in a slot input would advance the deck, etc.).
- *   - `renderDataSlide` is the SAME render path `<DataDeck>` uses
- *     internally (see `dataSlideToSlideDef`'s `render` callback). So
- *     visually we get exactly what the audience sees.
- *   - Selecting a slide in the editor (right side) needs to reflect
- *     in the preview (left side). With `<DataDeck>`'s own internal
- *     cursor, the two would drift. With direct rendering, they stay
- *     in sync trivially.
- *
- * Slice 9's filmstrip will overhaul slide selection. For Slice 6 we
- * use a `Slide N of M` indicator with prev/next buttons.
+ * Slide selection state lives in `useDeckEditor` (`activeSlideId`)
+ * rather than this component's local state — Slice 9's filmstrip
+ * supports drag-reorder and delete, both of which would break a local
+ * `selectedIndex` (the index would silently point at the wrong slide
+ * after a reorder). An id-based source of truth survives both.
  */
 
 import { useEffect, useState } from "react";
@@ -45,6 +40,7 @@ import type { SlotSpec } from "@/lib/template-types";
 import type { SlotValue } from "@/lib/slot-types";
 import { useDeckEditor } from "./useDeckEditor";
 import { SlotEditor } from "./SlotEditor";
+import { Filmstrip } from "./Filmstrip";
 
 export interface EditModeProps {
   slug: string;
@@ -53,7 +49,6 @@ export interface EditModeProps {
 export function EditMode({ slug }: EditModeProps) {
   const editor = useDeckEditor(slug);
   const navigate = useNavigate();
-  const [selectedIndex, setSelectedIndex] = useState(0);
   const [saveStatus, setSaveStatus] = useState<
     | { kind: "idle" }
     | { kind: "saving" }
@@ -63,15 +58,11 @@ export function EditMode({ slug }: EditModeProps) {
 
   const draft = editor.draft;
   const slides = draft?.slides ?? [];
-  const slide = slides[selectedIndex];
-
-  // If the deck shrinks (slice 9 will support delete; for now this
-  // guards against draft revisions), clamp the selected index.
-  useEffect(() => {
-    if (selectedIndex > 0 && selectedIndex >= slides.length) {
-      setSelectedIndex(Math.max(0, slides.length - 1));
-    }
-  }, [slides.length, selectedIndex]);
+  const activeSlideId = editor.activeSlideId;
+  const selectedIndex = activeSlideId
+    ? slides.findIndex((s) => s.id === activeSlideId)
+    : -1;
+  const slide = selectedIndex >= 0 ? slides[selectedIndex] : undefined;
 
   // Saving / loading transitions clear the status line.
   useEffect(() => {
@@ -132,10 +123,9 @@ export function EditMode({ slug }: EditModeProps) {
 
   const handleAddSlide = (templateId: string) => {
     if (!templateId) return;
-    const beforeCount = slides.length;
+    // The hook auto-selects the new slide via `activeSlideId`, so we
+    // don't need to track local index state here.
     editor.addSlide(templateId);
-    // Auto-select the new slide.
-    setSelectedIndex(beforeCount);
   };
 
   const template = slide ? templateRegistry.getById(slide.template) : null;
@@ -217,7 +207,7 @@ export function EditMode({ slug }: EditModeProps) {
       </header>
 
       {/* ── Split-view body ─────────────────────────────────────────── */}
-      <div className="flex flex-1 overflow-hidden">
+      <div className="flex flex-1 overflow-hidden min-h-0">
         {/* Left: live preview */}
         <section
           aria-label="Slide preview"
@@ -246,7 +236,11 @@ export function EditMode({ slug }: EditModeProps) {
           data-testid="edit-editor"
           className="flex w-1/2 flex-col overflow-y-auto p-6"
         >
-          {/* Slide selector + add-slide picker */}
+          {/* Slide indicator + add-slide picker. Prev/next buttons are
+              gone in Slice 9 — the filmstrip below the split-view is
+              the canonical navigation surface. The picker is kept as
+              a fallback (and so existing tests / muscle-memory still
+              work). */}
           <div className="mb-6 flex flex-col gap-3 border-b border-cf-border pb-4">
             <div className="flex items-center justify-between gap-2">
               <span
@@ -257,34 +251,6 @@ export function EditMode({ slug }: EditModeProps) {
                   ? "0 of 0"
                   : `${selectedIndex + 1} of ${slides.length}`}
               </span>
-              <div className="flex items-center gap-1">
-                <button
-                  type="button"
-                  data-interactive
-                  data-testid="prev-slide"
-                  onClick={() => setSelectedIndex((i) => Math.max(0, i - 1))}
-                  disabled={selectedIndex === 0 || slides.length === 0}
-                  className="cf-btn-ghost disabled:opacity-40"
-                >
-                  ‹
-                </button>
-                <button
-                  type="button"
-                  data-interactive
-                  data-testid="next-slide"
-                  onClick={() =>
-                    setSelectedIndex((i) =>
-                      Math.min(slides.length - 1, i + 1),
-                    )
-                  }
-                  disabled={
-                    selectedIndex >= slides.length - 1 || slides.length === 0
-                  }
-                  className="cf-btn-ghost disabled:opacity-40"
-                >
-                  ›
-                </button>
-              </div>
             </div>
 
             <AddSlidePicker onAdd={handleAddSlide} />
@@ -326,6 +292,23 @@ export function EditMode({ slug }: EditModeProps) {
           )}
         </section>
       </div>
+
+      {/* ── Filmstrip ────────────────────────────────────────────────
+          Horizontal slide-thumbnail strip at the bottom of the layout.
+          Owned by the `useDeckEditor` hook; this component just wires
+          the callbacks. */}
+      <Filmstrip
+        slides={slides}
+        activeSlideId={activeSlideId}
+        onSelect={(id) => editor.setActiveSlide(id)}
+        onAddAtEnd={(templateId) => editor.addSlide(templateId)}
+        onAddAfter={(templateId, afterIndex) =>
+          editor.addSlide(templateId, afterIndex)
+        }
+        onDuplicate={(id) => editor.duplicateSlide(id)}
+        onDelete={(id) => editor.deleteSlide(id)}
+        onReorder={(from, to) => editor.reorderSlides(from, to)}
+      />
     </main>
   );
 }

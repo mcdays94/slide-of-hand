@@ -55,22 +55,58 @@ export interface UseDeckEditor {
   draft: DataDeck | null;
   /** True iff `draft` has diverged from `persistent`. */
   isDirty: boolean;
+  /**
+   * The id of the slide currently focused in the editor. Tracked here
+   * (rather than in `EditMode`'s local state) so reordering / deletion
+   * can adjust selection coherently — local-index state would silently
+   * point at the wrong slide after a reorder.
+   *
+   * `null` when the deck has no slides; otherwise always references an
+   * existing slide id.
+   */
+  activeSlideId: string | null;
   /** Mutate one slide identified by `slideId`. Other slides are untouched. */
   updateSlide: (slideId: string, updater: (slide: DataSlide) => DataSlide) => void;
   /** Mutate the deck-level metadata. */
   updateMeta: (updater: (meta: DataDeckMeta) => DataDeckMeta) => void;
   /**
-   * Append a new slide built from the given template. The slide's
+   * Insert a new slide built from the given template. The slide's
    * `slots` map is pre-populated with empty defaults for every slot
    * the template declares (required AND optional — empty optional
    * values are harmless on render and the editor needs them present
    * to render the input).
+   *
+   * If `afterIndex` is supplied, the new slide is inserted at
+   * `afterIndex + 1`; otherwise it appends to the end. Either way, the
+   * new slide becomes the `activeSlideId`.
    */
-  addSlide: (templateId: string) => void;
+  addSlide: (templateId: string, afterIndex?: number) => void;
+  /**
+   * Remove the slide with the given id. No-op if the id is unknown.
+   * If the deleted slide was active, `activeSlideId` shifts to the
+   * neighbour (next slide if available, otherwise the previous).
+   */
+  deleteSlide: (slideId: string) => void;
+  /**
+   * Insert a deep copy of the slide right after the source. The copy
+   * gets a fresh `slide-N` id and becomes the active slide.
+   */
+  duplicateSlide: (slideId: string) => void;
+  /**
+   * Move the slide at `from` to position `to` in the slides array. Both
+   * indices are zero-based and clamped to the array bounds; out-of-range
+   * inputs are no-ops.
+   */
+  reorderSlides: (from: number, to: number) => void;
+  /**
+   * Switch the focused slide in the editor. The id MUST exist in the
+   * current draft; passing an unknown id is a no-op.
+   */
+  setActiveSlide: (slideId: string) => void;
   /**
    * Generic escape hatch for transformations the editor doesn't
-   * specifically model. Slice 9's filmstrip will use this for
-   * add/delete/reorder.
+   * specifically model. The typed methods above (`addSlide`,
+   * `deleteSlide`, …) are layered on top of this.
    */
   updateDraft: (updater: (deck: DataDeck) => DataDeck) => void;
   /** POST the current draft to KV; on success refetch + clear draft. */
@@ -159,6 +195,10 @@ export function useDeckEditor(slug: string): UseDeckEditor {
   const [persistent, setPersistent] = useState<DataDeck | null>(null);
   const [draft, setDraft] = useState<DataDeck | null>(null);
   const [loading, setLoading] = useState(slug.length > 0);
+  // `null` = no selection (deck unloaded / empty). When the deck loads
+  // we default to the first slide. CRUD ops adjust this so it always
+  // points at a valid id.
+  const [activeSlideId, setActiveSlideIdState] = useState<string | null>(null);
 
   const refetch = useCallback(async () => {
     if (!slug) {
@@ -179,12 +219,20 @@ export function useDeckEditor(slug: string): UseDeckEditor {
       });
       if (!res.ok) {
         setPersistent(null);
+        setActiveSlideIdState(null);
       } else {
         const body = (await res.json()) as DataDeck;
         setPersistent(body);
+        // Seed (or refresh) the active slide so it always points at an
+        // id that actually exists in the new persistent record.
+        setActiveSlideIdState((curr) => {
+          if (curr && body.slides.some((s) => s.id === curr)) return curr;
+          return body.slides[0]?.id ?? null;
+        });
       }
     } catch {
       setPersistent(null);
+      setActiveSlideIdState(null);
     } finally {
       setLoading(false);
       // Successful refetch clears the draft — the new persistent IS the
@@ -228,20 +276,121 @@ export function useDeckEditor(slug: string): UseDeckEditor {
   );
 
   const addSlide = useCallback(
-    (templateId: string) => {
+    (templateId: string, afterIndex?: number) => {
       const template = templateRegistry.getById(templateId);
       if (!template) return;
+      const base = draft ?? persistent;
+      if (!base) return;
+      // Compute the new id off the current slides snapshot so we can
+      // reliably set `activeSlideId` *outside* the `setDraft` updater
+      // (the updater may run asynchronously when React batches).
+      const id = nextSlideId(base.slides);
+      const slide = buildEmptySlide(
+        template.id,
+        id,
+        template.slots as Record<string, SlotSpec>,
+      );
       updateDraft((deck) => {
-        const id = nextSlideId(deck.slides);
-        const slide = buildEmptySlide(
-          template.id,
-          id,
-          template.slots as Record<string, SlotSpec>,
-        );
-        return { ...deck, slides: [...deck.slides, slide] };
+        const insertAt =
+          typeof afterIndex === "number" &&
+          afterIndex >= 0 &&
+          afterIndex < deck.slides.length
+            ? afterIndex + 1
+            : deck.slides.length;
+        return {
+          ...deck,
+          slides: [
+            ...deck.slides.slice(0, insertAt),
+            slide,
+            ...deck.slides.slice(insertAt),
+          ],
+        };
+      });
+      setActiveSlideIdState(id);
+    },
+    [draft, persistent, updateDraft],
+  );
+
+  const deleteSlide = useCallback(
+    (slideId: string) => {
+      // Pre-compute the next active id off the current state so callers
+      // that delete the focused slide get a sensible neighbour. We rely
+      // on `draft ?? persistent` since that's the source-of-truth the
+      // updater is about to mutate.
+      const base = draft ?? persistent;
+      if (!base) return;
+      const idx = base.slides.findIndex((s) => s.id === slideId);
+      if (idx < 0) return;
+      const nextActive =
+        activeSlideId === slideId
+          ? base.slides[idx + 1]?.id ?? base.slides[idx - 1]?.id ?? null
+          : activeSlideId;
+      updateDraft((deck) => {
+        const filtered = deck.slides.filter((s) => s.id !== slideId);
+        if (filtered.length === deck.slides.length) return deck;
+        return { ...deck, slides: filtered };
+      });
+      setActiveSlideIdState(nextActive);
+    },
+    [draft, persistent, activeSlideId, updateDraft],
+  );
+
+  const duplicateSlide = useCallback(
+    (slideId: string) => {
+      const base = draft ?? persistent;
+      if (!base) return;
+      const idx = base.slides.findIndex((s) => s.id === slideId);
+      if (idx < 0) return;
+      const id = nextSlideId(base.slides);
+      // Deep-clone the slide via JSON round-trip. Slot values are
+      // plain JSON (strings, numbers, arrays of primitives) so this
+      // is safe and side-effect-free.
+      const cloned: DataSlide = JSON.parse(JSON.stringify(base.slides[idx]));
+      cloned.id = id;
+      updateDraft((deck) => {
+        // Use the live index — the deck might have been mutated
+        // between the time we computed `idx` and the time React
+        // commits the update.
+        const liveIdx = deck.slides.findIndex((s) => s.id === slideId);
+        if (liveIdx < 0) return deck;
+        return {
+          ...deck,
+          slides: [
+            ...deck.slides.slice(0, liveIdx + 1),
+            cloned,
+            ...deck.slides.slice(liveIdx + 1),
+          ],
+        };
+      });
+      setActiveSlideIdState(id);
+    },
+    [draft, persistent, updateDraft],
+  );
+
+  const reorderSlides = useCallback(
+    (from: number, to: number) => {
+      if (from === to) return;
+      updateDraft((deck) => {
+        const len = deck.slides.length;
+        if (from < 0 || from >= len) return deck;
+        if (to < 0 || to >= len) return deck;
+        const next = deck.slides.slice();
+        const [moved] = next.splice(from, 1);
+        next.splice(to, 0, moved);
+        return { ...deck, slides: next };
       });
     },
     [updateDraft],
+  );
+
+  const setActiveSlide = useCallback(
+    (slideId: string) => {
+      const base = draft ?? persistent;
+      if (!base) return;
+      if (!base.slides.some((s) => s.id === slideId)) return;
+      setActiveSlideIdState(slideId);
+    },
+    [draft, persistent],
   );
 
   const save = useCallback(async (): Promise<SaveResult> => {
@@ -297,9 +446,14 @@ export function useDeckEditor(slug: string): UseDeckEditor {
     persistent,
     draft: draft ?? persistent,
     isDirty,
+    activeSlideId,
     updateSlide,
     updateMeta,
     addSlide,
+    deleteSlide,
+    duplicateSlide,
+    reorderSlides,
+    setActiveSlide,
     updateDraft,
     save,
     reset,
