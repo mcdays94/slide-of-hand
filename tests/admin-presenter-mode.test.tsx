@@ -34,6 +34,16 @@ vi.mock("@/lib/decks-registry", () => ({
   getAllDecks: () => [],
   getPublicDecks: () => [],
   getAllDeckEntries: () => [],
+  // Slice 5 (#61): the route reads the KV hook even when the build-time
+  // registry has the slug (the hook short-circuits on empty slug). The
+  // mock just needs to expose the same shape so the import resolves.
+  useDataDeck: () => ({
+    deck: null,
+    isLoading: false,
+    notFound: false,
+    refetch: async () => {},
+  }),
+  useDataDeckList: () => ({ decks: [], isLoading: false }),
 }));
 
 const { default: AdminDeckRoute } = await import(
