@@ -93,6 +93,16 @@ html.dark {
   .cf-btn-ghost {
     @apply inline-flex items-center justify-center rounded border border-cf-border bg-cf-bg-100/40 px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.25em] text-cf-text-muted transition-colors hover:border-dashed hover:text-cf-text;
   }
+
+  /**
+   * Primary button — same baseline as ghost (mono caps, same padding +
+   * radius), but with the warm-cream surface filled-in and a brown
+   * border so it reads as the affirmative action in a row of ghosts.
+   * Used by Slice 6's editor (Save Deck, Create deck, New deck).
+   */
+  .cf-btn-primary {
+    @apply inline-flex items-center justify-center rounded border border-cf-text bg-cf-text px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.25em] text-cf-bg-100 transition-colors hover:border-dashed;
+  }
 }
 
 /**
