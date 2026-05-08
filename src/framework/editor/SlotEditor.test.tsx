@@ -1,8 +1,9 @@
 /**
  * Component tests for `<SlotEditor>`. Verifies the kind-dispatch
- * behaviour: text/richtext/code/list/stat dispatch to their real
- * editors; image still renders the placeholder until Slice 7 (#63)
- * lands the real `<ImageSlotEditor>`.
+ * behaviour: all 6 slot kinds (text/richtext/image/code/list/stat)
+ * dispatch to their real editors. Per-editor coverage lives in each
+ * `<Kind>SlotEditor.test.tsx` file; this file just verifies the
+ * dispatch + the kind-mismatch error path + the revealAt UI.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
@@ -101,23 +102,8 @@ describe("<SlotEditor>", () => {
     expect(screen.getByTestId("slot-stat-caption-hero")).toBeDefined();
   });
 
-  it("renders a placeholder for unsupported kind image (until Slice 7)", () => {
-    const spec: SlotSpec = {
-      kind: "image",
-      label: "image slot",
-      required: false,
-    };
-    render(
-      <SlotEditor
-        name="image-slot"
-        spec={spec}
-        value={{ kind: "image", src: "", alt: "" }}
-        onChange={() => {}}
-      />,
-    );
-    const ph = screen.getByTestId("slot-placeholder-image-slot");
-    expect(ph.textContent).toMatch(/not yet supported/);
-  });
+  // Image (kind="image") got its real editor in Slice 7 (#63); see
+  // ImageSlotEditor.test.tsx for full coverage.
 
   describe("revealAt UI", () => {
     it("renders a revealAt dropdown with options 0-4", () => {
