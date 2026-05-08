@@ -217,6 +217,131 @@ describe("<EditMode> — adding slides", () => {
   });
 });
 
+describe("<EditMode> — deck metadata panel", () => {
+  it("renders a Settings trigger button in the toolbar", async () => {
+    renderEditMode();
+    await waitFor(() => screen.getByTestId("edit-meta-toggle"));
+    expect(screen.getByTestId("edit-meta-toggle")).toBeDefined();
+  });
+
+  it("the metadata panel is hidden by default", async () => {
+    renderEditMode();
+    await waitFor(() => screen.getByTestId("edit-meta-toggle"));
+    expect(screen.queryByTestId("deck-meta-panel")).toBeNull();
+  });
+
+  it("clicking Settings opens the metadata panel", async () => {
+    renderEditMode();
+    const trigger = (await waitFor(() =>
+      screen.getByTestId("edit-meta-toggle"),
+    )) as HTMLButtonElement;
+    fireEvent.click(trigger);
+    await waitFor(() => screen.getByTestId("deck-meta-panel"));
+    expect(screen.getByTestId("deck-meta-panel")).toBeDefined();
+  });
+
+  it("editing the title in the panel updates the draft + dirty indicator", async () => {
+    renderEditMode();
+    fireEvent.click(
+      (await waitFor(() =>
+        screen.getByTestId("edit-meta-toggle"),
+      )) as HTMLButtonElement,
+    );
+    const titleInput = (await waitFor(() =>
+      screen.getByTestId("deck-meta-title"),
+    )) as HTMLInputElement;
+    fireEvent.change(titleInput, { target: { value: "Renamed Deck" } });
+    expect(titleInput.value).toBe("Renamed Deck");
+    expect(screen.getByTestId("dirty-indicator")).toBeDefined();
+  });
+
+  it("flipping visibility to public marks the deck dirty and updates the draft", async () => {
+    renderEditMode();
+    fireEvent.click(
+      (await waitFor(() =>
+        screen.getByTestId("edit-meta-toggle"),
+      )) as HTMLButtonElement,
+    );
+    const pub = (await waitFor(() =>
+      screen.getByTestId("deck-meta-visibility-public"),
+    )) as HTMLInputElement;
+    fireEvent.click(pub);
+    expect(pub.checked).toBe(true);
+    expect(screen.getByTestId("dirty-indicator")).toBeDefined();
+  });
+
+  it("clicking Close on the panel hides it (panel disappears)", async () => {
+    renderEditMode();
+    fireEvent.click(
+      (await waitFor(() =>
+        screen.getByTestId("edit-meta-toggle"),
+      )) as HTMLButtonElement,
+    );
+    await waitFor(() => screen.getByTestId("deck-meta-panel"));
+    fireEvent.click(screen.getByTestId("deck-meta-close"));
+    await waitFor(() =>
+      expect(screen.queryByTestId("deck-meta-panel")).toBeNull(),
+    );
+  });
+});
+
+describe("<EditMode> — validation banner", () => {
+  it("clicking Save with an invalid draft surfaces a validation banner and skips POST", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => sampleDeck(),
+      });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderEditMode();
+    // Open the metadata panel and blank out the title — that's an
+    // invalid `meta.title` per validateDataDeck.
+    fireEvent.click(
+      (await waitFor(() =>
+        screen.getByTestId("edit-meta-toggle"),
+      )) as HTMLButtonElement,
+    );
+    const titleInput = (await waitFor(() =>
+      screen.getByTestId("deck-meta-title"),
+    )) as HTMLInputElement;
+    fireEvent.change(titleInput, { target: { value: "" } });
+
+    fireEvent.click(screen.getByTestId("edit-save"));
+
+    await waitFor(() => screen.getByTestId("validation-banner"));
+    const errors = screen.getAllByTestId("validation-error");
+    expect(errors.length).toBeGreaterThan(0);
+    // No POST issued.
+    const postCalls = fetchMock.mock.calls.filter(
+      (c) => (c[1] as RequestInit | undefined)?.method === "POST",
+    );
+    expect(postCalls).toHaveLength(0);
+  });
+
+  it("Reset clears the validation banner", async () => {
+    renderEditMode();
+    fireEvent.click(
+      (await waitFor(() =>
+        screen.getByTestId("edit-meta-toggle"),
+      )) as HTMLButtonElement,
+    );
+    const titleInput = (await waitFor(() =>
+      screen.getByTestId("deck-meta-title"),
+    )) as HTMLInputElement;
+    fireEvent.change(titleInput, { target: { value: "" } });
+    fireEvent.click(screen.getByTestId("edit-save"));
+    await waitFor(() => screen.getByTestId("validation-banner"));
+
+    fireEvent.click(screen.getByTestId("edit-reset"));
+    await waitFor(() =>
+      expect(screen.queryByTestId("validation-banner")).toBeNull(),
+    );
+  });
+});
+
 describe("<EditMode> — error states", () => {
   it("shows a 404 fallback when the deck doesn't exist", async () => {
     vi.stubGlobal(
