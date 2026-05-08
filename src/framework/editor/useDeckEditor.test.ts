@@ -525,6 +525,192 @@ describe("useDeckEditor — slide CRUD ops", () => {
   });
 });
 
+describe("useDeckEditor — frontend validation in save()", () => {
+  it("does NOT POST when the draft fails validation", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => sampleDeck(),
+      });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useDeckEditor("hello"));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    // Force an invalid draft: blank meta.title violates
+    // `validateDataDeck`'s "non-empty string" rule.
+    act(() =>
+      result.current.updateMeta((m) => ({ ...m, title: "" })),
+    );
+
+    let saveResult: { ok: boolean; validationErrors?: string[] } | undefined;
+    await act(async () => {
+      saveResult = await result.current.save();
+    });
+
+    expect(saveResult?.ok).toBe(false);
+    expect(saveResult?.validationErrors).toBeDefined();
+    expect(saveResult?.validationErrors!.length).toBeGreaterThan(0);
+    // No POST issued — only the initial GET.
+    const postCalls = fetchMock.mock.calls.filter(
+      (c) => (c[1] as RequestInit | undefined)?.method === "POST",
+    );
+    expect(postCalls).toHaveLength(0);
+  });
+
+  it("returns specific error strings for each invalid field", async () => {
+    vi.stubGlobal("fetch", mockFetch(sampleDeck()));
+    const { result } = renderHook(() => useDeckEditor("hello"));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    // Blank slug + invalid date should each surface a discrete error.
+    act(() =>
+      result.current.updateMeta((m) => ({
+        ...m,
+        slug: "",
+        date: "not-a-date",
+      })),
+    );
+
+    let saveResult: { ok: boolean; validationErrors?: string[] } | undefined;
+    await act(async () => {
+      saveResult = await result.current.save();
+    });
+
+    expect(saveResult?.ok).toBe(false);
+    const errors = saveResult?.validationErrors ?? [];
+    expect(errors.some((e) => /slug/.test(e))).toBe(true);
+    expect(errors.some((e) => /date/.test(e))).toBe(true);
+  });
+
+  it("POSTs when the draft validates", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => sampleDeck(),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => sampleDeck(),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => sampleDeck(),
+      });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useDeckEditor("hello"));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    act(() =>
+      result.current.updateMeta((m) => ({ ...m, title: "Renamed" })),
+    );
+
+    let saveResult: { ok: boolean } | undefined;
+    await act(async () => {
+      saveResult = await result.current.save();
+    });
+    expect(saveResult?.ok).toBe(true);
+    // POST happened.
+    const postCalls = fetchMock.mock.calls.filter(
+      (c) => (c[1] as RequestInit | undefined)?.method === "POST",
+    );
+    expect(postCalls).toHaveLength(1);
+  });
+});
+
+describe("useDeckEditor — beforeunload dirty warning", () => {
+  it("attaches a beforeunload listener while dirty and removes it when clean", async () => {
+    vi.stubGlobal("fetch", mockFetch(sampleDeck()));
+    const addSpy = vi.spyOn(window, "addEventListener");
+    const removeSpy = vi.spyOn(window, "removeEventListener");
+
+    const { result } = renderHook(() => useDeckEditor("hello"));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    // Before any edit, no beforeunload listener should be attached
+    // by the hook (other tests may add their own; we count only the
+    // hook's calls by filtering on event name).
+    const beforeAdd = addSpy.mock.calls.filter(
+      (c) => c[0] === "beforeunload",
+    ).length;
+
+    act(() =>
+      result.current.updateMeta((m) => ({ ...m, title: "Dirty" })),
+    );
+
+    await waitFor(() => {
+      const afterAdd = addSpy.mock.calls.filter(
+        (c) => c[0] === "beforeunload",
+      ).length;
+      expect(afterAdd).toBeGreaterThan(beforeAdd);
+    });
+
+    // Reset → clean → listener detaches.
+    const beforeRemove = removeSpy.mock.calls.filter(
+      (c) => c[0] === "beforeunload",
+    ).length;
+    act(() => result.current.reset());
+    await waitFor(() => {
+      const afterRemove = removeSpy.mock.calls.filter(
+        (c) => c[0] === "beforeunload",
+      ).length;
+      expect(afterRemove).toBeGreaterThan(beforeRemove);
+    });
+  });
+
+  it("does not attach a beforeunload listener when not dirty", async () => {
+    vi.stubGlobal("fetch", mockFetch(sampleDeck()));
+    const addSpy = vi.spyOn(window, "addEventListener");
+
+    const { result } = renderHook(() => useDeckEditor("hello"));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    const beforeunloadCalls = addSpy.mock.calls.filter(
+      (c) => c[0] === "beforeunload",
+    );
+    expect(beforeunloadCalls).toHaveLength(0);
+  });
+
+  it("the beforeunload handler calls preventDefault on the event", async () => {
+    vi.stubGlobal("fetch", mockFetch(sampleDeck()));
+    const handlers: EventListenerOrEventListenerObject[] = [];
+    const origAdd = window.addEventListener.bind(window);
+    vi.spyOn(window, "addEventListener").mockImplementation(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (type: any, handler: any, opts?: any) => {
+        if (type === "beforeunload") handlers.push(handler);
+        return origAdd(type, handler, opts);
+      },
+    );
+
+    const { result } = renderHook(() => useDeckEditor("hello"));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    act(() =>
+      result.current.updateMeta((m) => ({ ...m, title: "Dirty" })),
+    );
+
+    await waitFor(() => expect(handlers.length).toBeGreaterThan(0));
+
+    const handler = handlers[handlers.length - 1] as (
+      e: BeforeUnloadEvent,
+    ) => void;
+    const evt = {
+      preventDefault: vi.fn(),
+      returnValue: "initial",
+    } as unknown as BeforeUnloadEvent;
+    handler(evt);
+    expect(evt.preventDefault).toHaveBeenCalled();
+  });
+});
+
 describe("nextSlideId / buildEmptySlide", () => {
   it("nextSlideId returns slide-1 for an empty deck", () => {
     expect(nextSlideId([])).toBe("slide-1");

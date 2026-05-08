@@ -30,10 +30,11 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import type {
-  DataDeck,
-  DataDeckMeta,
-  DataSlide,
+import {
+  validateDataDeck,
+  type DataDeck,
+  type DataDeckMeta,
+  type DataSlide,
 } from "@/lib/deck-record";
 import type { SlotSpec } from "@/lib/template-types";
 import type { SlotKind, SlotValue } from "@/lib/slot-types";
@@ -44,6 +45,12 @@ export interface SaveResult {
   ok: boolean;
   status?: number;
   error?: string;
+  /**
+   * Frontend validation errors discovered before POSTing. Present (and
+   * `ok === false`) when the draft fails `validateDataDeck` — the request
+   * is NOT sent in that case, the editor surfaces these inline.
+   */
+  validationErrors?: string[];
 }
 
 export interface UseDeckEditor {
@@ -398,6 +405,18 @@ export function useDeckEditor(slug: string): UseDeckEditor {
     if (!toSave) {
       return { ok: false, error: "no deck loaded" };
     }
+    // Run frontend shape-validation BEFORE the POST. The Worker has its
+    // own validator (parked debt #57 — currently inline in
+    // `worker/decks.ts`); this gate stops the round-trip so the editor
+    // can surface specific errors immediately.
+    const validation = validateDataDeck(toSave);
+    if (!validation.ok) {
+      return {
+        ok: false,
+        error: "validation failed",
+        validationErrors: validation.errors,
+      };
+    }
     try {
       const res = await fetch(
         `/api/admin/decks/${encodeURIComponent(slug)}`,
@@ -440,6 +459,23 @@ export function useDeckEditor(slug: string): UseDeckEditor {
     draft !== null &&
     persistent !== null &&
     JSON.stringify(draft) !== JSON.stringify(persistent);
+
+  // Warn the user before navigating away while there are unsaved changes.
+  // Browsers show a generic prompt — `returnValue` text is largely
+  // ignored in modern Chrome/Firefox/Safari but still required for the
+  // dialog to appear. The listener is only attached while dirty so a
+  // clean editor doesn't intercept normal navigations.
+  useEffect(() => {
+    if (!isDirty) return;
+    const handler = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      // Some browsers still read `returnValue`; provide a neutral
+      // string. The user-facing copy is ultimately browser-controlled.
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [isDirty]);
 
   return {
     loading,

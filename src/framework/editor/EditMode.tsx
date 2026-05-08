@@ -41,6 +41,7 @@ import type { SlotValue } from "@/lib/slot-types";
 import { useDeckEditor } from "./useDeckEditor";
 import { SlotEditor } from "./SlotEditor";
 import { Filmstrip } from "./Filmstrip";
+import { DeckMetadataPanel } from "./DeckMetadataPanel";
 
 export interface EditModeProps {
   slug: string;
@@ -55,6 +56,13 @@ export function EditMode({ slug }: EditModeProps) {
     | { kind: "saved" }
     | { kind: "error"; message: string }
   >({ kind: "idle" });
+  // Frontend-validation errors from the most recent save attempt. Surfaced
+  // in a banner across the top of the body. Cleared on the next mutation
+  // or successful save.
+  const [validationErrors, setValidationErrors] = useState<string[] | null>(
+    null,
+  );
+  const [metaPanelOpen, setMetaPanelOpen] = useState(false);
 
   const draft = editor.draft;
   const slides = draft?.slides ?? [];
@@ -108,6 +116,13 @@ export function EditMode({ slug }: EditModeProps) {
     const result = await editor.save();
     if (result.ok) {
       setSaveStatus({ kind: "saved" });
+      setValidationErrors(null);
+    } else if (result.validationErrors && result.validationErrors.length > 0) {
+      // Frontend validation failed — surface the specific error list and
+      // do NOT show a generic "Save failed" status (the banner is the
+      // canonical surface here).
+      setSaveStatus({ kind: "idle" });
+      setValidationErrors(result.validationErrors);
     } else {
       setSaveStatus({
         kind: "error",
@@ -119,6 +134,7 @@ export function EditMode({ slug }: EditModeProps) {
   const handleReset = () => {
     editor.reset();
     setSaveStatus({ kind: "idle" });
+    setValidationErrors(null);
   };
 
   const handleAddSlide = (templateId: string) => {
@@ -138,8 +154,10 @@ export function EditMode({ slug }: EditModeProps) {
       data-edit-mode
       className="flex h-screen min-h-screen flex-col bg-cf-bg-100 text-cf-text"
     >
-      {/* ── Top toolbar ──────────────────────────────────────────────── */}
-      <header className="flex items-center justify-between border-b border-cf-border px-6 py-3">
+      {/* ── Top toolbar ────────────────────────────────────────────────
+          z-50 keeps Save / Reset / Close clickable when the docked
+          metadata panel is open (the panel sits at z-40). */}
+      <header className="relative z-50 flex items-center justify-between border-b border-cf-border bg-cf-bg-100 px-6 py-3">
         <div className="flex items-center gap-3">
           <p className="cf-tag">Edit</p>
           <h1 className="text-lg font-medium tracking-[-0.02em]">
@@ -177,6 +195,17 @@ export function EditMode({ slug }: EditModeProps) {
           <button
             type="button"
             data-interactive
+            data-testid="edit-meta-toggle"
+            onClick={() => setMetaPanelOpen(true)}
+            className="cf-btn-ghost"
+            aria-label="Open deck settings"
+            title="Deck settings"
+          >
+            Settings
+          </button>
+          <button
+            type="button"
+            data-interactive
             data-testid="edit-save"
             onClick={handleSave}
             disabled={!editor.isDirty || saveStatus.kind === "saving"}
@@ -205,6 +234,30 @@ export function EditMode({ slug }: EditModeProps) {
           </button>
         </div>
       </header>
+
+      {/* ── Validation banner ────────────────────────────────────────
+          When the most recent save attempt failed frontend validation,
+          surface the specific error list inline. The banner persists
+          until the user makes another edit (which clears the dirty-state
+          mismatch and re-enables save) or presses Reset. */}
+      {validationErrors && validationErrors.length > 0 && (
+        <div
+          role="alert"
+          data-testid="validation-banner"
+          className="border-b border-cf-orange/40 bg-cf-orange/10 px-6 py-3 text-cf-orange"
+        >
+          <p className="font-mono text-[10px] uppercase tracking-[0.25em]">
+            Cannot save — fix the following:
+          </p>
+          <ul className="mt-2 list-disc space-y-1 pl-5 text-xs">
+            {validationErrors.map((err, i) => (
+              <li key={i} data-testid="validation-error">
+                {err}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {/* ── Split-view body ─────────────────────────────────────────── */}
       <div className="flex flex-1 overflow-hidden min-h-0">
@@ -308,6 +361,14 @@ export function EditMode({ slug }: EditModeProps) {
         onDuplicate={(id) => editor.duplicateSlide(id)}
         onDelete={(id) => editor.deleteSlide(id)}
         onReorder={(from, to) => editor.reorderSlides(from, to)}
+      />
+
+      {/* ── Deck metadata sidebar ───────────────────────────────────── */}
+      <DeckMetadataPanel
+        open={metaPanelOpen}
+        meta={draft.meta}
+        onUpdateMeta={(updater) => editor.updateMeta(updater)}
+        onClose={() => setMetaPanelOpen(false)}
       />
     </main>
   );
