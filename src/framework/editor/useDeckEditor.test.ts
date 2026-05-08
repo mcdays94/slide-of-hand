@@ -288,6 +288,243 @@ describe("useDeckEditor — save lifecycle", () => {
   });
 });
 
+describe("useDeckEditor — slide CRUD ops", () => {
+  function multiSlideDeck(): DataDeck {
+    return {
+      meta: {
+        slug: "hello",
+        title: "Hello",
+        date: "2026-05-01",
+        visibility: "private",
+      },
+      slides: [
+        {
+          id: "intro",
+          template: "default",
+          slots: {
+            title: { kind: "text", value: "Intro" },
+            body: { kind: "richtext", value: "Body" },
+          },
+        },
+        {
+          id: "slide-2",
+          template: "default",
+          slots: {
+            title: { kind: "text", value: "Two" },
+            body: { kind: "richtext", value: "Two body" },
+          },
+        },
+        {
+          id: "slide-3",
+          template: "default",
+          slots: {
+            title: { kind: "text", value: "Three" },
+            body: { kind: "richtext", value: "Three body" },
+          },
+        },
+      ],
+    };
+  }
+
+  it("deleteSlide removes a slide by id and marks dirty", async () => {
+    vi.stubGlobal("fetch", mockFetch(multiSlideDeck()));
+    const { result } = renderHook(() => useDeckEditor("hello"));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    act(() => result.current.deleteSlide("slide-2"));
+
+    const slides = result.current.draft?.slides ?? [];
+    expect(slides).toHaveLength(2);
+    expect(slides.map((s) => s.id)).toEqual(["intro", "slide-3"]);
+    expect(result.current.isDirty).toBe(true);
+    // Persistent untouched.
+    expect(result.current.persistent?.slides).toHaveLength(3);
+  });
+
+  it("deleteSlide is a no-op when the id is unknown", async () => {
+    vi.stubGlobal("fetch", mockFetch(multiSlideDeck()));
+    const { result } = renderHook(() => useDeckEditor("hello"));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    act(() => result.current.deleteSlide("nonexistent"));
+    expect(result.current.draft?.slides).toHaveLength(3);
+    expect(result.current.isDirty).toBe(false);
+  });
+
+  it("duplicateSlide inserts a copy with a fresh id immediately after", async () => {
+    vi.stubGlobal("fetch", mockFetch(multiSlideDeck()));
+    const { result } = renderHook(() => useDeckEditor("hello"));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    act(() => result.current.duplicateSlide("intro"));
+
+    const slides = result.current.draft?.slides ?? [];
+    expect(slides).toHaveLength(4);
+    // The copy is at index 1, immediately after the source.
+    expect(slides[0].id).toBe("intro");
+    expect(slides[1].id).not.toBe("intro");
+    expect(slides[1].template).toBe("intro" === "intro" ? "default" : "");
+    // Slot values cloned.
+    expect(slides[1].slots.title).toEqual({ kind: "text", value: "Intro" });
+    expect(result.current.isDirty).toBe(true);
+  });
+
+  it("duplicateSlide is a no-op when the id is unknown", async () => {
+    vi.stubGlobal("fetch", mockFetch(multiSlideDeck()));
+    const { result } = renderHook(() => useDeckEditor("hello"));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    act(() => result.current.duplicateSlide("nonexistent"));
+    expect(result.current.draft?.slides).toHaveLength(3);
+    expect(result.current.isDirty).toBe(false);
+  });
+
+  it("duplicateSlide deep-clones slot values (mutating one doesn't bleed)", async () => {
+    vi.stubGlobal("fetch", mockFetch(multiSlideDeck()));
+    const { result } = renderHook(() => useDeckEditor("hello"));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    act(() => result.current.duplicateSlide("intro"));
+    const dupId = result.current.draft!.slides[1].id;
+    act(() =>
+      result.current.updateSlide(dupId, (s) => ({
+        ...s,
+        slots: {
+          ...s.slots,
+          title: { kind: "text", value: "Different" },
+        },
+      })),
+    );
+    // Source slot stayed the same.
+    expect(result.current.draft?.slides[0].slots.title).toEqual({
+      kind: "text",
+      value: "Intro",
+    });
+  });
+
+  it("reorderSlides moves a slide from one index to another", async () => {
+    vi.stubGlobal("fetch", mockFetch(multiSlideDeck()));
+    const { result } = renderHook(() => useDeckEditor("hello"));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    // Move first slide to last position.
+    act(() => result.current.reorderSlides(0, 2));
+
+    const ids = result.current.draft?.slides.map((s) => s.id) ?? [];
+    expect(ids).toEqual(["slide-2", "slide-3", "intro"]);
+    expect(result.current.isDirty).toBe(true);
+  });
+
+  it("reorderSlides handles backward moves", async () => {
+    vi.stubGlobal("fetch", mockFetch(multiSlideDeck()));
+    const { result } = renderHook(() => useDeckEditor("hello"));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    // Move last slide to the first position.
+    act(() => result.current.reorderSlides(2, 0));
+
+    const ids = result.current.draft?.slides.map((s) => s.id) ?? [];
+    expect(ids).toEqual(["slide-3", "intro", "slide-2"]);
+  });
+
+  it("reorderSlides is a no-op when from === to", async () => {
+    vi.stubGlobal("fetch", mockFetch(multiSlideDeck()));
+    const { result } = renderHook(() => useDeckEditor("hello"));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    act(() => result.current.reorderSlides(1, 1));
+    expect(result.current.isDirty).toBe(false);
+  });
+
+  it("reorderSlides ignores out-of-range indices", async () => {
+    vi.stubGlobal("fetch", mockFetch(multiSlideDeck()));
+    const { result } = renderHook(() => useDeckEditor("hello"));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    act(() => result.current.reorderSlides(-1, 0));
+    expect(result.current.isDirty).toBe(false);
+    act(() => result.current.reorderSlides(0, 99));
+    expect(result.current.isDirty).toBe(false);
+  });
+
+  it("setActiveSlide / activeSlideId track the focused slide", async () => {
+    vi.stubGlobal("fetch", mockFetch(multiSlideDeck()));
+    const { result } = renderHook(() => useDeckEditor("hello"));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    // Defaults to the first slide id.
+    expect(result.current.activeSlideId).toBe("intro");
+
+    act(() => result.current.setActiveSlide("slide-2"));
+    expect(result.current.activeSlideId).toBe("slide-2");
+  });
+
+  it("setActiveSlide does not affect dirty state", async () => {
+    vi.stubGlobal("fetch", mockFetch(multiSlideDeck()));
+    const { result } = renderHook(() => useDeckEditor("hello"));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    act(() => result.current.setActiveSlide("slide-3"));
+    expect(result.current.isDirty).toBe(false);
+  });
+
+  it("addSlide auto-selects the new slide", async () => {
+    vi.stubGlobal("fetch", mockFetch(multiSlideDeck()));
+    const { result } = renderHook(() => useDeckEditor("hello"));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    act(() => result.current.addSlide("default"));
+    const last = result.current.draft!.slides.at(-1)!;
+    expect(result.current.activeSlideId).toBe(last.id);
+  });
+
+  it("addSlide(template, afterIndex) inserts after the given index", async () => {
+    vi.stubGlobal("fetch", mockFetch(multiSlideDeck()));
+    const { result } = renderHook(() => useDeckEditor("hello"));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    act(() => result.current.addSlide("default", 0));
+
+    const ids = result.current.draft?.slides.map((s) => s.id) ?? [];
+    // New slide inserted at index 1, after "intro".
+    expect(ids[0]).toBe("intro");
+    expect(ids[1]).toBe("slide-4"); // next id after slide-3
+    expect(ids[2]).toBe("slide-2");
+    expect(result.current.activeSlideId).toBe("slide-4");
+  });
+
+  it("deleteSlide picks a sensible neighbour as the new active slide", async () => {
+    vi.stubGlobal("fetch", mockFetch(multiSlideDeck()));
+    const { result } = renderHook(() => useDeckEditor("hello"));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    act(() => result.current.setActiveSlide("slide-2"));
+    act(() => result.current.deleteSlide("slide-2"));
+    // After deleting slide-2 (index 1), the next-best is slide-3 (was index 2).
+    expect(result.current.activeSlideId).toBe("slide-3");
+  });
+
+  it("deleting the active slide when it's last falls back to the new last", async () => {
+    vi.stubGlobal("fetch", mockFetch(multiSlideDeck()));
+    const { result } = renderHook(() => useDeckEditor("hello"));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    act(() => result.current.setActiveSlide("slide-3"));
+    act(() => result.current.deleteSlide("slide-3"));
+    expect(result.current.activeSlideId).toBe("slide-2");
+  });
+
+  it("duplicateSlide auto-selects the new copy", async () => {
+    vi.stubGlobal("fetch", mockFetch(multiSlideDeck()));
+    const { result } = renderHook(() => useDeckEditor("hello"));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    act(() => result.current.duplicateSlide("intro"));
+    const dup = result.current.draft!.slides[1];
+    expect(result.current.activeSlideId).toBe(dup.id);
+  });
+});
+
 describe("nextSlideId / buildEmptySlide", () => {
   it("nextSlideId returns slide-1 for an empty deck", () => {
     expect(nextSlideId([])).toBe("slide-1");
