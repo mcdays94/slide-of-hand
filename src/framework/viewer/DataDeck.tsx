@@ -24,7 +24,7 @@
 
 import type { ReactNode } from "react";
 import type { DataDeck as DataDeckRecord, DataSlide } from "@/lib/deck-record";
-import type { SlideDef } from "./types";
+import type { Deck as FrameworkDeck, DeckMeta, SlideDef } from "./types";
 import { Deck } from "./Deck";
 import { renderDataSlide } from "@/framework/templates/render";
 
@@ -70,6 +70,44 @@ export function dataSlideToSlideDef(slide: DataSlide): SlideDef {
   if (slide.hidden !== undefined) def.hidden = slide.hidden;
 
   return def;
+}
+
+/**
+ * Convert a `DataDeckRecord` (the KV-backed JSON shape) into the framework
+ * `Deck` shape (`{ meta, slides }`). Used by:
+ *
+ *   - `<DataDeck>` itself, internally — but we don't need the full
+ *     `Deck` shape there, just the slide list. Kept as a separate helper
+ *     so callers that DO need the framework `Deck` (notably the
+ *     presenter window) can build it without re-implementing the
+ *     conversion.
+ *   - The `?presenter=1` branch on the deck route (Slice 5 / #61
+ *     follow-up): `<PresenterWindow>` takes a framework `Deck`, so
+ *     KV-backed decks need this conversion to support presenter mode.
+ *
+ * The framework `DeckMeta` shape requires a `description` field; the
+ * KV `DataDeckMeta` shape allows it to be missing. We coalesce to ""
+ * to keep the framework type satisfied (the presenter window's header
+ * doesn't surface description, and the public landing page renders
+ * data-decks via a different code path).
+ */
+export function dataDeckToDeck(deck: DataDeckRecord): FrameworkDeck {
+  const meta: DeckMeta = {
+    slug: deck.meta.slug,
+    title: deck.meta.title,
+    description: deck.meta.description ?? "",
+    date: deck.meta.date,
+  };
+  if (deck.meta.author !== undefined) meta.author = deck.meta.author;
+  if (deck.meta.event !== undefined) meta.event = deck.meta.event;
+  if (deck.meta.cover !== undefined) meta.cover = deck.meta.cover;
+  if (deck.meta.runtimeMinutes !== undefined) {
+    meta.runtimeMinutes = deck.meta.runtimeMinutes;
+  }
+  return {
+    meta,
+    slides: deck.slides.map((s) => dataSlideToSlideDef(s)),
+  };
 }
 
 /**

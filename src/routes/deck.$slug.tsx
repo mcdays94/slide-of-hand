@@ -15,23 +15,18 @@
  *
  *   - `?presenter=1` — swaps the live `<Deck>` for `<PresenterWindow>`. This
  *     is what the spawned popup tab loads when the author presses `P`.
+ *     Works for both build-time decks and KV-backed (`<DataDeck>`) decks
+ *     — the latter via the `dataDeckToDeck()` adapter (#61 follow-up).
  *   - `?presenter-mode=1` — turns on `<PresenterModeProvider enabled>` so
  *     presenter affordances (the P-key listener; future tools) mount on
  *     the public viewer. **Dev-only override** — slice #7 will replace it
  *     by activating the provider on the admin route only. Remove this
  *     branch once #7 lands.
- *
- * Note: the `?presenter=1` branch only fires for build-time decks today.
- * Adding presenter window support for KV decks is a follow-up — the
- * presenter window currently expects a `Deck` (the framework type), and
- * we'd need to either thread `<DataDeck>`'s converted slides through
- * the same window component or extend it to accept either shape. Out
- * of scope for #61.
  */
 
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { Deck } from "@/framework/viewer/Deck";
-import { DataDeck } from "@/framework/viewer/DataDeck";
+import { DataDeck, dataDeckToDeck } from "@/framework/viewer/DataDeck";
 import { getDeckBySlug, useDataDeck } from "@/lib/decks-registry";
 import { PresenterModeProvider } from "@/framework/presenter/mode";
 import { PresenterWindow } from "@/framework/presenter/PresenterWindow";
@@ -66,6 +61,13 @@ export default function DeckRoute() {
 
   // ── 2. KV hit ─────────────────────────────────────────────────────────
   if (kvResult.deck) {
+    if (search.get("presenter") === "1") {
+      // Adapt the KV-backed record to the framework `Deck` shape the
+      // presenter window expects. The adapter is pure — every per-slide
+      // field the presenter window reads (id, title, notes, phases,
+      // runtimeSeconds) survives the round-trip.
+      return <PresenterWindow deck={dataDeckToDeck(kvResult.deck)} />;
+    }
     return (
       <PresenterModeProvider enabled={presenterModeOverride}>
         <DataDeck deck={kvResult.deck} />

@@ -48,7 +48,9 @@ vi.mock("@/framework/templates/render", () => ({
   ),
 }));
 
-const { DataDeck, dataSlideToSlideDef } = await import("./DataDeck");
+const { DataDeck, dataSlideToSlideDef, dataDeckToDeck } = await import(
+  "./DataDeck"
+);
 
 afterEach(() => {
   captured = null;
@@ -139,6 +141,104 @@ describe("dataSlideToSlideDef", () => {
     const node = out.getByTestId("rendered-slide");
     expect(node.getAttribute("data-slide-id")).toBe("delegated");
     expect(node.getAttribute("data-phase")).toBe("2");
+  });
+});
+
+describe("dataDeckToDeck (presenter-mode follow-up #61)", () => {
+  it("preserves meta.slug, meta.title and meta.date", () => {
+    const adapted = dataDeckToDeck(
+      baseDeck({
+        meta: {
+          slug: "kv-deck",
+          title: "KV Deck",
+          date: "2026-05-01",
+          visibility: "public",
+        },
+      }),
+    );
+    expect(adapted.meta.slug).toBe("kv-deck");
+    expect(adapted.meta.title).toBe("KV Deck");
+    expect(adapted.meta.date).toBe("2026-05-01");
+  });
+
+  it("coalesces missing meta.description to an empty string", () => {
+    // Framework `DeckMeta` requires `description` (non-optional).
+    // The KV record allows it to be missing.
+    const adapted = dataDeckToDeck(baseDeck());
+    expect(adapted.meta.description).toBe("");
+  });
+
+  it("propagates author / event / cover / runtimeMinutes when present", () => {
+    const adapted = dataDeckToDeck(
+      baseDeck({
+        meta: {
+          slug: "rich",
+          title: "Rich",
+          date: "2026-05-01",
+          visibility: "public",
+          description: "A rich deck.",
+          author: "Miguel",
+          event: "DTX 2026",
+          cover: "/img/cover.png",
+          runtimeMinutes: 30,
+        },
+      }),
+    );
+    expect(adapted.meta.description).toBe("A rich deck.");
+    expect(adapted.meta.author).toBe("Miguel");
+    expect(adapted.meta.event).toBe("DTX 2026");
+    expect(adapted.meta.cover).toBe("/img/cover.png");
+    expect(adapted.meta.runtimeMinutes).toBe(30);
+  });
+
+  it("converts every data slide to a SlideDef and preserves the slide order", () => {
+    const adapted = dataDeckToDeck(
+      baseDeck({
+        slides: [
+          baseSlide({ id: "alpha" }),
+          baseSlide({ id: "beta" }),
+          baseSlide({ id: "gamma" }),
+        ],
+      }),
+    );
+    expect(adapted.slides.map((s) => s.id)).toEqual([
+      "alpha",
+      "beta",
+      "gamma",
+    ]);
+  });
+
+  it("plumbs notes through so the presenter window can render them", () => {
+    const adapted = dataDeckToDeck(
+      baseDeck({
+        slides: [
+          baseSlide({ id: "with-notes", notes: "Mention runtime + audience." }),
+          baseSlide({ id: "without-notes" }),
+        ],
+      }),
+    );
+    expect(adapted.slides[0].notes).toBe("Mention runtime + audience.");
+    expect(adapted.slides[1].notes).toBeUndefined();
+  });
+
+  it("propagates per-slide phases (max revealAt) into the presenter-facing SlideDef", () => {
+    // The presenter window reads `phases` to render its phase-dot cluster
+    // — a KV slide with multi-phase reveals should expose the same
+    // budget the navigation reducer uses on the main viewer.
+    const adapted = dataDeckToDeck(
+      baseDeck({
+        slides: [
+          baseSlide({
+            id: "phased",
+            slots: {
+              t: { kind: "text", value: "t" },
+              u: { kind: "text", value: "u", revealAt: 2 },
+            },
+          }),
+        ],
+      }),
+    );
+    expect(adapted.slides[0].phases).toBe(2);
   });
 });
 
