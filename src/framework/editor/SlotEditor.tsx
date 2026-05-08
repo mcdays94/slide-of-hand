@@ -1,9 +1,9 @@
 /**
  * `<SlotEditor>` — kind-dispatched editor for a single slot.
  *
- * THE SEAM. New slot kinds (image / code / list / stat) ship by adding a
- * file under `slots/<Kind>SlotEditor.tsx` and registering it here. We
- * keep the dispatch explicit (a `switch` on `spec.kind`) rather than
+ * THE SEAM. New slot kinds ship by adding a file under
+ * `slots/<Kind>SlotEditor.tsx` and registering it here. We keep the
+ * dispatch explicit (a `switch` on `spec.kind`) rather than
  * `import.meta.glob` so:
  *
  *   - The set of supported kinds is static + grep-able from one file.
@@ -12,11 +12,14 @@
  *     the dispatcher is a placeholder; a kind without a file is a
  *     compile error.
  *
- * The fallback (placeholder div) is intentional. Slice 7 (image) and
- * Slice 8 (code/list/stat) replace these branches by importing their
- * editor at the top and adding a case here. Until then, the editor
- * shows a clear "not yet supported" notice instead of crashing or
- * silently dropping the slot.
+ * As of the Wave D pre-orchestrator commit (#16 / 2026-05-08), all
+ * 6 slot kinds dispatch to a per-kind editor file. The 4 newer kinds
+ * (image, code, list, stat) ship as STUBS rendering the v0.1 not-yet-
+ * supported placeholder; their bodies are replaced by Slice 7 (#63 —
+ * image) and Slice 8 (#64 — code, list, stat). This pre-wiring is
+ * deliberate: it lets #63 and #64 dispatch in parallel WITHOUT having
+ * to modify this file, eliminating the merge conflict that would
+ * otherwise occur on the dispatch switch.
  *
  * Public contract:
  *
@@ -30,6 +33,10 @@ import type { SlotSpec } from "@/lib/template-types";
 import type { SlotValue } from "@/lib/slot-types";
 import { TextSlotEditor } from "./slots/TextSlotEditor";
 import { RichTextSlotEditor } from "./slots/RichTextSlotEditor";
+import { ImageSlotEditor } from "./slots/ImageSlotEditor";
+import { CodeSlotEditor } from "./slots/CodeSlotEditor";
+import { ListSlotEditor } from "./slots/ListSlotEditor";
+import { StatSlotEditor } from "./slots/StatSlotEditor";
 
 export interface SlotEditorProps {
   /** Slot name within the slide's slot map. Used as a stable input id. */
@@ -72,22 +79,40 @@ export function SlotEditor({ name, spec, value, onChange }: SlotEditorProps) {
         />
       );
     case "image":
+      return (
+        <ImageSlotEditor
+          name={name}
+          spec={spec}
+          value={value as Extract<SlotValue, { kind: "image" }>}
+          onChange={onChange as (next: Extract<SlotValue, { kind: "image" }>) => void}
+        />
+      );
     case "code":
+      return (
+        <CodeSlotEditor
+          name={name}
+          spec={spec}
+          value={value as Extract<SlotValue, { kind: "code" }>}
+          onChange={onChange as (next: Extract<SlotValue, { kind: "code" }>) => void}
+        />
+      );
     case "list":
+      return (
+        <ListSlotEditor
+          name={name}
+          spec={spec}
+          value={value as Extract<SlotValue, { kind: "list" }>}
+          onChange={onChange as (next: Extract<SlotValue, { kind: "list" }>) => void}
+        />
+      );
     case "stat":
       return (
-        <div
-          role="note"
-          data-testid={`slot-placeholder-${name}`}
-          className="rounded border border-dashed border-cf-border bg-cf-bg-200 px-3 py-2 text-xs text-cf-text-muted"
-        >
-          <span className="font-medium uppercase tracking-[0.15em]">
-            {spec.label}
-          </span>
-          <span className="ml-2">
-            Slot kind &ldquo;{spec.kind}&rdquo; not yet supported in v0.1.
-          </span>
-        </div>
+        <StatSlotEditor
+          name={name}
+          spec={spec}
+          value={value as Extract<SlotValue, { kind: "stat" }>}
+          onChange={onChange as (next: Extract<SlotValue, { kind: "stat" }>) => void}
+        />
       );
   }
 }
