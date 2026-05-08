@@ -1,13 +1,14 @@
 /**
  * Component tests for `<SlotEditor>`. Verifies the kind-dispatch
- * behaviour: text → TextSlotEditor, richtext → RichTextSlotEditor,
- * everything else → a placeholder.
+ * behaviour: text/richtext/code/list/stat dispatch to their real
+ * editors; image still renders the placeholder until Slice 7 (#63)
+ * lands the real `<ImageSlotEditor>`.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { SlotEditor } from "./SlotEditor";
 import type { SlotSpec } from "@/lib/template-types";
-import type { SlotKind, SlotValue } from "@/lib/slot-types";
+import type { SlotValue } from "@/lib/slot-types";
 
 afterEach(() => cleanup());
 
@@ -47,36 +48,76 @@ describe("<SlotEditor>", () => {
     expect(screen.getByTestId("slot-preview-body")).toBeDefined();
   });
 
-  it.each<[SlotKind, () => unknown]>([
-    ["image", () => ({ kind: "image", src: "", alt: "" })],
-    ["code", () => ({ kind: "code", lang: "ts", value: "" })],
-    ["list", () => ({ kind: "list", items: [] })],
-    ["stat", () => ({ kind: "stat", value: "" })],
-  ])(
-    "renders a placeholder for unsupported kind %s",
-    (kind, valueFactory) => {
-      const spec: SlotSpec = {
-        kind,
-        label: `${kind} slot`,
-        required: false,
-      };
-      render(
-        <SlotEditor
-          name={`${kind}-slot`}
-          spec={spec}
-          value={
-            valueFactory() as Extract<
-              import("@/lib/slot-types").SlotValue,
-              { kind: typeof kind }
-            >
-          }
-          onChange={() => {}}
-        />,
-      );
-      const ph = screen.getByTestId(`slot-placeholder-${kind}-slot`);
-      expect(ph.textContent).toMatch(/not yet supported/);
-    },
-  );
+  it("dispatches code → CodeSlotEditor", () => {
+    const spec: SlotSpec = {
+      kind: "code",
+      label: "Snippet",
+      required: false,
+    };
+    render(
+      <SlotEditor
+        name="snippet"
+        spec={spec}
+        value={{ kind: "code", lang: "ts", value: "" }}
+        onChange={() => {}}
+      />,
+    );
+    expect(screen.getByTestId("slot-code-lang-snippet")).toBeDefined();
+    expect(screen.getByTestId("slot-code-value-snippet")).toBeDefined();
+  });
+
+  it("dispatches list → ListSlotEditor", () => {
+    const spec: SlotSpec = {
+      kind: "list",
+      label: "Bullets",
+      required: false,
+    };
+    render(
+      <SlotEditor
+        name="bullets"
+        spec={spec}
+        value={{ kind: "list", items: [] }}
+        onChange={() => {}}
+      />,
+    );
+    expect(screen.getByTestId("slot-list-add-bullets")).toBeDefined();
+  });
+
+  it("dispatches stat → StatSlotEditor", () => {
+    const spec: SlotSpec = {
+      kind: "stat",
+      label: "Number",
+      required: false,
+    };
+    render(
+      <SlotEditor
+        name="hero"
+        spec={spec}
+        value={{ kind: "stat", value: "" }}
+        onChange={() => {}}
+      />,
+    );
+    expect(screen.getByTestId("slot-stat-value-hero")).toBeDefined();
+    expect(screen.getByTestId("slot-stat-caption-hero")).toBeDefined();
+  });
+
+  it("renders a placeholder for unsupported kind image (until Slice 7)", () => {
+    const spec: SlotSpec = {
+      kind: "image",
+      label: "image slot",
+      required: false,
+    };
+    render(
+      <SlotEditor
+        name="image-slot"
+        spec={spec}
+        value={{ kind: "image", src: "", alt: "" }}
+        onChange={() => {}}
+      />,
+    );
+    const ph = screen.getByTestId("slot-placeholder-image-slot");
+    expect(ph.textContent).toMatch(/not yet supported/);
+  });
 
   describe("revealAt UI", () => {
     it("renders a revealAt dropdown with options 0-4", () => {
