@@ -29,18 +29,29 @@
  *
  * ## Schema validation
  *
- * The canonical `DataDeck` / `DataSlide` / `SlotValue` types live in the
- * #16 grilling decisions comment. The companion modules
- * `src/lib/slot-types.ts`, `src/lib/template-types.ts`, and
- * `src/lib/deck-record.ts` are being built in parallel by the #59 worker
- * — they are not yet importable. We therefore hand-roll a SHAPE-only
- * validator inline (matching the schema sketch verbatim). When #59 lands,
- * a follow-up PR can swap this for the shared validator without changing
- * the wire format.
+ * The canonical `DataDeck` / `DataSlide` / `SlotValue` types + the
+ * shape validator (`validateDataDeck`) live in `src/lib/deck-record.ts`.
+ * The Worker imports them across the worker/src boundary the same way
+ * it imports `isValidSlug` from `src/lib/theme-tokens` — type imports
+ * are compile-time-only, and the small runtime helper bundles cleanly.
  *
  * The validator enforces shape only — it is NOT template-aware (which
  * slots a given template requires is checked at render time, in the
  * editor + viewer; that's Slice 5's job).
+ *
+ * The shared validator is STRICTER than the original inline pre-#59
+ * version on a few axes (deliberate divergence, kept on cutover):
+ *   - `meta.slug` and `slides[].id` must be kebab-case
+ *   - `meta.date` must be ISO `YYYY-MM-DD`
+ *   - `slide.layout` must be one of the canonical Layout enum values
+ *   - `meta.runtimeMinutes` must be a non-negative integer
+ *   - `slot.revealAt` must be a non-negative integer
+ *   - duplicate slide ids inside the same deck are rejected
+ *
+ * The shared validator does NOT check that `meta.slug` matches the URL
+ * slug — that constraint is a Worker-routing concern, not a record-
+ * shape concern. The handler layers it on AFTER the shape validation
+ * succeeds (see `handleAdminWrite`).
  *
  * ## Why `decks-list` is a single key
  *
@@ -60,80 +71,15 @@
  */
 
 import { isValidSlug } from "../src/lib/theme-tokens";
+import {
+  validateDataDeck,
+  type DataDeck,
+  type Visibility,
+} from "../src/lib/deck-record";
 import { requireAccessAuth } from "./access-auth";
 
 export interface DecksEnv {
   DECKS: KVNamespace;
-}
-
-// ---------------------------------------------------------------- //
-// Schema (shape-only). Mirrors the #16 grilling sketch verbatim.
-// ---------------------------------------------------------------- //
-
-type Visibility = "public" | "private";
-
-interface SlotBase {
-  revealAt?: number;
-}
-interface TextSlot extends SlotBase {
-  kind: "text";
-  value: string;
-}
-interface RichTextSlot extends SlotBase {
-  kind: "richtext";
-  value: string;
-}
-interface ImageSlot extends SlotBase {
-  kind: "image";
-  src: string;
-  alt: string;
-}
-interface CodeSlot extends SlotBase {
-  kind: "code";
-  lang: string;
-  value: string;
-}
-interface ListSlot extends SlotBase {
-  kind: "list";
-  items: string[];
-}
-interface StatSlot extends SlotBase {
-  kind: "stat";
-  value: string;
-  caption?: string;
-}
-type SlotValue =
-  | TextSlot
-  | RichTextSlot
-  | ImageSlot
-  | CodeSlot
-  | ListSlot
-  | StatSlot;
-
-interface DataSlide {
-  id: string;
-  template: string;
-  layout?: string;
-  slots: Record<string, SlotValue>;
-  notes?: string;
-  hidden?: boolean;
-}
-
-interface DataDeckMeta {
-  slug: string;
-  title: string;
-  description?: string;
-  date: string;
-  author?: string;
-  event?: string;
-  cover?: string;
-  runtimeMinutes?: number;
-  visibility: Visibility;
-}
-
-interface DataDeck {
-  meta: DataDeckMeta;
-  slides: DataSlide[];
 }
 
 /**
@@ -201,185 +147,34 @@ function methodNotAllowed(allowed: string[]): Response {
   });
 }
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isNonEmptyString(value: unknown): value is string {
-  return typeof value === "string" && value.length > 0;
-}
-
 // ---------------------------------------------------------------- //
 // Shape validation
 // ---------------------------------------------------------------- //
-
-function validateSlotValue(
-  raw: unknown,
-  path: string,
-): { ok: true; value: SlotValue } | { ok: false; error: string } {
-  if (!isPlainObject(raw)) {
-    return { ok: false, error: `${path} must be an object` };
-  }
-  if (raw.revealAt !== undefined && typeof raw.revealAt !== "number") {
-    return { ok: false, error: `${path}.revealAt must be a number` };
-  }
-  const kind = raw.kind;
-  switch (kind) {
-    case "text":
-    case "richtext": {
-      if (typeof raw.value !== "string") {
-        return { ok: false, error: `${path}.value must be a string` };
-      }
-      return { ok: true, value: raw as unknown as SlotValue };
-    }
-    case "image": {
-      if (!isNonEmptyString(raw.src)) {
-        return { ok: false, error: `${path}.src must be a non-empty string` };
-      }
-      if (typeof raw.alt !== "string") {
-        // alt may be empty string (decorative images), but must be present.
-        return { ok: false, error: `${path}.alt must be a string` };
-      }
-      return { ok: true, value: raw as unknown as SlotValue };
-    }
-    case "code": {
-      if (!isNonEmptyString(raw.lang)) {
-        return { ok: false, error: `${path}.lang must be a non-empty string` };
-      }
-      if (typeof raw.value !== "string") {
-        return { ok: false, error: `${path}.value must be a string` };
-      }
-      return { ok: true, value: raw as unknown as SlotValue };
-    }
-    case "list": {
-      if (!Array.isArray(raw.items)) {
-        return { ok: false, error: `${path}.items must be an array` };
-      }
-      for (let i = 0; i < raw.items.length; i++) {
-        if (typeof raw.items[i] !== "string") {
-          return {
-            ok: false,
-            error: `${path}.items[${i}] must be a string`,
-          };
-        }
-      }
-      return { ok: true, value: raw as unknown as SlotValue };
-    }
-    case "stat": {
-      if (typeof raw.value !== "string") {
-        return { ok: false, error: `${path}.value must be a string` };
-      }
-      if (raw.caption !== undefined && typeof raw.caption !== "string") {
-        return { ok: false, error: `${path}.caption must be a string` };
-      }
-      return { ok: true, value: raw as unknown as SlotValue };
-    }
-    default:
-      return {
-        ok: false,
-        error: `${path}.kind must be one of text|richtext|image|code|list|stat`,
-      };
-  }
-}
-
-function validateSlide(
-  raw: unknown,
-  index: number,
-): { ok: true; value: DataSlide } | { ok: false; error: string } {
-  const path = `slides[${index}]`;
-  if (!isPlainObject(raw)) {
-    return { ok: false, error: `${path} must be an object` };
-  }
-  if (!isNonEmptyString(raw.id)) {
-    return { ok: false, error: `${path}.id must be a non-empty string` };
-  }
-  if (!isNonEmptyString(raw.template)) {
-    return {
-      ok: false,
-      error: `${path}.template must be a non-empty string`,
-    };
-  }
-  if (raw.layout !== undefined && typeof raw.layout !== "string") {
-    return { ok: false, error: `${path}.layout must be a string` };
-  }
-  if (raw.notes !== undefined && typeof raw.notes !== "string") {
-    return { ok: false, error: `${path}.notes must be a string` };
-  }
-  if (raw.hidden !== undefined && typeof raw.hidden !== "boolean") {
-    return { ok: false, error: `${path}.hidden must be a boolean` };
-  }
-  if (!isPlainObject(raw.slots)) {
-    return { ok: false, error: `${path}.slots must be an object` };
-  }
-  for (const [key, slot] of Object.entries(raw.slots)) {
-    const result = validateSlotValue(slot, `${path}.slots.${key}`);
-    if (!result.ok) return result;
-  }
-  return { ok: true, value: raw as unknown as DataSlide };
-}
-
-function validateMeta(
-  raw: unknown,
-  expectedSlug: string,
-): { ok: true; value: DataDeckMeta } | { ok: false; error: string } {
-  if (!isPlainObject(raw)) {
-    return { ok: false, error: "meta must be an object" };
-  }
-  if (!isNonEmptyString(raw.slug)) {
-    return { ok: false, error: "meta.slug must be a non-empty string" };
-  }
-  if (raw.slug !== expectedSlug) {
-    return {
-      ok: false,
-      error: `meta.slug must match URL slug (got "${raw.slug}", expected "${expectedSlug}")`,
-    };
-  }
-  if (!isNonEmptyString(raw.title)) {
-    return { ok: false, error: "meta.title must be a non-empty string" };
-  }
-  if (!isNonEmptyString(raw.date)) {
-    return { ok: false, error: "meta.date must be a non-empty string" };
-  }
-  if (raw.visibility !== "public" && raw.visibility !== "private") {
-    return {
-      ok: false,
-      error: 'meta.visibility must be "public" or "private"',
-    };
-  }
-  for (const optStr of ["description", "author", "event", "cover"] as const) {
-    if (raw[optStr] !== undefined && typeof raw[optStr] !== "string") {
-      return { ok: false, error: `meta.${optStr} must be a string` };
-    }
-  }
-  if (
-    raw.runtimeMinutes !== undefined &&
-    typeof raw.runtimeMinutes !== "number"
-  ) {
-    return { ok: false, error: "meta.runtimeMinutes must be a number" };
-  }
-  return { ok: true, value: raw as unknown as DataDeckMeta };
-}
+//
+// Shape validation is delegated to `validateDataDeck` from
+// `src/lib/deck-record.ts` (issue #59). The Worker keeps responsibility
+// for cross-cutting checks that depend on routing context — namely
+// whether `meta.slug` agrees with the URL slug — because those are
+// not properties of the record itself.
 
 function validateDeck(
   raw: unknown,
   expectedSlug: string,
 ): { ok: true; value: DataDeck } | { ok: false; error: string } {
-  if (!isPlainObject(raw)) {
-    return { ok: false, error: "body must be an object" };
+  const result = validateDataDeck(raw);
+  if (!result.ok) {
+    // Surface the FIRST error to the wire — the original inline
+    // validator returned a single string; keeping that shape avoids
+    // churning every existing 400-asserting client/test.
+    return { ok: false, error: result.errors[0] ?? "invalid deck" };
   }
-  const metaResult = validateMeta(raw.meta, expectedSlug);
-  if (!metaResult.ok) return metaResult;
-  if (!Array.isArray(raw.slides)) {
-    return { ok: false, error: "slides must be an array" };
+  if (result.value.meta.slug !== expectedSlug) {
+    return {
+      ok: false,
+      error: `meta.slug must match URL slug (got "${result.value.meta.slug}", expected "${expectedSlug}")`,
+    };
   }
-  for (let i = 0; i < raw.slides.length; i++) {
-    const result = validateSlide(raw.slides[i], i);
-    if (!result.ok) return result;
-  }
-  return {
-    ok: true,
-    value: { meta: metaResult.value, slides: raw.slides as DataSlide[] },
-  };
+  return { ok: true, value: result.value };
 }
 
 // ---------------------------------------------------------------- //
