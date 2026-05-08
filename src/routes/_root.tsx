@@ -1,27 +1,27 @@
 /**
  * `/` — public deck index.
  *
- * Renders every deck under `src/decks/public/*` as a card, sorted by
- * `meta.date` descending. The registry already sorts, but we sort again
- * here defensively — the index page's contract is "newest first" regardless
- * of registry ordering. Each card links to the viewer at `/decks/<slug>`.
+ * Renders every public deck — both source-based decks discovered at build
+ * time AND KV-backed decks fetched from `/api/decks` — as a card, sorted by
+ * `meta.date` descending. Build-time wins precedence on slug collision (see
+ * `src/lib/decks-registry.ts` top-of-file comment for why).
  *
  * The page title is reset to "Slide of Hand" on mount — the deck viewer rewrites
  * it on navigate, so we must restore it when returning to the index.
+ *
+ * Network-failure fallback: if `/api/decks` returns non-2xx (or fails
+ * outright), the page still renders with just the build-time list. The
+ * audience never sees a network error message in v1 — KV decks are
+ * additive.
  */
 
 import { useEffect } from "react";
 import { Link } from "react-router-dom";
-import { getPublicDecks } from "@/lib/decks-registry";
+import { useDataDeckList } from "@/lib/decks-registry";
 import { DeckCard } from "@/components/DeckCard";
 
 export default function Root() {
-  const decks = [...getPublicDecks()].sort((a, b) => {
-    if (a.meta.date === b.meta.date) {
-      return a.meta.slug.localeCompare(b.meta.slug);
-    }
-    return b.meta.date.localeCompare(a.meta.date);
-  });
+  const { decks } = useDataDeckList();
 
   useEffect(() => {
     if (typeof document !== "undefined") {
@@ -63,9 +63,9 @@ export default function Root() {
         </section>
       ) : (
         <ul className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
-          {decks.map((d) => (
-            <li key={d.meta.slug}>
-              <DeckCard meta={d.meta} />
+          {decks.map((meta) => (
+            <li key={meta.slug}>
+              <DeckCard meta={meta} />
             </li>
           ))}
         </ul>

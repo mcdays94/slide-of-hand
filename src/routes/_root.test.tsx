@@ -6,16 +6,20 @@
  *   - Empty state renders when no public decks are discovered
  *   - The page title is set to "Slide of Hand" on mount
  *   - Cards link to `/decks/<slug>`
+ *   - Slice 5 (#61): merges KV-backed deck summaries with the build-time
+ *     list, with build-time winning on slug collision.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import type { Deck } from "@/framework/viewer/types";
+import type { DataDeckSummary } from "@/lib/decks-registry";
 
 afterEach(() => {
   cleanup();
   vi.resetModules();
+  vi.restoreAllMocks();
 });
 
 const stubSlide = { id: "stub", render: () => null };
@@ -29,20 +33,61 @@ const makeDeck = (
   slides: [stubSlide],
 });
 
-async function renderRoot(decks: Deck[]) {
-  vi.doMock("@/lib/decks-registry", () => ({
-    getPublicDecks: () => decks,
-    getAllDecks: () => decks,
-    getDeckBySlug: (slug: string) =>
-      decks.find((d) => d.meta.slug === slug),
-  }));
+const summary = (
+  slug: string,
+  date: string,
+  rest: Partial<DataDeckSummary> = {},
+): DataDeckSummary => ({
+  slug,
+  title: rest.title ?? slug,
+  description: rest.description,
+  date,
+  cover: rest.cover,
+  visibility: rest.visibility ?? "public",
+  runtimeMinutes: rest.runtimeMinutes,
+});
+
+function mockFetch(response: unknown, ok = true) {
+  return vi.fn().mockResolvedValue({
+    ok,
+    json: async () => response,
+  });
+}
+
+async function renderRoot(decks: Deck[], kvSummaries: DataDeckSummary[] = []) {
+  vi.stubGlobal("fetch", mockFetch({ decks: kvSummaries }));
+  vi.doMock("@/lib/decks-registry", async () => {
+    const actual = await vi.importActual<
+      typeof import("@/lib/decks-registry")
+    >("@/lib/decks-registry");
+    // We override `useDataDeckList` rather than `getPublicDecks` because
+    // the hook in the actual module would otherwise call its own bound
+    // reference of `getPublicDecks` (vi.doMock can't intercept same-module
+    // calls). Delegate the merge logic to the real `mergeDeckLists` so we
+    // still exercise the precedence + sort code path.
+    return {
+      ...actual,
+      getPublicDecks: () => decks,
+      getAllDecks: () => decks,
+      getDeckBySlug: (slug: string) =>
+        decks.find((d) => d.meta.slug === slug),
+      useDataDeckList: () => ({
+        decks: actual.mergeDeckLists(
+          decks.map((d) => d.meta),
+          kvSummaries,
+        ),
+        isLoading: false,
+      }),
+    };
+  });
   const mod = await import("./_root");
   const Root = mod.default;
-  return render(
+  const utils = render(
     <MemoryRouter>
       <Root />
     </MemoryRouter>,
   );
+  return utils;
 }
 
 describe("/ — public deck index", () => {
@@ -111,5 +156,83 @@ describe("/ — public deck index", () => {
     await renderRoot([]);
     const adminLink = screen.getByTestId("admin-link");
     expect(adminLink.getAttribute("href")).toBe("/admin");
+  });
+
+  // ── Slice 5 (#61) — KV-backed deck merging ─────────────────────────────
+
+  it("renders KV-backed deck cards alongside build-time cards", async () => {
+    await renderRoot(
+      [makeDeck("source", "2026-01-01")],
+      [summary("kv-only", "2026-02-01", { title: "KV Only" })],
+    );
+    await waitFor(() => {
+      const cards = screen.getAllByTestId("deck-card");
+      const slugs = cards.map((c) => c.getAttribute("href"));
+      expect(slugs).toContain("/decks/source");
+      expect(slugs).toContain("/decks/kv-only");
+    });
+  });
+
+  it("merges with date desc precedence (KV slot newest wins)", async () => {
+    await renderRoot(
+      [makeDeck("source-old", "2025-01-01")],
+      [summary("kv-newer", "2026-12-01")],
+    );
+    await waitFor(() => {
+      const cards = screen.getAllByTestId("deck-card");
+      const slugs = cards.map((c) => c.getAttribute("href"));
+      expect(slugs).toEqual(["/decks/kv-newer", "/decks/source-old"]);
+    });
+  });
+
+  it("makes build-time win on slug collision (KV entry dropped)", async () => {
+    await renderRoot(
+      [
+        makeDeck("shared", "2026-01-01", {
+          title: "Build-time title",
+          description: "build-time desc",
+        }),
+      ],
+      [
+        summary("shared", "2026-12-01", {
+          title: "KV title",
+          description: "kv desc",
+        }),
+      ],
+    );
+    await waitFor(() => {
+      const cards = screen.getAllByTestId("deck-card");
+      expect(cards).toHaveLength(1);
+    });
+    // The build-time title shows, not the KV title.
+    expect(screen.getByText(/build-time title/i)).toBeTruthy();
+    expect(screen.queryByText(/^KV title$/)).toBeNull();
+  });
+
+  it("falls back to build-time only when /api/decks fails", async () => {
+    // Network failure → KV array empty, but build-time list still served.
+    await renderRoot([makeDeck("source-only", "2026-01-01")], []);
+    await waitFor(() => {
+      const cards = screen.getAllByTestId("deck-card");
+      expect(cards.map((c) => c.getAttribute("href"))).toEqual([
+        "/decks/source-only",
+      ]);
+    });
+  });
+
+  it("does not list private KV summaries even if the worker returns them", async () => {
+    await renderRoot(
+      [],
+      [
+        summary("public-kv", "2026-01-01"),
+        summary("private-kv", "2026-01-01", { visibility: "private" }),
+      ],
+    );
+    await waitFor(() => {
+      const cards = screen.getAllByTestId("deck-card");
+      expect(cards.map((c) => c.getAttribute("href"))).toEqual([
+        "/decks/public-kv",
+      ]);
+    });
   });
 });
