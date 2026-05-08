@@ -45,14 +45,19 @@
  *
  * ## Dev-mode auth header
  *
+ * Header construction is delegated to `adminWriteHeaders()` from
+ * `src/lib/admin-fetch.ts` (Slice 6 / #62) — the canonical localhost-
+ * bound dev injection helper. The hook used to carry its own copy of
+ * the helper; that has now been collapsed onto the shared one.
+ *
  * `wrangler dev` does NOT run Cloudflare Access locally, so the
  * `cf-access-authenticated-user-email` header is never set in dev — and
  * `requireAccessAuth` (defense-in-depth in the Worker) refuses POSTs
- * without it. To unblock save-flow probes locally, the hook detects
- * localhost (or `import.meta.env.DEV`) and injects a placeholder header
- * so the dev round-trip succeeds. In production the header is omitted;
- * Cloudflare Access at the edge populates it after auth, and
- * `requireAccessAuth` reads whatever Access put there. Forging this
+ * without it. The shared helper detects localhost (and `*.localhost`,
+ * `127.0.0.1`) and injects `cf-access-authenticated-user-email:
+ * dev@local` so the dev round-trip succeeds. In production the header
+ * is omitted; Cloudflare Access at the edge populates it after auth,
+ * and `requireAccessAuth` reads whatever Access put there. Forging this
  * header would NOT bypass production Access — the edge strips
  * client-set `cf-access-*` headers before the request reaches the
  * Worker.
@@ -60,6 +65,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { findBySelector } from "@/lib/element-selector";
+import { adminWriteHeaders } from "@/lib/admin-fetch";
 
 /**
  * Mirrors `worker/element-overrides.ts`'s `ElementOverride` shape. Inlined
@@ -126,29 +132,6 @@ export interface UseElementOverridesResult {
    * mounted are KEPT (their status is unknown).
    */
   clearOrphaned: () => Promise<{ ok: boolean; status?: number }>;
-}
-
-/**
- * Build the headers for an admin write. In dev (localhost) we inject a
- * placeholder Access email so the Worker's `requireAccessAuth` returns
- * null and the POST proceeds. In production the browser does not set
- * this header; Cloudflare Access at the edge populates it after auth.
- */
-function adminWriteHeaders(): HeadersInit {
-  const headers: Record<string, string> = {
-    "content-type": "application/json",
-  };
-  if (typeof window !== "undefined") {
-    const host = window.location.hostname;
-    const isLocalhost =
-      host === "localhost" ||
-      host === "127.0.0.1" ||
-      host.endsWith(".localhost");
-    if (isLocalhost) {
-      headers["cf-access-authenticated-user-email"] = "dev@local";
-    }
-  }
-  return headers;
 }
 
 /**

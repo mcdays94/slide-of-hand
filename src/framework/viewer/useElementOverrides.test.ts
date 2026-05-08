@@ -173,6 +173,31 @@ describe("useElementOverrides", () => {
     expect(headers["cf-access-authenticated-user-email"]).toBe("dev@local");
   });
 
+  // ── Pinning the shared admin-fetch helper consumption (#62 follow-up) //
+  // After collapsing the inline `adminWriteHeaders` onto
+  // `src/lib/admin-fetch.ts`, this test pins both the auth header AND
+  // the content-type header in a single POST. If the shared helper's
+  // contract drifts in a way that drops content-type, this fails.
+  it("save still sets content-type: application/json (shared helper contract)", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ overrides: [] }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ overrides: [sample] }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ overrides: [sample] }) });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useElementOverrides("hello"));
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+    await act(async () => {
+      await result.current.save([sample]);
+    });
+
+    const [, postInit] = fetchMock.mock.calls[1];
+    const headers = postInit.headers as Record<string, string>;
+    expect(headers["content-type"]).toBe("application/json");
+  });
+
   it("refetch picks up newly-saved overrides", async () => {
     const fetchMock = vi
       .fn()
