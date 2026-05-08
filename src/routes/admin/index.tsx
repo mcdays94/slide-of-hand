@@ -17,6 +17,7 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { getAllDeckEntries, type RegistryEntry } from "@/lib/decks-registry";
 import { vscodeUrlForDeckSource } from "@/lib/vscode-url";
+import { NewDeckModal } from "@/framework/editor/NewDeckModal";
 
 /**
  * Inline SVG of lucide's `Code` icon — bracket-bracket arrows. We keep it
@@ -133,6 +134,7 @@ function AdminDeckRow({ entry, ideUrl, showIdeButton }: AdminDeckRowProps) {
 
 export default function AdminIndex() {
   const entries = getAllDeckEntries();
+  const [newDeckOpen, setNewDeckOpen] = useState(false);
   // `__PROJECT_ROOT__` is injected by vite.config.ts: an absolute path in
   // dev (`command === "serve"`), the empty string in production builds.
   // We additionally gate the button render on `import.meta.env.DEV` so the
@@ -143,17 +145,33 @@ export default function AdminIndex() {
 
   return (
     <main className="mx-auto flex w-full max-w-5xl flex-1 flex-col gap-8 px-6 py-12">
-      <div className="flex flex-col gap-2">
-        <p className="cf-tag">Decks</p>
-        <h1 className="text-3xl font-medium tracking-[-0.025em] text-cf-text">
-          All decks
-        </h1>
-        <p className="text-sm text-cf-text-muted">
-          {entries.length === 0
-            ? "No decks discovered yet."
-            : `${entries.length} deck${entries.length === 1 ? "" : "s"} available · presenter mode active inside.`}
-        </p>
+      <div className="flex items-end justify-between gap-4">
+        <div className="flex flex-col gap-2">
+          <p className="cf-tag">Decks</p>
+          <h1 className="text-3xl font-medium tracking-[-0.025em] text-cf-text">
+            All decks
+          </h1>
+          <p className="text-sm text-cf-text-muted">
+            {entries.length === 0
+              ? "No decks discovered yet."
+              : `${entries.length} deck${entries.length === 1 ? "" : "s"} available · presenter mode active inside.`}
+          </p>
+        </div>
+        <button
+          type="button"
+          data-interactive
+          data-testid="new-deck-button"
+          onClick={() => setNewDeckOpen(true)}
+          className="cf-btn-primary"
+        >
+          New deck
+        </button>
       </div>
+
+      <NewDeckModal
+        open={newDeckOpen}
+        onClose={() => setNewDeckOpen(false)}
+      />
 
       {entries.length > 0 && (
         <ul className="grid grid-cols-1 gap-4 sm:grid-cols-2">
