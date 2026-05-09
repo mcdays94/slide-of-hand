@@ -402,6 +402,93 @@ describe("renderDataSlide", () => {
     expect(items[2].textContent).toBe("gamma");
   });
 
+  describe("richtext slot", () => {
+    // The renderer wraps richtext markdown through `<RichTextRender>`
+    // (a thin wrapper around `react-markdown`) so the deck viewer matches
+    // the editor's right-pane preview. Before #81 it rendered as plain
+    // text, leaking `**bold**` literals into the audience-facing slide.
+    const richSlide = (md: string): DataSlide => ({
+      id: "s",
+      template: "two-slot",
+      slots: {
+        title: { kind: "text", value: "ok" },
+        body: { kind: "richtext", value: md },
+      },
+    });
+
+    it("renders **bold** as a <strong> element", () => {
+      const { container } = render(
+        <>{renderDataSlide(richSlide("**bold**"), 0, testRegistry)}</>,
+      );
+      const strong = container.querySelector("[data-testid='body'] strong");
+      expect(strong?.textContent).toBe("bold");
+    });
+
+    it("renders _italic_ as an <em> element", () => {
+      const { container } = render(
+        <>{renderDataSlide(richSlide("_italic_"), 0, testRegistry)}</>,
+      );
+      const em = container.querySelector("[data-testid='body'] em");
+      expect(em?.textContent).toBe("italic");
+    });
+
+    it("renders a markdown bulleted list as <ul><li>", () => {
+      const { container } = render(
+        <>
+          {renderDataSlide(
+            richSlide("- one\n- two\n- three"),
+            0,
+            testRegistry,
+          )}
+        </>,
+      );
+      const items = container.querySelectorAll(
+        "[data-testid='body'] ul li",
+      );
+      expect(items).toHaveLength(3);
+      expect(items[0].textContent).toBe("one");
+      expect(items[2].textContent).toBe("three");
+    });
+
+    it("turns a blank-line break into two separate <p> elements", () => {
+      const { container } = render(
+        <>
+          {renderDataSlide(
+            richSlide("First paragraph.\n\nSecond paragraph."),
+            0,
+            testRegistry,
+          )}
+        </>,
+      );
+      const paragraphs = container.querySelectorAll(
+        "[data-testid='body'] p",
+      );
+      expect(paragraphs).toHaveLength(2);
+      expect(paragraphs[0].textContent).toBe("First paragraph.");
+      expect(paragraphs[1].textContent).toBe("Second paragraph.");
+    });
+
+    it("does not leave raw markdown delimiters in the rendered text", () => {
+      const { container } = render(
+        <>
+          {renderDataSlide(
+            richSlide("**bold** and _italic_"),
+            0,
+            testRegistry,
+          )}
+        </>,
+      );
+      const body = container.querySelector("[data-testid='body']");
+      // A working renderer collapses delimiters into element wrappers,
+      // so the user-facing text should never contain the literal `**` or
+      // `_` markers.
+      expect(body?.textContent ?? "").not.toContain("**");
+      // Single underscore can legitimately appear in real prose, so we
+      // assert specifically that the italic word is NOT bracketed by them.
+      expect(body?.textContent ?? "").not.toMatch(/_italic_/);
+    });
+  });
+
   it("renders a stat slot with the value and optional caption", () => {
     const slide: DataSlide = {
       id: "s",

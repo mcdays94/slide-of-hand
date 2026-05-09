@@ -38,6 +38,7 @@ import { validateSlotsAgainstTemplate } from "@/lib/template-types";
 import { Reveal } from "@/framework/viewer/Reveal";
 import { PhaseProvider } from "@/framework/viewer/PhaseContext";
 import { highlight } from "@/lib/shiki";
+import { RichTextRender } from "./RichTextRender";
 import {
   templateRegistry as defaultRegistry,
   type TemplateRegistry,
@@ -170,16 +171,17 @@ function ShikiCodeBlock({ code, lang }: { code: string; lang: string }) {
  * (image slot editor) and Slice 8 (code/list/stat editors) will refine
  * the visual treatment.
  *
- * TODO(slice-6): wire `richtext` through a markdown renderer (e.g.
- * `react-markdown`). Today it's plain-text identical to `text`.
+ * `richtext` slots are routed through `<RichTextRender>` (issue #81) —
+ * the same component the admin Studio's editor uses for its right-pane
+ * preview, so what the author sees while typing matches what the
+ * audience sees in the deck.
  */
 export function renderSlot(value: SlotValue): ReactNode {
   switch (value.kind) {
     case "text":
       return value.value;
     case "richtext":
-      // TODO(slice-6): swap this for a sanitized markdown renderer.
-      return value.value;
+      return <RichTextRender source={value.value} />;
     case "image":
       return <img src={value.src} alt={value.alt} />;
     case "code":

@@ -2,21 +2,17 @@
  * `<RichTextSlotEditor>` — markdown textarea + live-rendered preview.
  *
  * Layout: split horizontally (textarea on the left, rendered preview on
- * the right) inside the slot editor area. The rendered preview reuses
- * `react-markdown` (already a project dependency — see
- * `src/framework/viewer/SlideManager.tsx`) to keep behaviour identical
- * to the slide renderer.
+ * the right) inside the slot editor area.
  *
- * NOTE: Slice 6's `renderSlot` (in `src/framework/templates/render.tsx`)
- * still returns plain text for `richtext` slots — there's a TODO in
- * that file flagging the swap to a markdown renderer. The editor's
- * preview shows the *intended* rendered look so authors can compose
- * meaningful markdown today; the actual deck renderer will catch up
- * in a follow-up commit (out of scope for this slice — wiring markdown
- * into the renderer would also need theming + sanitization decisions).
+ * Both this preview pane and the deck-viewer's `renderSlot()` share the
+ * same `<RichTextRender>` component (see
+ * `src/framework/templates/RichTextRender.tsx`), so what the author sees
+ * while typing matches what the audience sees on the slide. Issue #81
+ * fixed the prior drift where the renderer leaked raw `**bold**`
+ * literals onto the slide.
  */
 
-import ReactMarkdown from "react-markdown";
+import { RichTextRender } from "@/framework/templates/RichTextRender";
 import type { SlotSpec } from "@/lib/template-types";
 import type { SlotValue } from "@/lib/slot-types";
 
@@ -71,7 +67,7 @@ export function RichTextSlotEditor({
           className="prose prose-sm max-w-none rounded border border-dashed border-cf-border bg-cf-bg-200 px-3 py-2 text-sm text-cf-text"
         >
           {value.value.length > 0 ? (
-            <ReactMarkdown>{value.value}</ReactMarkdown>
+            <RichTextRender source={value.value} />
           ) : (
             <p className="text-cf-text-muted italic">Preview…</p>
           )}
