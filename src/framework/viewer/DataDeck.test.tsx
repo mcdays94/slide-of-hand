@@ -16,6 +16,32 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 import type { DataDeck as DataDeckRecord, DataSlide } from "@/lib/deck-record";
+import type { TemplateRegistry } from "@/framework/templates/registry";
+import type { SlideTemplate } from "@/framework/templates/types";
+import type { SlotKind } from "@/lib/slot-types";
+
+type AnyTemplate = SlideTemplate<Record<string, SlotKind>>;
+
+/** Build a stub `TemplateRegistry` whose `getById` returns the given templates by id. */
+function fakeRegistry(templates: AnyTemplate[]): TemplateRegistry {
+  const map = new Map<string, AnyTemplate>(templates.map((t) => [t.id, t]));
+  return {
+    templates: map,
+    getById: (id) => map.get(id) ?? null,
+    list: () => [...map.values()],
+  };
+}
+
+/** Minimal template stub — only `id` + `label` are exercised by the title synthesizer. */
+function stubTemplate(id: string, label: string): AnyTemplate {
+  return {
+    id,
+    label,
+    description: "",
+    slots: {},
+    render: () => null,
+  } as AnyTemplate;
+}
 
 type CapturedDeckProps = {
   slug: string;
@@ -48,9 +74,8 @@ vi.mock("@/framework/templates/render", () => ({
   ),
 }));
 
-const { DataDeck, dataSlideToSlideDef, dataDeckToDeck } = await import(
-  "./DataDeck"
-);
+const { DataDeck, dataSlideToSlideDef, dataDeckToDeck, synthesizeSlideTitle } =
+  await import("./DataDeck");
 
 afterEach(() => {
   captured = null;
@@ -141,6 +166,179 @@ describe("dataSlideToSlideDef", () => {
     const node = out.getByTestId("rendered-slide");
     expect(node.getAttribute("data-slide-id")).toBe("delegated");
     expect(node.getAttribute("data-phase")).toBe("2");
+  });
+
+  it("synthesizes a title from the first text slot for overview-tile labels (#82)", () => {
+    const def = dataSlideToSlideDef(
+      baseSlide({
+        id: "intro",
+        slots: {
+          // Insertion order: "title" is first → its value drives the synthesized title.
+          title: { kind: "text", value: "The case for warm minimalism" },
+          subtitle: { kind: "text", value: "Subtitle" },
+        },
+      }),
+    );
+    expect(def.title).toBe("The case for warm minimalism");
+  });
+
+  it("falls back to the template's label when no text-ish slot exists (#82)", () => {
+    const registry = fakeRegistry([stubTemplate("image-hero", "Image hero")]);
+    const def = dataSlideToSlideDef(
+      baseSlide({
+        id: "img-only",
+        template: "image-hero",
+        slots: {
+          image: { kind: "image", src: "/x.png", alt: "alt" },
+        },
+      }),
+      registry,
+    );
+    expect(def.title).toBe("Image hero");
+  });
+});
+
+describe("synthesizeSlideTitle (#82)", () => {
+  it("returns the value of the first slot when it is a `text` slot", () => {
+    const slide = baseSlide({
+      slots: {
+        // Insertion-order key: this is the "first" slot.
+        headline: { kind: "text", value: "How we ship faster" },
+        body: { kind: "richtext", value: "**Bold** body" },
+      },
+    });
+    expect(synthesizeSlideTitle(slide)).toBe("How we ship faster");
+  });
+
+  it("strips simple markdown from a leading `richtext` slot value", () => {
+    const slide = baseSlide({
+      slots: {
+        body: {
+          kind: "richtext",
+          // Leading hash + bold markers + leading whitespace + backticks: all stripped.
+          value: "  ## **Bold** _italic_ `code` heading",
+        },
+      },
+    });
+    expect(synthesizeSlideTitle(slide)).toBe("Bold italic code heading");
+  });
+
+  it("strips a leading list-marker dash from a `richtext` slot value", () => {
+    const slide = baseSlide({
+      slots: {
+        body: { kind: "richtext", value: "- first bullet" },
+      },
+    });
+    expect(synthesizeSlideTitle(slide)).toBe("first bullet");
+  });
+
+  it("falls back to the template's label when the only slot is `image`", () => {
+    const registry = fakeRegistry([stubTemplate("image-hero", "Image hero")]);
+    const slide = baseSlide({
+      template: "image-hero",
+      slots: {
+        image: { kind: "image", src: "/x.png", alt: "Alt text" },
+      },
+    });
+    expect(synthesizeSlideTitle(slide, registry)).toBe("Image hero");
+  });
+
+  it("falls back to the template's label when slots are non-text-ish (`code`, `list`, `stat`)", () => {
+    const registry = fakeRegistry([stubTemplate("big-stat", "Big stat")]);
+    const slide = baseSlide({
+      template: "big-stat",
+      slots: {
+        stat: { kind: "stat", value: "99.9%" },
+      },
+    });
+    expect(synthesizeSlideTitle(slide, registry)).toBe("Big stat");
+  });
+
+  it("returns undefined when slots are empty AND the template is unknown", () => {
+    const registry = fakeRegistry([]);
+    const slide = baseSlide({ template: "missing", slots: {} });
+    expect(synthesizeSlideTitle(slide, registry)).toBeUndefined();
+  });
+
+  it("returns undefined when slots are empty AND the template's label is missing", () => {
+    // Empty registry — even though the slide references "cover", lookup
+    // returns null, so we exhaust priorities (1)–(4) and fall through.
+    const registry = fakeRegistry([]);
+    const slide = baseSlide({ slots: {} });
+    expect(synthesizeSlideTitle(slide, registry)).toBeUndefined();
+  });
+
+  it("truncates long text-slot values cleanly with an ellipsis", () => {
+    // 60 ASCII chars → must be truncated to ≤ ~40 chars + "…"
+    const slide = baseSlide({
+      slots: {
+        title: {
+          kind: "text",
+          value:
+            "This is a very long slide title that should definitely be truncated for the overview",
+        },
+      },
+    });
+    const out = synthesizeSlideTitle(slide);
+    expect(out).toBeDefined();
+    // Ellipsis present, length capped, no mid-codepoint surprises.
+    expect(out!.endsWith("…")).toBe(true);
+    // Each visible char (incl. the ellipsis) is one code point ≤ 41.
+    expect([...out!].length).toBeLessThanOrEqual(41);
+  });
+
+  it("truncates without splitting a multi-codepoint emoji (Unicode-safe)", () => {
+    // A 41-char string padded with emoji that would split if we used String.slice.
+    // Family-of-four emoji is a multi-codepoint grapheme cluster — at minimum we
+    // must not slice mid-codepoint and produce a lone surrogate.
+    const filler = "x".repeat(40);
+    const slide = baseSlide({
+      slots: {
+        title: { kind: "text", value: `${filler}🎉🎉🎉🎉🎉` },
+      },
+    });
+    const out = synthesizeSlideTitle(slide);
+    expect(out).toBeDefined();
+    // Recombining the code points must round-trip — i.e. no lone surrogates.
+    const codepointCount = [...out!].length;
+    expect(codepointCount).toBeLessThanOrEqual(41);
+    // The result must encode/decode through UTF-16 round-trip without loss.
+    expect(out).toBe([...out!].join(""));
+  });
+
+  it("does NOT truncate values shorter than the limit", () => {
+    const slide = baseSlide({
+      slots: {
+        title: { kind: "text", value: "Short title" },
+      },
+    });
+    const out = synthesizeSlideTitle(slide);
+    expect(out).toBe("Short title");
+    expect(out!.endsWith("…")).toBe(false);
+  });
+
+  it("uses insertion order — first key in the slots object wins", () => {
+    const slide = baseSlide({
+      slots: {
+        // Object key insertion order: "alpha" first, "beta" second.
+        alpha: { kind: "text", value: "Alpha wins" },
+        beta: { kind: "text", value: "Beta loses" },
+      },
+    });
+    expect(synthesizeSlideTitle(slide)).toBe("Alpha wins");
+  });
+
+  it("skips an empty-string text slot and falls through to the next priority", () => {
+    // An empty string is not a useful overview-tile label — fall through
+    // to the template label (priority 4). Pass an empty registry so the
+    // fall-through path itself terminates in `undefined`.
+    const registry = fakeRegistry([]);
+    const slide = baseSlide({
+      slots: {
+        title: { kind: "text", value: "" },
+      },
+    });
+    expect(synthesizeSlideTitle(slide, registry)).toBeUndefined();
   });
 });
 
