@@ -49,6 +49,14 @@ export interface RegistryEntry {
   visibility: "public" | "private";
   folder: string;
   deck: Deck;
+  /**
+   * Where the deck came from. Build-time / source decks ("source") live
+   * under `src/decks/<visibility>/<slug>/index.tsx`; KV-backed decks
+   * created via the admin editor ("kv") are loaded at runtime from
+   * `/api/admin/decks`. Defaults to `"source"` for entries produced by
+   * `buildRegistry()` so existing call sites stay unchanged.
+   */
+  source?: "source" | "kv";
 }
 
 /**
@@ -250,9 +258,76 @@ export function mergeDeckLists(
   return combined;
 }
 
+/**
+ * Admin variant of `mergeDeckLists` — combines build-time registry entries
+ * with KV summaries into a single sorted list of `RegistryEntry`-shaped
+ * rows ready for the admin deck index.
+ *
+ * Two key differences vs. `mergeDeckLists`:
+ *
+ *   1. Returns full entries (with `visibility` + `source`), not bare
+ *      `DeckMeta`. The admin index renders a visibility badge per row
+ *      and may want to fork rendering on `source` (e.g. show the
+ *      "Open in IDE" button only for source decks).
+ *
+ *   2. Does NOT filter on visibility. The admin author needs to see
+ *      both public AND private decks. (The Worker's admin list endpoint
+ *      already returns the full set; we never want to hide rows here.)
+ *
+ * Precedence: build-time wins on slug collision. The KV row is dropped
+ * silently — same rationale as `mergeDeckLists`. Build-time visibility
+ * is the source of truth on collision (e.g. a source/public deck always
+ * wins over a KV/private "stub" with the same slug).
+ *
+ * Sort order: `meta.date` descending, then `meta.slug` ascending —
+ * matches `mergeDeckLists` so admin and public lists feel consistent.
+ *
+ * Both inputs may be empty arrays; the function never throws.
+ */
+export function mergeAdminDeckLists(
+  buildTime: RegistryEntry[],
+  kv: DataDeckSummary[],
+): RegistryEntry[] {
+  const buildTimeSlugs = new Set(buildTime.map((e) => e.deck.meta.slug));
+  // Tag every build-time entry with `source: "source"` so consumers can
+  // distinguish KV rows even when the entry survived a no-op merge.
+  const sourceEntries: RegistryEntry[] = buildTime.map((e) => ({
+    ...e,
+    source: "source" as const,
+  }));
+  const kvEntries: RegistryEntry[] = kv
+    .filter((s) => !buildTimeSlugs.has(s.slug))
+    .map((s) => ({
+      visibility: s.visibility,
+      folder: s.slug,
+      deck: { meta: summaryToDeckMeta(s), slides: [] },
+      source: "kv" as const,
+    }));
+
+  const combined = [...sourceEntries, ...kvEntries];
+  combined.sort((a, b) => {
+    const da = a.deck.meta.date;
+    const db = b.deck.meta.date;
+    if (da === db) return a.deck.meta.slug.localeCompare(b.deck.meta.slug);
+    return db.localeCompare(da);
+  });
+  return combined;
+}
+
 export interface UseDataDeckListResult {
   /** Merged build-time + KV decks, sorted by date desc. */
   decks: DeckMeta[];
+  /** True until the first fetch resolves (success or failure). */
+  isLoading: boolean;
+}
+
+export interface UseAdminDataDeckListResult {
+  /**
+   * Merged build-time + KV entries, sorted by `meta.date` descending. Each
+   * entry carries `visibility` (so the admin row can render a badge) and
+   * `source` ("source" vs "kv", so the row can fork rendering).
+   */
+  entries: RegistryEntry[];
   /** True until the first fetch resolves (success or failure). */
   isLoading: boolean;
 }
@@ -299,6 +374,66 @@ export function useDataDeckList(): UseDataDeckListResult {
   const decks = mergeDeckLists(buildTimeMetas, kv);
 
   return { decks, isLoading };
+}
+
+/**
+ * Admin variant of `useDataDeckList`. Hits the Access-gated
+ * `/api/admin/decks` endpoint (which returns BOTH public and private
+ * decks — see `worker/decks.ts`'s `handleAdminList`) and merges with
+ * the build-time registry into a single sorted entry list.
+ *
+ * Used by the `/admin` deck index so authors can find KV decks they
+ * created via the New Deck modal (issue #80). Without this hook, the
+ * admin index showed only build-time decks — KV decks were invisible
+ * after creation, which broke the author flow.
+ *
+ * Network failures fall back silently to the build-time list (same
+ * pattern as `useDataDeckList`). The page still renders.
+ *
+ * In dev (localhost) the hook injects a placeholder Access email via
+ * `adminWriteHeaders()` so `wrangler dev` (which doesn't run Access)
+ * accepts the request. In production the browser does NOT set this
+ * header; Access at the edge populates it after auth.
+ */
+export function useAdminDataDeckList(): UseAdminDataDeckListResult {
+  const [kv, setKv] = useState<DataDeckSummary[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/admin/decks", {
+          cache: "no-store",
+          headers: adminWriteHeaders(),
+        });
+        if (!res.ok) {
+          if (!cancelled) {
+            setKv([]);
+            setIsLoading(false);
+          }
+          return;
+        }
+        const body = (await res.json()) as DecksListResponse;
+        if (cancelled) return;
+        setKv(Array.isArray(body.decks) ? body.decks : []);
+      } catch {
+        if (!cancelled) setKv([]);
+      } finally {
+        if (!cancelled) setIsLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Read build-time entries on every render so tests can re-mock
+  // `getAllDeckEntries()` without remounting the hook.
+  const buildTime = getAllDeckEntries();
+  const entries = mergeAdminDeckLists(buildTime, kv);
+
+  return { entries, isLoading };
 }
 
 export interface UseDataDeckResult {
