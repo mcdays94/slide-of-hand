@@ -14,10 +14,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderHook, waitFor } from "@testing-library/react";
 import {
   buildRegistry,
+  mergeAdminDeckLists,
   mergeDeckLists,
-  useDataDeck,
   useAdminDataDeck,
+  useAdminDataDeckList,
+  useDataDeck,
   useDataDeckList,
+  type RegistryEntry,
 } from "./decks-registry";
 import type { Deck, DeckMeta } from "@/framework/viewer/types";
 import type { DataDeck } from "./deck-record";
@@ -400,5 +403,222 @@ describe("useAdminDataDeck", () => {
     await waitFor(() => expect(result.current.isLoading).toBe(false));
     expect(fetchMock).not.toHaveBeenCalled();
     expect(result.current.deck).toBeNull();
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// mergeAdminDeckLists — admin variant of mergeDeckLists.
+//
+// Differences vs. mergeDeckLists:
+//   - Returns RegistryEntry-shaped admin entries (with `source` + `visibility`)
+//     so the admin page can render a visibility badge + optional IDE button.
+//   - Does NOT filter on visibility — admins see private KV decks too.
+//   - Build-time wins on slug collision; KV entry is dropped silently.
+//   - Sort order matches mergeDeckLists: date desc, then slug asc.
+// ──────────────────────────────────────────────────────────────────────────
+
+const sourceEntry = (
+  slug: string,
+  date: string,
+  visibility: "public" | "private" = "public",
+  rest: Partial<DeckMeta> = {},
+): RegistryEntry => ({
+  visibility,
+  folder: slug,
+  deck: {
+    meta: {
+      slug,
+      title: `Source ${slug}`,
+      description: `${slug} src desc`,
+      date,
+      ...rest,
+    },
+    slides: [stubSlide],
+  },
+});
+
+describe("mergeAdminDeckLists", () => {
+  it("combines build-time entries with KV summaries", () => {
+    const merged = mergeAdminDeckLists(
+      [sourceEntry("source-a", "2026-04-01")],
+      [summary("kv-a", "2026-03-01")],
+    );
+    const slugs = merged.map((e) => e.deck.meta.slug).sort();
+    expect(slugs).toEqual(["kv-a", "source-a"]);
+  });
+
+  it("includes private KV summaries (admin sees private)", () => {
+    const merged = mergeAdminDeckLists(
+      [],
+      [
+        summary("kv-public", "2026-04-01"),
+        summary("kv-private", "2026-04-01", { visibility: "private" }),
+      ],
+    );
+    const slugs = merged.map((e) => e.deck.meta.slug).sort();
+    expect(slugs).toEqual(["kv-private", "kv-public"]);
+  });
+
+  it("preserves visibility on KV entries", () => {
+    const merged = mergeAdminDeckLists(
+      [],
+      [summary("kv-private", "2026-04-01", { visibility: "private" })],
+    );
+    expect(merged[0]?.visibility).toBe("private");
+  });
+
+  it("preserves visibility on build-time entries", () => {
+    const merged = mergeAdminDeckLists(
+      [sourceEntry("source-private", "2026-04-01", "private")],
+      [],
+    );
+    expect(merged[0]?.visibility).toBe("private");
+  });
+
+  it("tags entries with their source ('source' vs 'kv')", () => {
+    const merged = mergeAdminDeckLists(
+      [sourceEntry("source-a", "2026-04-01")],
+      [summary("kv-a", "2026-04-01")],
+    );
+    const sourceA = merged.find((e) => e.deck.meta.slug === "source-a");
+    const kvA = merged.find((e) => e.deck.meta.slug === "kv-a");
+    expect(sourceA?.source).toBe("source");
+    expect(kvA?.source).toBe("kv");
+  });
+
+  it("sorts merged result by date desc, then slug asc", () => {
+    const merged = mergeAdminDeckLists(
+      [
+        sourceEntry("source-old", "2025-01-01"),
+        sourceEntry("source-new", "2026-12-01"),
+      ],
+      [
+        summary("kv-mid", "2026-06-01"),
+        summary("kv-new", "2026-12-01"),
+      ],
+    );
+    expect(merged.map((e) => e.deck.meta.slug)).toEqual([
+      "kv-new",
+      "source-new",
+      "kv-mid",
+      "source-old",
+    ]);
+  });
+
+  it("makes build-time win on slug collision (precedence)", () => {
+    const merged = mergeAdminDeckLists(
+      [
+        sourceEntry("shared", "2026-01-01", "public", {
+          title: "From source",
+        }),
+      ],
+      [
+        summary("shared", "2026-12-01", {
+          title: "From KV",
+          visibility: "private",
+        }),
+      ],
+    );
+    expect(merged).toHaveLength(1);
+    const shared = merged[0];
+    expect(shared.deck.meta.slug).toBe("shared");
+    expect(shared.deck.meta.title).toBe("From source");
+    expect(shared.deck.meta.date).toBe("2026-01-01");
+    expect(shared.source).toBe("source");
+    // The build-time visibility wins too — KV's "private" is dropped.
+    expect(shared.visibility).toBe("public");
+  });
+
+  it("preserves cover and runtimeMinutes from KV summaries", () => {
+    const merged = mergeAdminDeckLists(
+      [],
+      [
+        summary("rich-kv", "2026-01-01", {
+          cover: "/cover.png",
+          runtimeMinutes: 30,
+        }),
+      ],
+    );
+    expect(merged[0]?.deck.meta.cover).toBe("/cover.png");
+    expect(merged[0]?.deck.meta.runtimeMinutes).toBe(30);
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// useAdminDataDeckList — fetches /api/admin/decks (Access-gated; sees
+// private decks; sends dev-auth header on localhost) and merges with the
+// build-time registry entries.
+// ──────────────────────────────────────────────────────────────────────────
+
+describe("useAdminDataDeckList", () => {
+  afterEach(() => {
+    setHostname(ORIGINAL_HOSTNAME);
+  });
+
+  it("fetches /api/admin/decks on mount", async () => {
+    const fetchMock = mockFetch({ decks: [] });
+    vi.stubGlobal("fetch", fetchMock);
+    const { result } = renderHook(() => useAdminDataDeckList());
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/admin/decks",
+      expect.objectContaining({ cache: "no-store" }),
+    );
+  });
+
+  it("injects the dev-auth header on localhost", async () => {
+    setHostname("localhost");
+    const fetchMock = mockFetch({ decks: [] });
+    vi.stubGlobal("fetch", fetchMock);
+    renderHook(() => useAdminDataDeckList());
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const init = fetchMock.mock.calls[0][1] as RequestInit;
+    const headers = init.headers as Record<string, string>;
+    expect(headers["cf-access-authenticated-user-email"]).toBe("dev@local");
+  });
+
+  it("returns merged entries (build-time + KV public + KV private)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      mockFetch({
+        decks: [
+          summary("kv-public", "2026-12-01", { title: "KV Public" }),
+          summary("kv-private", "2026-12-02", {
+            title: "KV Private",
+            visibility: "private",
+          }),
+        ],
+      }),
+    );
+    const { result } = renderHook(() => useAdminDataDeckList());
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    const slugs = result.current.entries.map((e) => e.deck.meta.slug);
+    expect(slugs).toContain("kv-public");
+    expect(slugs).toContain("kv-private");
+    const kvPriv = result.current.entries.find(
+      (e) => e.deck.meta.slug === "kv-private",
+    );
+    expect(kvPriv?.visibility).toBe("private");
+    expect(kvPriv?.source).toBe("kv");
+  });
+
+  it("falls back to build-time entries when the fetch fails", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline")));
+    const { result } = renderHook(() => useAdminDataDeckList());
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    // No KV entries merged. The build-time `hello` deck is still present
+    // (from src/decks/public/hello in this test environment).
+    expect(
+      result.current.entries.every((e) => e.source === "source"),
+    ).toBe(true);
+  });
+
+  it("falls back to build-time entries when the response is non-2xx", async () => {
+    vi.stubGlobal("fetch", mockFetch({ decks: [] }, false));
+    const { result } = renderHook(() => useAdminDataDeckList());
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(result.current.entries.every((e) => e.source === "source")).toBe(
+      true,
+    );
   });
 });

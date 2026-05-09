@@ -1,21 +1,30 @@
 /**
  * Admin deck index — `/admin`.
  *
- * Lists every locally-available deck (public + private in dev; public only
- * in the production bundle, since `private/*` is excluded at registry-build
- * time — see `lib/decks-registry.ts`).
+ * Lists every deck the author has access to:
  *
- * Each row shows a visibility badge so the author can see at a glance which
- * decks are committed-and-public vs author-only-private.
+ *   - Build-time (source) decks, public + private (private only in dev).
+ *   - KV-backed decks created via the New Deck modal, both public AND
+ *     private (the admin endpoint at `/api/admin/decks` returns the
+ *     full set; see `worker/decks.ts`).
+ *
+ * Each row shows a visibility badge so the author can see at a glance
+ * which decks are committed-and-public vs author-only-private.
  *
  * Each entry links to `/admin/decks/<slug>` where the viewer mounts in
  * presenter mode (presenter window key handlers + tools auto-activate via
  * the `<PresenterModeProvider>` wrap in slice #7's `decks.$slug.tsx`).
+ *
+ * The "Open in IDE" button is shown only for source decks — KV decks
+ * have no on-disk source file to open.
  */
 
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { getAllDeckEntries, type RegistryEntry } from "@/lib/decks-registry";
+import {
+  useAdminDataDeckList,
+  type RegistryEntry,
+} from "@/lib/decks-registry";
 import { vscodeUrlForDeckSource } from "@/lib/vscode-url";
 import { NewDeckModal } from "@/framework/editor/NewDeckModal";
 
@@ -133,7 +142,7 @@ function AdminDeckRow({ entry, ideUrl, showIdeButton }: AdminDeckRowProps) {
 }
 
 export default function AdminIndex() {
-  const entries = getAllDeckEntries();
+  const { entries } = useAdminDataDeckList();
   const [newDeckOpen, setNewDeckOpen] = useState(false);
   // `__PROJECT_ROOT__` is injected by vite.config.ts: an absolute path in
   // dev (`command === "serve"`), the empty string in production builds.
@@ -176,7 +185,11 @@ export default function AdminIndex() {
       {entries.length > 0 && (
         <ul className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           {entries.map((entry) => {
-            const ideUrl = showIdeButton
+            // KV-backed decks have no on-disk source file; only render
+            // the "Open in IDE" affordance for build-time entries.
+            const isSource = (entry.source ?? "source") === "source";
+            const rowShowIdeButton = showIdeButton && isSource;
+            const ideUrl = rowShowIdeButton
               ? vscodeUrlForDeckSource(
                   projectRoot,
                   entry.visibility,
@@ -188,7 +201,7 @@ export default function AdminIndex() {
                 key={entry.deck.meta.slug}
                 entry={entry}
                 ideUrl={ideUrl}
-                showIdeButton={showIdeButton}
+                showIdeButton={rowShowIdeButton}
               />
             );
           })}
