@@ -488,6 +488,97 @@ describe("POST /api/admin/decks/<slug>", () => {
     );
     expect(res.status).toBe(400);
   });
+
+  // ── Divergence locked in by the validateDataDeck cutover (#57 follow-up) //
+  // The shared validator is stricter than the original inline pre-#59
+  // version on a few axes. These tests pin the new behaviour so a future
+  // refactor of `deck-record.ts` cannot silently weaken the Worker's
+  // input contract.
+
+  it("rejects a meta.slug that is not kebab-case with 400", async () => {
+    const { env } = makeEnv();
+    const deck = makeDeck("Bad-Slug");
+    deck.meta.slug = "Bad_Slug";
+    const res = await call(
+      adminRequest("https://example.com/api/admin/decks/Bad_Slug", {
+        method: "POST",
+        body: JSON.stringify(deck),
+        headers: { "content-type": "application/json" },
+      }),
+      env,
+    );
+    // The 400 short-circuits at the route slug check OR at validation;
+    // either way we expect not-2xx.
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects a meta.date that is not ISO YYYY-MM-DD with 400", async () => {
+    const { env } = makeEnv();
+    const deck = makeDeck("hello");
+    deck.meta.date = "yesterday";
+    const res = await call(
+      adminRequest("https://example.com/api/admin/decks/hello", {
+        method: "POST",
+        body: JSON.stringify(deck),
+        headers: { "content-type": "application/json" },
+      }),
+      env,
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects a slide.layout that is not one of the canonical Layout values", async () => {
+    const { env } = makeEnv();
+    const deck = makeDeck("hello");
+    deck.slides[0] = {
+      ...deck.slides[0],
+      layout: "wat",
+    } as never;
+    const res = await call(
+      adminRequest("https://example.com/api/admin/decks/hello", {
+        method: "POST",
+        body: JSON.stringify(deck),
+        headers: { "content-type": "application/json" },
+      }),
+      env,
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects a duplicate slide id within the same deck with 400", async () => {
+    const { env } = makeEnv();
+    const deck = makeDeck("hello");
+    deck.slides = [
+      { id: "intro", template: "cover", slots: { title: { kind: "text", value: "a" } } },
+      { id: "intro", template: "cover", slots: { title: { kind: "text", value: "b" } } },
+    ];
+    const res = await call(
+      adminRequest("https://example.com/api/admin/decks/hello", {
+        method: "POST",
+        body: JSON.stringify(deck),
+        headers: { "content-type": "application/json" },
+      }),
+      env,
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects a non-integer revealAt with 400 (stricter than original inline)", async () => {
+    const { env } = makeEnv();
+    const deck = makeDeck("hello");
+    deck.slides[0].slots = {
+      t: { kind: "text", value: "hi", revealAt: 1.5 } as never,
+    } as never;
+    const res = await call(
+      adminRequest("https://example.com/api/admin/decks/hello", {
+        method: "POST",
+        body: JSON.stringify(deck),
+        headers: { "content-type": "application/json" },
+      }),
+      env,
+    );
+    expect(res.status).toBe(400);
+  });
 });
 
 // ---------------------------------------------------------------- //

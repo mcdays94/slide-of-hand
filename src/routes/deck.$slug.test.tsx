@@ -53,10 +53,28 @@ vi.mock("@/framework/viewer/Deck", () => ({
   ),
 }));
 
-vi.mock("@/framework/viewer/DataDeck", () => ({
-  DataDeck: ({ deck }: { deck: DataDeckRecord }) => (
-    <div data-testid="data-deck-stub" data-slug={deck.meta.slug}>
-      data deck
+vi.mock("@/framework/viewer/DataDeck", async () => {
+  const actual = await vi.importActual<
+    typeof import("@/framework/viewer/DataDeck")
+  >("@/framework/viewer/DataDeck");
+  return {
+    ...actual,
+    DataDeck: ({ deck }: { deck: DataDeckRecord }) => (
+      <div data-testid="data-deck-stub" data-slug={deck.meta.slug}>
+        data deck
+      </div>
+    ),
+  };
+});
+
+vi.mock("@/framework/presenter/PresenterWindow", () => ({
+  PresenterWindow: ({ deck }: { deck: Deck }) => (
+    <div
+      data-testid="presenter-window-stub"
+      data-slug={deck.meta.slug}
+      data-title={deck.meta.title}
+    >
+      presenter window
     </div>
   ),
 }));
@@ -84,11 +102,12 @@ function mockFetchSequence(
   return mock;
 }
 
-async function renderRouteAt(slug: string) {
+async function renderRouteAt(slug: string, queryString = "") {
   const mod = await import("./deck.$slug");
   const DeckRoute = mod.default;
+  const initialEntry = `/decks/${slug}${queryString}`;
   return render(
-    <MemoryRouter initialEntries={[`/decks/${slug}`]}>
+    <MemoryRouter initialEntries={[initialEntry]}>
       <Routes>
         <Route path="/decks/:slug" element={<DeckRoute />} />
       </Routes>
@@ -186,6 +205,34 @@ describe("/decks/<slug> — KV fallback (Slice 5)", () => {
     await waitFor(() =>
       expect(screen.getByText(/no deck called/i)).toBeTruthy(),
     );
+  });
+
+  // ── presenter mode for KV decks (#61 follow-up) ──────────────────────
+  it("renders <PresenterWindow> for a KV-backed deck when ?presenter=1", async () => {
+    vi.stubGlobal(
+      "fetch",
+      mockFetchSequence([{ ok: true, body: dataDeckRecord }]),
+    );
+    vi.doMock("@/lib/decks-registry", async () => {
+      const actual = await vi.importActual<
+        typeof import("@/lib/decks-registry")
+      >("@/lib/decks-registry");
+      return {
+        ...actual,
+        getDeckBySlug: () => undefined,
+      };
+    });
+
+    await renderRouteAt("kv-deck", "?presenter=1");
+    await waitFor(() =>
+      expect(screen.queryByTestId("presenter-window-stub")).toBeTruthy(),
+    );
+    const stub = screen.getByTestId("presenter-window-stub");
+    expect(stub.getAttribute("data-slug")).toBe("kv-deck");
+    expect(stub.getAttribute("data-title")).toBe("KV Deck");
+    // The viewer stubs must NOT have rendered.
+    expect(screen.queryByTestId("data-deck-stub")).toBeNull();
+    expect(screen.queryByTestId("source-deck-stub")).toBeNull();
   });
 
   it("does not fire a KV fetch when the build-time registry has the slug", async () => {

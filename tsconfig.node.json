@@ -18,12 +18,20 @@
     "noFallthroughCasesInSwitch": true,
     "noUncheckedSideEffectImports": true,
 
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./src/*"]
+    },
+
     "types": ["node", "@cloudflare/workers-types"]
   },
   "include": [
     "vite.config.ts",
     "vitest.config.ts",
     "tailwind.config.ts",
-    "worker/**/*.ts"
+    "worker/**/*.ts",
+    "src/lib/deck-record.ts",
+    "src/lib/slot-types.ts",
+    "src/framework/viewer/types.ts"
   ]
 }

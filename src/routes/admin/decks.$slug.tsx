@@ -29,8 +29,9 @@
 
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { Deck } from "@/framework/viewer/Deck";
-import { DataDeck } from "@/framework/viewer/DataDeck";
+import { DataDeck, dataDeckToDeck } from "@/framework/viewer/DataDeck";
 import { PresenterModeProvider } from "@/framework/presenter/mode";
+import { PresenterWindow } from "@/framework/presenter/PresenterWindow";
 import { getDeckBySlug, useAdminDataDeck } from "@/lib/decks-registry";
 import { EditMode } from "@/framework/editor/EditMode";
 
@@ -38,6 +39,7 @@ export default function AdminDeckRoute() {
   const { slug } = useParams<{ slug: string }>();
   const [search] = useSearchParams();
   const editMode = search.get("edit") === "1";
+  const presenterMode = search.get("presenter") === "1";
 
   const sourceDeck = slug ? getDeckBySlug(slug) : undefined;
   // Only fetch the KV record when the build-time registry missed.
@@ -59,6 +61,9 @@ export default function AdminDeckRoute() {
 
   // Build-time deck: render the imperative <Deck>.
   if (sourceDeck) {
+    if (presenterMode) {
+      return <PresenterWindow deck={sourceDeck} />;
+    }
     return (
       <PresenterModeProvider enabled={true}>
         <Deck
@@ -73,6 +78,13 @@ export default function AdminDeckRoute() {
   // KV deck (read-only on the admin route — entry into edit is via
   // the `R` key or the wizard's redirect).
   if (kvResult.deck) {
+    if (presenterMode) {
+      // KV-backed decks support presenter mode via the dataDeckToDeck()
+      // adapter (#61 follow-up). Same window component as build-time
+      // decks; the conversion preserves id/title/notes/phases on every
+      // slide.
+      return <PresenterWindow deck={dataDeckToDeck(kvResult.deck)} />;
+    }
     return (
       <PresenterModeProvider enabled={true}>
         <DataDeck deck={kvResult.deck} />
