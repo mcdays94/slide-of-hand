@@ -190,9 +190,16 @@ export function PresenterWindowTrigger() {
     if (typeof window === "undefined" || !slug) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.metaKey || e.ctrlKey || e.altKey) return;
-      const target = e.target as Element | null;
+      // Synthetic events dispatched on `window` (e.g. by automated probes
+      // or in-app code that violates the document.body convention) have
+      // `target === Window`, which has no `.closest()`. Narrow to Element
+      // before calling — matches the guard in `Deck.tsx`'s keydown
+      // handler (per PR #33). Real browser keypresses always have an
+      // Element target so this never fires for users.
+      const target = e.target;
+      if (!(target instanceof Element)) return;
       if (
-        target?.closest(
+        target.closest(
           "[data-interactive], input, select, textarea, [contenteditable=true]",
         )
       ) {

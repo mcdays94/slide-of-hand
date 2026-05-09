@@ -366,6 +366,7 @@ These have specific failure modes; avoid them.
 - **Unicode literal `\u00b7` shows as text instead of `·`** — JSX attribute strings and SVG `<text>` content are NOT JS strings. Wrap in `{}`: `<text>{"foo · bar"}</text>` (or just paste the literal char).
 - **HMR Fast Refresh fails for a deck file** — likely a default export of a non-component (e.g. the `Deck` object). Touch the source to force a full reload, or restart the dev server.
 - **`fitView` on React Flow falls back to 500px** — parent must have explicit `height: 100%` or pixel value.
+- **`target.closest is not a function` from a window-level keydown listener** — the listener is calling `.closest()` without narrowing `event.target` to `Element` first. Synthetic events dispatched on `window` have `target = Window`, which has no `.closest()`. Always guard: `if (!(target instanceof Element)) return;`. The canonical fix lives in `Deck.tsx`'s keydown handler. (Also: synthetic events you dispatch yourself MUST go on `document.body`, not `window` — see `dispatchSyntheticKey` in `TopToolbar.tsx`.)
 
 ---
 
