@@ -76,6 +76,50 @@ describe("requireAccessAuth", () => {
     expect(res).not.toBeNull();
     expect(res!.status).toBe(403);
   });
+
+  // ── JWT-assertion authentication (#131 follow-up; verified 2026-05-10) ──
+  // Access forwards `cf-access-jwt-assertion` on every validated request
+  // (both interactive user and service-token flows). This is the
+  // canonical signal — interactive flows ALSO get the email header,
+  // service-token flows do NOT, so JWT is what makes service-token
+  // requests succeed.
+
+  it("returns null when only cf-access-jwt-assertion is set (service token)", () => {
+    const req = new Request("https://example.com/api/admin/themes/hello", {
+      headers: {
+        "cf-access-jwt-assertion": "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9.placeholder",
+      },
+    });
+    expect(requireAccessAuth(req)).toBeNull();
+  });
+
+  it("returns null when both email AND JWT are set (interactive)", () => {
+    const req = new Request("https://example.com/api/admin/themes/hello", {
+      headers: {
+        "cf-access-authenticated-user-email": "user@example.com",
+        "cf-access-jwt-assertion": "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9.placeholder",
+      },
+    });
+    expect(requireAccessAuth(req)).toBeNull();
+  });
+
+  it("returns 403 when cf-access-jwt-assertion is empty", () => {
+    const req = new Request("https://example.com/api/admin/themes/hello", {
+      headers: { "cf-access-jwt-assertion": "" },
+    });
+    const res = requireAccessAuth(req);
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(403);
+  });
+
+  it("returns 403 when cf-access-jwt-assertion is whitespace only", () => {
+    const req = new Request("https://example.com/api/admin/themes/hello", {
+      headers: { "cf-access-jwt-assertion": "   " },
+    });
+    const res = requireAccessAuth(req);
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(403);
+  });
 });
 
 describe("getAccessUserEmail", () => {
