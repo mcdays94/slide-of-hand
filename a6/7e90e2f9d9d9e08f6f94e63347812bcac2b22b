@@ -1,0 +1,25 @@
+src/lib/shiki.test.ts
+  ad79f0b732ff3ebc 10-19,22,54,112-168
+src/lib/shiki.ts
+  ad79f0b732ff3ebc 136-165,169,197-200,203,205,207-208
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "a67e90e2f9d9d9e08f6f94e63347812bcac2b22b",
+  "prompts": {
+    "ad79f0b732ff3ebc": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_1eeda26e8ffesaghscvpC5lFTF",
+        "model": "anthropic/claude-opus-4-7"
+      },
+      "human_author": "mcd_git",
+      "messages": [],
+      "total_additions": 110,
+      "total_deletions": 13,
+      "accepted_lines": 110,
+      "overriden_lines": 0
+    }
+  }
+}
