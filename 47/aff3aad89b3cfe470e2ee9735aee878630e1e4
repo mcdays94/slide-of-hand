@@ -1,0 +1,31 @@
+worker/access-auth.ts
+  cffec469c55b2ea3 55-75,83-89,93-96
+src/framework/viewer/TopToolbar.test.tsx
+  cffec469c55b2ea3 256-346
+worker/access-auth.test.ts
+  cffec469c55b2ea3 39-77
+src/framework/viewer/Deck.tsx
+  cffec469c55b2ea3 18-19,60-73,289-295,1024-1025,1027-1039
+src/framework/viewer/TopToolbar.tsx
+  cffec469c55b2ea3 33,41-47,314-315,403-412
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "47aff3aad89b3cfe470e2ee9735aee878630e1e4",
+  "prompts": {
+    "cffec469c55b2ea3": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_1ecbcb427ffeCpoSFySZNrLWSF",
+        "model": "anthropic/claude-opus-4-7"
+      },
+      "human_author": "mcdays94",
+      "messages": [],
+      "total_additions": 221,
+      "total_deletions": 3,
+      "accepted_lines": 221,
+      "overriden_lines": 0
+    }
+  }
+}
