@@ -579,6 +579,69 @@ describe("POST /api/admin/decks/<slug>", () => {
     );
     expect(res.status).toBe(400);
   });
+
+  // ─────────────────────────────────────────────────────────────────
+  // Issue #93 — surface ALL validation errors[] on the wire, not just
+  // errors[0]. The single `error` field is kept as a back-compat
+  // alias (= errors[0]) so existing clients don't break.
+  // ─────────────────────────────────────────────────────────────────
+
+  it("returns the full errors[] array when multiple validations fail (#93)", async () => {
+    const { env } = makeEnv();
+    // Deck with TWO simultaneous shape errors:
+    //   1. meta.title is empty (violates non-empty string)
+    //   2. slides[0].slots has an `image` slot missing required `alt`
+    const deck = makeDeck("hello");
+    deck.meta.title = "";
+    deck.slides[0].slots = {
+      hero: { kind: "image", src: "/x.png" } as never,
+    } as never;
+    const res = await call(
+      adminRequest("https://example.com/api/admin/decks/hello", {
+        method: "POST",
+        body: JSON.stringify(deck),
+        headers: { "content-type": "application/json" },
+      }),
+      env,
+    );
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error?: string; errors?: string[] };
+    // Back-compat: singular `error` is still set to the first message.
+    expect(typeof body.error).toBe("string");
+    expect(body.error?.length ?? 0).toBeGreaterThan(0);
+    // New: full `errors[]` is present and contains BOTH errors.
+    expect(Array.isArray(body.errors)).toBe(true);
+    expect(body.errors!.length).toBeGreaterThanOrEqual(2);
+    // The singular alias matches the first entry of the array.
+    expect(body.error).toBe(body.errors![0]);
+    // Sanity-check both error topics are surfaced.
+    const joined = body.errors!.join("\n");
+    expect(joined).toMatch(/title/i);
+    expect(joined).toMatch(/alt/i);
+  });
+
+  it("includes errors[] (single-item) for a single-error 400 too (#93)", async () => {
+    const { env } = makeEnv();
+    // Single error: malformed slug-vs-URL mismatch path goes through
+    // `validateDeck` and returns a single error string (it's the
+    // routing-context check, not the shape validator). For pure
+    // shape-validator single errors, use a deck with one issue.
+    const deck = makeDeck("hello");
+    deck.meta.title = "";
+    const res = await call(
+      adminRequest("https://example.com/api/admin/decks/hello", {
+        method: "POST",
+        body: JSON.stringify(deck),
+        headers: { "content-type": "application/json" },
+      }),
+      env,
+    );
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error?: string; errors?: string[] };
+    expect(Array.isArray(body.errors)).toBe(true);
+    expect(body.errors!.length).toBeGreaterThanOrEqual(1);
+    expect(body.error).toBe(body.errors![0]);
+  });
 });
 
 // ---------------------------------------------------------------- //

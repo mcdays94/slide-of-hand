@@ -321,6 +321,86 @@ describe("<EditMode> — validation banner", () => {
     expect(postCalls).toHaveLength(0);
   });
 
+  it("renders ALL server-returned errors[] in the banner (#93)", async () => {
+    // Issue #93: when the server responds with 400 and an `errors[]`
+    // array, the banner should render every entry — not just the first.
+    const fetchMock = vi
+      .fn()
+      // initial GET
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => sampleDeck(),
+      })
+      // POST → 400 with multi-error body
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 400,
+        json: async () => ({
+          error: "meta.title must be a non-empty string",
+          errors: [
+            "meta.title must be a non-empty string",
+            "slides[0].slots.hero (image) must have an alt string",
+            "slides[1].slots.code must have a `lang` string",
+          ],
+        }),
+      });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderEditMode();
+    // Make a valid edit so the draft is dirty + passes frontend
+    // validation, ensuring the POST is actually issued.
+    const input = (await waitFor(() =>
+      screen.getByTestId("slot-input-title"),
+    )) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "Renamed" } });
+
+    fireEvent.click(screen.getByTestId("edit-save"));
+
+    await waitFor(() => screen.getByTestId("validation-banner"));
+    const errors = screen.getAllByTestId("validation-error");
+    expect(errors).toHaveLength(3);
+    expect(errors[0].textContent).toMatch(/title/i);
+    expect(errors[1].textContent).toMatch(/alt/i);
+    expect(errors[2].textContent).toMatch(/lang/i);
+  });
+
+  it("falls back to single `error` field when server omits errors[] (back-compat) (#93)", async () => {
+    // Older servers (or non-validation 400s) only return `error: string`.
+    // The banner must still render that single error.
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => sampleDeck(),
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 400,
+        json: async () => ({ error: "some legacy single-error message" }),
+      });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderEditMode();
+    const input = (await waitFor(() =>
+      screen.getByTestId("slot-input-title"),
+    )) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "Renamed" } });
+    fireEvent.click(screen.getByTestId("edit-save"));
+
+    // Server-only-error responses surface via the generic save-status
+    // error path (not the validation banner) — that path is unchanged.
+    // What matters is we don't crash + we surface the message somewhere.
+    await waitFor(() => {
+      const status = screen.queryByTestId("save-status");
+      const banner = screen.queryByTestId("validation-banner");
+      expect(status?.textContent || banner?.textContent || "").toMatch(
+        /legacy single-error message/,
+      );
+    });
+  });
+
   it("Reset clears the validation banner", async () => {
     renderEditMode();
     fireEvent.click(
