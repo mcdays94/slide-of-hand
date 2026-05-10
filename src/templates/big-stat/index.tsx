@@ -9,6 +9,7 @@
 
 import type { ReactNode } from "react";
 import type { SlideTemplate } from "@/framework/templates/types";
+import { richtextProseClasses } from "../richtext-prose";
 
 const bigStat: SlideTemplate<{
   stat: "stat";
@@ -46,7 +47,9 @@ const bigStat: SlideTemplate<{
           {s.stat}
         </div>
         {s.context && (
-          <div className="max-w-2xl text-lg leading-relaxed text-cf-text-muted">
+          <div
+            className={`max-w-2xl text-lg leading-relaxed text-cf-text-muted ${richtextProseClasses}`}
+          >
             {s.context}
           </div>
         )}

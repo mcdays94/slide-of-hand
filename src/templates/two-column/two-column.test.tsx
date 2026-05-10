@@ -74,6 +74,31 @@ describe("two-column template", () => {
     expect(container.textContent).toContain("Right side content");
   });
 
+  // Issue #86: each column's body container must restore list-style
+  // for `<ul>` / `<ol>` and harmonise paragraph + emphasis styling
+  // with the warm cream/brown palette. Without these classes a
+  // markdown list renders as flush text on the public viewer.
+  it("applies richtext prose styling to both column containers", () => {
+    const slide: DataSlide = {
+      id: "s",
+      template: "two-column",
+      slots: {
+        title: { kind: "text", value: "Compare" },
+        left: { kind: "richtext", value: "- a\n- b\n- c" },
+        right: { kind: "richtext", value: "1. first\n2. second" },
+      },
+    };
+    const { container } = render(<>{renderDataSlide(slide, 0, registry)}</>);
+    expect(container.querySelectorAll("li")).toHaveLength(5);
+    // Both column wrappers should carry list-disc + list-decimal restore.
+    const listDiscMatches = container.querySelectorAll('[class*="list-disc"]');
+    const listDecimalMatches = container.querySelectorAll(
+      '[class*="list-decimal"]',
+    );
+    expect(listDiscMatches.length).toBeGreaterThanOrEqual(2);
+    expect(listDecimalMatches.length).toBeGreaterThanOrEqual(2);
+  });
+
   it("respects revealAt on the right column", () => {
     const slide: DataSlide = {
       id: "s",

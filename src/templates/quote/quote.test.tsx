@@ -86,4 +86,34 @@ describe("quote template", () => {
     const { container } = render(<>{renderDataSlide(slide, 0, registry)}</>);
     expect(container.textContent).toContain("Arthur C. Clarke");
   });
+
+  // Issue #86: richtext content inside the <blockquote> needs prose
+  // styling so emphasis renders as bold/italic and any markdown
+  // lists keep their bullets. The classes are on a wrapper around
+  // the richtext content (not the blockquote itself) — see the
+  // quote template's render() comment for why.
+  it("applies richtext prose styling to the inner quote wrapper", () => {
+    const slide: DataSlide = {
+      id: "s",
+      template: "quote",
+      slots: {
+        quote: {
+          kind: "richtext",
+          value: "Any **sufficiently** advanced _technology_…",
+        },
+      },
+    };
+    const { container } = render(<>{renderDataSlide(slide, 0, registry)}</>);
+    const bq = container.querySelector("blockquote");
+    expect(bq).not.toBeNull();
+    // Find the prose-styled wrapper (a <span> inside the blockquote
+    // that carries the inline-class plus list/em/code restoration).
+    const proseWrapper = bq?.querySelector('[class*="list-disc"]');
+    expect(proseWrapper).not.toBeNull();
+    expect(proseWrapper?.className).toMatch(/italic/);
+    // The blockquote keeps its own design: warm-brown text + medium
+    // weight via cf-quote tokens; we only assert prose styling on
+    // the inner wrapper, not on the blockquote.
+    expect(bq?.className).toMatch(/cf-quote/);
+  });
 });

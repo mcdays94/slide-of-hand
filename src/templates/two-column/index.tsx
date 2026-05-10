@@ -7,6 +7,7 @@
 
 import type { ReactNode } from "react";
 import type { SlideTemplate } from "@/framework/templates/types";
+import { richtextProseClasses } from "../richtext-prose";
 
 const twoColumn: SlideTemplate<{
   title: "text";
@@ -53,10 +54,14 @@ const twoColumn: SlideTemplate<{
           {s.title}
         </h2>
         <div className="grid grid-cols-1 gap-8 sm:grid-cols-2">
-          <div className="text-lg leading-relaxed text-cf-text-muted">
+          <div
+            className={`text-lg leading-relaxed text-cf-text-muted ${richtextProseClasses}`}
+          >
             {s.left}
           </div>
-          <div className="text-lg leading-relaxed text-cf-text-muted">
+          <div
+            className={`text-lg leading-relaxed text-cf-text-muted ${richtextProseClasses}`}
+          >
             {s.right}
           </div>
         </div>
