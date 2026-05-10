@@ -32,6 +32,7 @@ import {
   useViewPreference,
   type Surface,
 } from "@/lib/use-view-preference";
+import { useSettings } from "@/framework/viewer/useSettings";
 import { DeckCard, type DeckCardVisibility } from "./DeckCard";
 
 export interface DeckCardGridItem {
@@ -74,6 +75,17 @@ export function DeckCardGrid({
   onDelete,
 }: DeckCardGridProps) {
   const { mode, setMode } = useViewPreference(surface);
+  const { settings } = useSettings();
+  // Hover-preview is a global setting (issue #128) — it lives in the
+  // viewer settings store so it propagates to BOTH surfaces (public
+  // homepage + admin) without each surface needing to know. The card
+  // itself is the gatekeeper for list-mode (cards never animate when
+  // `view !== "grid"`), but we resolve the integer here so toggling
+  // the setting off in the modal turns it off for every card at once
+  // without re-mounting them.
+  const hoverPreviewSlideCount = settings.deckCardHoverAnimation.enabled
+    ? settings.deckCardHoverAnimation.slideCount
+    : 0;
 
   // Empty state: render the parent-supplied slot (or nothing) instead
   // of a card list. The toolbar is hidden too — without items, the
@@ -128,6 +140,7 @@ export function DeckCardGrid({
                 visibility={it.visibility}
                 ideHref={it.ideHref}
                 onDelete={showDelete ? onDelete : undefined}
+                hoverPreviewSlideCount={hoverPreviewSlideCount}
               />
             </li>
           );

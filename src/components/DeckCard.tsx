@@ -45,10 +45,13 @@
  *     pinned to the bottom-right of the card.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import type { DeckMeta } from "@/framework/viewer/types";
 import { ConfirmDialog } from "./ConfirmDialog";
+
+/** Interval between hover-preview slide swaps, in milliseconds. */
+const HOVER_PREVIEW_INTERVAL_MS = 600;
 
 export type DeckCardView = "grid" | "list";
 export type DeckCardVisibility = "public" | "private";
@@ -77,6 +80,21 @@ export interface DeckCardProps {
    * the same row (source decks have IDE; KV decks have delete).
    */
   ideHref?: string;
+  /**
+   * Number of slide thumbnails to cycle through while the user hovers
+   * the card (issue #128). When `0` (or `view !== "grid"`), no
+   * animation is rendered — list-mode cards never animate.
+   *
+   * The card always shows slide 1 in its rest state. On hover it
+   * cycles `01.png → 02.png → … → 0N.png → 01.png → …` at a fixed
+   * 600ms interval, snapping back to slide 1 on mouseleave / unmount.
+   *
+   * Preload `<img>` tags for slides 2..N are rendered with
+   * `loading="eager"` and zero opacity so the swap is instant once the
+   * user starts hovering — no flash of unloaded image. The preloads
+   * are absolute-positioned so they don't push the layout around.
+   */
+  hoverPreviewSlideCount?: number;
 }
 
 const MAX_VISIBLE_TAGS = 3;
@@ -135,6 +153,7 @@ export function DeckCard({
   visibility,
   onDelete,
   ideHref,
+  hoverPreviewSlideCount = 0,
 }: DeckCardProps) {
   const visibleTags = meta.tags?.slice(0, MAX_VISIBLE_TAGS) ?? [];
   const hasTags = visibleTags.length > 0;
@@ -146,9 +165,72 @@ export function DeckCard({
     kickerPieces.push(`${meta.runtimeMinutes} min`);
   }
 
-  const heroSrc = meta.cover ?? `/thumbnails/${meta.slug}/01.png`;
+  const isList = view === "list";
+
+  // Hover-preview only runs in grid mode. List-mode cards stay static
+  // because the thumbnail strip is too small for the cycle to read,
+  // and the cards are too tightly stacked for hovering to feel
+  // intentional.
+  const hoverEnabled = !isList && hoverPreviewSlideCount > 1;
+  // Slide 1 path; used at rest and as the wrap-around target.
+  const slideOnePath = `/thumbnails/${meta.slug}/01.png`;
+  // Author-supplied cover wins for the rest-state visible image but
+  // the preload set is always built from the build-time thumbnails so
+  // the cycle is well-defined regardless of how the cover is sourced.
+  const restSrc = meta.cover ?? slideOnePath;
+
+  // Index 0 = slide 1 (rest state). The interval increments hoverIndex
+  // through 0..hoverPreviewSlideCount-1 modulo length so it wraps back
+  // to slide 1 cleanly.
+  const [hoverIndex, setHoverIndex] = useState(0);
   const [imageFailed, setImageFailed] = useState(false);
   const showHero = !imageFailed;
+
+  // Build the preload list once per (slug, count) tuple. Slide 1 is
+  // the visible image (rendered separately) so we only preload 02..0N.
+  const preloadSrcs = useMemo<string[]>(() => {
+    if (!hoverEnabled) return [];
+    const out: string[] = [];
+    for (let i = 2; i <= hoverPreviewSlideCount; i++) {
+      out.push(`/thumbnails/${meta.slug}/${String(i).padStart(2, "0")}.png`);
+    }
+    return out;
+  }, [hoverEnabled, hoverPreviewSlideCount, meta.slug]);
+
+  // Mouseenter → start the cycle. Mouseleave / unmount → clear it.
+  // We only depend on the IDs of things that genuinely affect the
+  // schedule so the interval isn't recreated on every render — that
+  // would reset the cycle every parent rerender.
+  const [isHovering, setIsHovering] = useState(false);
+
+  useEffect(() => {
+    if (!hoverEnabled || !isHovering) return;
+    const id = window.setInterval(() => {
+      setHoverIndex((prev) => (prev + 1) % hoverPreviewSlideCount);
+    }, HOVER_PREVIEW_INTERVAL_MS);
+    return () => {
+      window.clearInterval(id);
+    };
+  }, [hoverEnabled, isHovering, hoverPreviewSlideCount]);
+
+  // Resolve the foreground src from the current hoverIndex. At index 0
+  // we use `restSrc` (which honors meta.cover); for other indices we
+  // walk the build-time thumbnails so the preview always shows real
+  // slide content even when the cover is custom artwork.
+  const visibleSrc = useMemo(() => {
+    if (!hoverEnabled || hoverIndex === 0) return restSrc;
+    return `/thumbnails/${meta.slug}/${String(hoverIndex + 1).padStart(2, "0")}.png`;
+  }, [hoverEnabled, hoverIndex, meta.slug, restSrc]);
+
+  const onMouseEnter = useCallback(() => {
+    if (!hoverEnabled) return;
+    setIsHovering(true);
+  }, [hoverEnabled]);
+  const onMouseLeave = useCallback(() => {
+    if (!hoverEnabled) return;
+    setIsHovering(false);
+    setHoverIndex(0);
+  }, [hoverEnabled]);
 
   // Delete-flow state lives inside the card so each card owns its own
   // dialog. The parent's `onDelete` is only invoked on confirm.
@@ -187,11 +269,11 @@ export function DeckCard({
     }
   }, [onDelete, meta.slug]);
 
-  const isList = view === "list";
-
   return (
     <>
       <div
+        onMouseEnter={onMouseEnter}
+        onMouseLeave={onMouseLeave}
         className={
           isList
             ? "cf-card group relative w-full overflow-hidden"
@@ -212,17 +294,36 @@ export function DeckCard({
             <div
               className={
                 isList
-                  ? "aspect-[16/9] w-48 shrink-0 overflow-hidden border-r border-cf-border bg-cf-bg-200 sm:w-56"
-                  : "aspect-[16/9] w-full shrink-0 overflow-hidden border-b border-cf-border bg-cf-bg-200"
+                  ? "relative aspect-[16/9] w-48 shrink-0 overflow-hidden border-r border-cf-border bg-cf-bg-200 sm:w-56"
+                  : "relative aspect-[16/9] w-full shrink-0 overflow-hidden border-b border-cf-border bg-cf-bg-200"
               }
             >
               <img
-                src={heroSrc}
+                src={visibleSrc}
                 alt=""
                 loading="lazy"
                 onError={() => setImageFailed(true)}
                 className="h-full w-full object-cover"
               />
+              {/*
+                * Preload the next slides when hover-animation is active so
+                * the cycle is instant once the user starts hovering. Each
+                * preload is absolute-positioned at full size with zero
+                * opacity — it occupies no logical space, doesn't push
+                * layout, and the browser still fetches it so subsequent
+                * `src` swaps land from cache.
+                */}
+              {preloadSrcs.map((src) => (
+                <img
+                  key={src}
+                  src={src}
+                  alt=""
+                  loading="eager"
+                  data-hover-preload
+                  aria-hidden="true"
+                  className="pointer-events-none absolute inset-0 h-full w-full object-cover opacity-0"
+                />
+              ))}
             </div>
           )}
 

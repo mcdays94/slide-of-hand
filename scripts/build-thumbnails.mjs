@@ -2,14 +2,27 @@
 /**
  * build-thumbnails.mjs — snap real visual thumbnails for every public deck.
  *
- * For each public deck (folder under `src/decks/public/`) and each slide
- * in its exported `Deck.slides` array, boot a transient `vite dev` server,
- * navigate to `?slide=N&phase=0`, snap the viewport at 1920×1080, downscale
- * to 320×180, and write to `public/thumbnails/<slug>/<NN>.png`.
+ * For each public deck (folder under `src/decks/public/`) and the first
+ * `MAX_SLIDES_PER_DECK` slides of its exported `Deck.slides` array, boot a
+ * transient `vite dev` server, navigate to `?slide=N&phase=0`, snap the
+ * viewport at 1920×1080, downscale to 1280×720, and write to
+ * `public/thumbnails/<slug>/<NN>.png`.
+ *
+ * Issue #128 raised the output resolution from 320×180 to 1280×720 so the
+ * homepage / admin grid can render crisp thumbnails on high-DPR displays.
+ * The card wrapper still occupies its previous layout box at native CSS
+ * size; the larger source just means more pixels per CSS pixel.
+ *
+ * Issue #128 also extends snapping from slide 1 only to slides 1..N so the
+ * homepage hover-preview animation can cycle through real slide content
+ * rather than only ever previewing the cover. `MAX_SLIDES_PER_DECK` caps
+ * the count at 8 — the upper bound of the user-visible
+ * `deckCardHoverAnimation.slideCount` setting — so generation time is
+ * bounded for very long decks.
  *
  * The script is invoked via `npm run thumbnails`. It requires:
  *   - `playwright` (devDep) with chromium installed (`npx playwright install chromium`)
- *   - `sharp` (devDep) for resizing
+ *   - `sharp` (devDep) for resizing + PNG palette optimization
  *
  * Output PNGs are gitignored — they are build artifacts, regenerated before
  * deploy. Production gracefully falls back to text tiles when absent.
@@ -29,6 +42,12 @@
  *     folders (e.g. `src/decks/public/<slug>/slides/NN-*.tsx`), composite
  *     section dividers from `sections.tsx`, and any future deck shapes —
  *     none of which a filesystem grep would catch (issue #107).
+ *   - PNG optimization: sharp's `palette: true` switches to indexed-color
+ *     PNG-8 output where appropriate, which typically halves file size for
+ *     thumbnails dominated by flat brand backgrounds. We keep
+ *     `compressionLevel: 9` (zlib max) and add `effort: 10` so the
+ *     palette quantizer searches more thoroughly. Files stay well under
+ *     50 KB even at 1280×720 for typical deck content.
  */
 
 import { spawn } from "node:child_process";
@@ -47,7 +66,14 @@ const PUBLIC_DECKS_DIR = join(ROOT, "src", "decks", "public");
 const OUT_DIR = join(ROOT, "public", "thumbnails");
 const SETTLE_MS = 800;
 const VIEWPORT = { width: 1920, height: 1080 };
-const THUMB_SIZE = { width: 320, height: 180 };
+const THUMB_SIZE = { width: 1280, height: 720 };
+/**
+ * Cap the number of slides snapped per deck. Matches
+ * `DECK_CARD_HOVER_SLIDE_COUNT_MAX` in `src/lib/settings.ts` — the upper
+ * bound of the user-visible hover-preview slideCount. Decks shorter than
+ * this still produce only as many thumbnails as they have slides.
+ */
+const MAX_SLIDES_PER_DECK = 8;
 
 /**
  * Walk `src/decks/public/*` and return [{ slug }] for every folder that
@@ -189,21 +215,33 @@ async function snapDeck(browser, deck) {
   const deckOutDir = join(OUT_DIR, deck.slug);
   await mkdir(deckOutDir, { recursive: true });
 
-  for (let i = 0; i < deck.slideCount; i++) {
+  // Snap only the first MAX_SLIDES_PER_DECK slides — this matches the upper
+  // bound of the hover-preview slideCount setting (issue #128). Generation
+  // time stays bounded even for long decks (e.g. 60-slide DTX talk).
+  const snapCount = Math.min(deck.slideCount, MAX_SLIDES_PER_DECK);
+
+  for (let i = 0; i < snapCount; i++) {
     const url = `${BASE_URL}/decks/${deck.slug}?slide=${i}&phase=0`;
     await page.goto(url, { waitUntil: "domcontentloaded" });
     await page.waitForTimeout(SETTLE_MS);
     const buf = await page.screenshot({ type: "png", fullPage: false });
     const resized = await sharp(buf)
       .resize(THUMB_SIZE.width, THUMB_SIZE.height, { fit: "cover" })
-      .png({ compressionLevel: 9 })
+      // `palette: true` switches to indexed PNG-8 output where the
+      // image's color count permits — typical for slide thumbnails
+      // dominated by flat brand backgrounds. `effort: 10` lets the
+      // palette quantizer search the whole space; `compressionLevel: 9`
+      // is zlib's max. Together these keep files comfortably under
+      // 50 KB at 1280×720 for typical deck content while preserving
+      // visual quality.
+      .png({ compressionLevel: 9, palette: true, effort: 10 })
       .toBuffer();
     const fileName = `${String(i + 1).padStart(2, "0")}.png`;
     await writeFile(join(deckOutDir, fileName), resized);
   }
 
   await context.close();
-  return deck.slideCount;
+  return snapCount;
 }
 
 async function main() {

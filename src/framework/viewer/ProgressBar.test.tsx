@@ -29,7 +29,7 @@ describe("<ProgressBar> with showSlideIndicators=true (default)", () => {
 
   it("is visible by default (data-visible=true, opacity-100)", () => {
     render(
-      <SettingsProvider initialSettings={{ showSlideIndicators: true, presenterNextSlideShowsFinalPhase: false, notesDefaultMode: "rich" }}>
+      <SettingsProvider initialSettings={{ showSlideIndicators: true, presenterNextSlideShowsFinalPhase: false, notesDefaultMode: "rich", deckCardHoverAnimation: { enabled: true, slideCount: 3 } }}>
         <ProgressBar total={5} current={0} />
       </SettingsProvider>,
     );
@@ -55,7 +55,7 @@ describe("<ProgressBar> with showSlideIndicators=false", () => {
 
   it("is hidden by default (data-visible=false, opacity-0, pointer-events-none)", () => {
     render(
-      <SettingsProvider initialSettings={{ showSlideIndicators: false, presenterNextSlideShowsFinalPhase: false, notesDefaultMode: "rich" }}>
+      <SettingsProvider initialSettings={{ showSlideIndicators: false, presenterNextSlideShowsFinalPhase: false, notesDefaultMode: "rich", deckCardHoverAnimation: { enabled: true, slideCount: 3 } }}>
         <ProgressBar total={5} current={0} />
       </SettingsProvider>,
     );
@@ -67,7 +67,7 @@ describe("<ProgressBar> with showSlideIndicators=false", () => {
 
   it("becomes visible when cursor enters the bottom zone", () => {
     render(
-      <SettingsProvider initialSettings={{ showSlideIndicators: false, presenterNextSlideShowsFinalPhase: false, notesDefaultMode: "rich" }}>
+      <SettingsProvider initialSettings={{ showSlideIndicators: false, presenterNextSlideShowsFinalPhase: false, notesDefaultMode: "rich", deckCardHoverAnimation: { enabled: true, slideCount: 3 } }}>
         <ProgressBar total={5} current={0} />
       </SettingsProvider>,
     );
@@ -86,7 +86,7 @@ describe("<ProgressBar> with showSlideIndicators=false", () => {
 
   it("hides again ~800ms after the cursor leaves the bottom zone", () => {
     render(
-      <SettingsProvider initialSettings={{ showSlideIndicators: false, presenterNextSlideShowsFinalPhase: false, notesDefaultMode: "rich" }}>
+      <SettingsProvider initialSettings={{ showSlideIndicators: false, presenterNextSlideShowsFinalPhase: false, notesDefaultMode: "rich", deckCardHoverAnimation: { enabled: true, slideCount: 3 } }}>
         <ProgressBar total={5} current={0} />
       </SettingsProvider>,
     );
@@ -122,7 +122,7 @@ describe("<ProgressBar> with showSlideIndicators=false", () => {
 
   it("renders nothing when total <= 1", () => {
     render(
-      <SettingsProvider initialSettings={{ showSlideIndicators: false, presenterNextSlideShowsFinalPhase: false, notesDefaultMode: "rich" }}>
+      <SettingsProvider initialSettings={{ showSlideIndicators: false, presenterNextSlideShowsFinalPhase: false, notesDefaultMode: "rich", deckCardHoverAnimation: { enabled: true, slideCount: 3 } }}>
         <ProgressBar total={1} current={0} />
       </SettingsProvider>,
     );
@@ -133,7 +133,7 @@ describe("<ProgressBar> with showSlideIndicators=false", () => {
 describe("<ProgressBar> common attributes", () => {
   it("carries data-no-advance so clicks don't advance the deck", () => {
     render(
-      <SettingsProvider initialSettings={{ showSlideIndicators: true, presenterNextSlideShowsFinalPhase: false, notesDefaultMode: "rich" }}>
+      <SettingsProvider initialSettings={{ showSlideIndicators: true, presenterNextSlideShowsFinalPhase: false, notesDefaultMode: "rich", deckCardHoverAnimation: { enabled: true, slideCount: 3 } }}>
         <ProgressBar total={5} current={0} />
       </SettingsProvider>,
     );
@@ -143,7 +143,7 @@ describe("<ProgressBar> common attributes", () => {
 
   it("each segment carries data-interactive", () => {
     render(
-      <SettingsProvider initialSettings={{ showSlideIndicators: true, presenterNextSlideShowsFinalPhase: false, notesDefaultMode: "rich" }}>
+      <SettingsProvider initialSettings={{ showSlideIndicators: true, presenterNextSlideShowsFinalPhase: false, notesDefaultMode: "rich", deckCardHoverAnimation: { enabled: true, slideCount: 3 } }}>
         <ProgressBar total={3} current={1} />
       </SettingsProvider>,
     );

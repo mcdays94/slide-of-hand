@@ -14,8 +14,9 @@
  *   - `ideHref?`:    renders the existing "Open in IDE" affordance.
  */
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -41,6 +42,7 @@ interface RenderOpts {
   visibility?: "public" | "private";
   onDelete?: (slug: string) => Promise<void> | void;
   ideHref?: string;
+  hoverPreviewSlideCount?: number;
 }
 
 function renderCard(meta: DeckMeta, opts: RenderOpts = {}) {
@@ -271,6 +273,176 @@ describe("DeckCard", () => {
       renderCard(baseMeta, { ideHref: "vscode://example" });
       const link = screen.getByTestId("open-in-ide");
       expect(link.getAttribute("href")).toBe("vscode://example");
+    });
+  });
+
+  describe("hover preview animation (issue #128)", () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+    afterEach(() => {
+      vi.runOnlyPendingTimers();
+      vi.useRealTimers();
+    });
+
+    /**
+     * Returns the visible thumbnail's `src`. Visible = the `<img>` that
+     * does NOT carry `data-hover-preload` (the preload helpers are
+     * absolute-positioned with opacity 0 and aren't the foreground).
+     */
+    function visibleSrc(): string | null {
+      const imgs = Array.from(
+        document.querySelectorAll<HTMLImageElement>("img"),
+      );
+      const visible = imgs.find(
+        (img) => !img.hasAttribute("data-hover-preload"),
+      );
+      return visible?.getAttribute("src") ?? null;
+    }
+
+    it("does NOT render preload thumbnails when hoverPreviewSlideCount is 0", () => {
+      renderCard(baseMeta, { view: "grid", hoverPreviewSlideCount: 0 });
+      expect(
+        document.querySelectorAll("[data-hover-preload]").length,
+      ).toBe(0);
+    });
+
+    it("does NOT render preload thumbnails in list mode (only grid mode animates)", () => {
+      renderCard(baseMeta, { view: "list", hoverPreviewSlideCount: 5 });
+      expect(
+        document.querySelectorAll("[data-hover-preload]").length,
+      ).toBe(0);
+    });
+
+    it("renders N-1 preload <img> tags when hoverPreviewSlideCount = N (slide 1 is the visible one)", () => {
+      renderCard(baseMeta, { view: "grid", hoverPreviewSlideCount: 4 });
+      const preloads = document.querySelectorAll("[data-hover-preload]");
+      // The visible <img> is slide 1; preloads cover 02, 03, 04.
+      expect(preloads.length).toBe(3);
+      const srcs = Array.from(preloads).map((el) => el.getAttribute("src"));
+      expect(srcs).toEqual([
+        "/thumbnails/alpha/02.png",
+        "/thumbnails/alpha/03.png",
+        "/thumbnails/alpha/04.png",
+      ]);
+    });
+
+    it("preload <img> tags use eager loading and zero opacity (no layout shift)", () => {
+      renderCard(baseMeta, { view: "grid", hoverPreviewSlideCount: 3 });
+      const preloads = document.querySelectorAll("[data-hover-preload]");
+      for (const el of preloads) {
+        expect(el.getAttribute("loading")).toBe("eager");
+      }
+    });
+
+    it("hover cycles the visible src through 02, 03, then back to 01 then 02 …", () => {
+      renderCard(baseMeta, { view: "grid", hoverPreviewSlideCount: 3 });
+      const card = screen.getByTestId("deck-card");
+      // Initial visible src = slide 1.
+      expect(visibleSrc()).toBe("/thumbnails/alpha/01.png");
+      act(() => {
+        fireEvent.mouseEnter(card);
+      });
+      // Tick 1 (600ms) → slide 2.
+      act(() => {
+        vi.advanceTimersByTime(600);
+      });
+      expect(visibleSrc()).toBe("/thumbnails/alpha/02.png");
+      // Tick 2 (1200ms) → slide 3.
+      act(() => {
+        vi.advanceTimersByTime(600);
+      });
+      expect(visibleSrc()).toBe("/thumbnails/alpha/03.png");
+      // Tick 3 (1800ms) → wraps back to slide 1.
+      act(() => {
+        vi.advanceTimersByTime(600);
+      });
+      expect(visibleSrc()).toBe("/thumbnails/alpha/01.png");
+      // Tick 4 (2400ms) → slide 2.
+      act(() => {
+        vi.advanceTimersByTime(600);
+      });
+      expect(visibleSrc()).toBe("/thumbnails/alpha/02.png");
+    });
+
+    it("mouseleave snaps the visible src back to slide 1 and stops cycling", () => {
+      renderCard(baseMeta, { view: "grid", hoverPreviewSlideCount: 4 });
+      const card = screen.getByTestId("deck-card");
+      act(() => {
+        fireEvent.mouseEnter(card);
+      });
+      act(() => {
+        vi.advanceTimersByTime(1200);
+      });
+      // After two ticks, visible src is slide 3.
+      expect(visibleSrc()).toBe("/thumbnails/alpha/03.png");
+      // Leaving the card snaps back to slide 1.
+      act(() => {
+        fireEvent.mouseLeave(card);
+      });
+      expect(visibleSrc()).toBe("/thumbnails/alpha/01.png");
+      // Subsequent ticks should NOT advance the visible src.
+      act(() => {
+        vi.advanceTimersByTime(5_000);
+      });
+      expect(visibleSrc()).toBe("/thumbnails/alpha/01.png");
+    });
+
+    it("does NOT cycle when hoverPreviewSlideCount is 1 (no other slides to cycle to)", () => {
+      renderCard(baseMeta, { view: "grid", hoverPreviewSlideCount: 1 });
+      const card = screen.getByTestId("deck-card");
+      act(() => {
+        fireEvent.mouseEnter(card);
+      });
+      act(() => {
+        vi.advanceTimersByTime(5_000);
+      });
+      expect(visibleSrc()).toBe("/thumbnails/alpha/01.png");
+    });
+
+    it("clears the interval on unmount (no leaked timers)", () => {
+      const { unmount } = renderCard(baseMeta, {
+        view: "grid",
+        hoverPreviewSlideCount: 3,
+      });
+      const card = screen.getByTestId("deck-card");
+      act(() => {
+        fireEvent.mouseEnter(card);
+      });
+      // Sanity: a timer was scheduled.
+      expect(vi.getTimerCount()).toBeGreaterThan(0);
+      unmount();
+      // After unmount, no pending timers should remain.
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it("uses meta.cover unchanged for the visible src and only generates preloads from /thumbnails/<slug>/", () => {
+      renderCard(
+        { ...baseMeta, cover: "/decks/alpha/cover.png" },
+        { view: "grid", hoverPreviewSlideCount: 3 },
+      );
+      // Visible src = the author's cover.
+      expect(visibleSrc()).toBe("/decks/alpha/cover.png");
+      // Preloads still walk the thumbnail directory (slides 02, 03).
+      const preloads = document.querySelectorAll("[data-hover-preload]");
+      const srcs = Array.from(preloads).map((el) => el.getAttribute("src"));
+      expect(srcs).toEqual([
+        "/thumbnails/alpha/02.png",
+        "/thumbnails/alpha/03.png",
+      ]);
+    });
+
+    it("hover cycling pauses if the foreground image fails to load and the hero is hidden", () => {
+      renderCard(baseMeta, { view: "grid", hoverPreviewSlideCount: 3 });
+      const visible = document.querySelector(
+        "img:not([data-hover-preload])",
+      ) as HTMLImageElement | null;
+      expect(visible).not.toBeNull();
+      // Failure event removes the hero entirely.
+      act(() => {
+        fireEvent.error(visible!);
+      });
+      expect(document.querySelector("img")).toBeNull();
     });
   });
 });

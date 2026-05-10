@@ -87,6 +87,7 @@ describe("<SettingsProvider> + useSettings()", () => {
       showSlideIndicators: false,
       presenterNextSlideShowsFinalPhase: false,
       notesDefaultMode: "rich",
+      deckCardHoverAnimation: { enabled: true, slideCount: 3 },
     });
   });
 
@@ -152,7 +153,14 @@ describe("<SettingsProvider> + useSettings()", () => {
   it("accepts an initialSettings override (bypasses storage read)", () => {
     writeSettings({ showSlideIndicators: false });
     render(
-      <SettingsProvider initialSettings={{ showSlideIndicators: true, presenterNextSlideShowsFinalPhase: false, notesDefaultMode: "rich" }}>
+      <SettingsProvider
+        initialSettings={{
+          showSlideIndicators: true,
+          presenterNextSlideShowsFinalPhase: false,
+          notesDefaultMode: "rich",
+          deckCardHoverAnimation: { enabled: true, slideCount: 3 },
+        }}
+      >
         <Probe />
       </SettingsProvider>,
     );

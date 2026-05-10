@@ -421,6 +421,7 @@ describe("<NotesEditor> settings-driven default mode (#126)", () => {
       showSlideIndicators: true,
       presenterNextSlideShowsFinalPhase: false,
       notesDefaultMode: "markdown",
+      deckCardHoverAnimation: { enabled: true, slideCount: 3 },
     };
     render(
       <SettingsProvider initialSettings={settings}>
@@ -448,6 +449,7 @@ describe("<NotesEditor> settings-driven default mode (#126)", () => {
       showSlideIndicators: true,
       presenterNextSlideShowsFinalPhase: false,
       notesDefaultMode: "rich",
+      deckCardHoverAnimation: { enabled: true, slideCount: 3 },
     };
     render(
       <SettingsProvider initialSettings={settings}>

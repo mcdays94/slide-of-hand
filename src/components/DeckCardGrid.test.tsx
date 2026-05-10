@@ -17,6 +17,8 @@ import {
 } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { DeckCardGrid, type DeckCardGridItem } from "./DeckCardGrid";
+import { SettingsProvider } from "@/framework/viewer/useSettings";
+import { STORAGE_KEY, type Settings } from "@/lib/settings";
 
 beforeEach(() => {
   window.localStorage.clear();
@@ -219,5 +221,117 @@ describe("DeckCardGrid", () => {
     fireEvent.click(screen.getByTestId("delete-deck-kv-deck"));
     fireEvent.click(screen.getByTestId("confirm-dialog-confirm"));
     await waitFor(() => expect(onDelete).toHaveBeenCalledWith("kv-deck"));
+  });
+
+  describe("hover preview animation (issue #128)", () => {
+    /** Pre-seed localStorage with a partial Settings blob. */
+    function seedSettings(partial: Partial<Settings>) {
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(partial));
+    }
+
+    it("renders preload <img> tags for each card by default (enabled=true, slideCount=3)", () => {
+      // Default settings → enabled, slideCount=3 → 2 preloads per card (slides 02, 03).
+      render(
+        <MemoryRouter>
+          <SettingsProvider>
+            <DeckCardGrid
+              surface="public"
+              items={[item("a", "Alpha"), item("b", "Bravo")]}
+            />
+          </SettingsProvider>
+        </MemoryRouter>,
+      );
+      // 2 cards × 2 preloads each = 4 preload images.
+      expect(
+        document.querySelectorAll("[data-hover-preload]").length,
+      ).toBe(4);
+    });
+
+    it("threads the slideCount setting through to each card's preload count", () => {
+      seedSettings({
+        deckCardHoverAnimation: { enabled: true, slideCount: 6 },
+      });
+      render(
+        <MemoryRouter>
+          <SettingsProvider>
+            <DeckCardGrid surface="public" items={[item("a", "Alpha")]} />
+          </SettingsProvider>
+        </MemoryRouter>,
+      );
+      // slideCount=6 → 5 preloads (02..06) on the single card.
+      expect(
+        document.querySelectorAll("[data-hover-preload]").length,
+      ).toBe(5);
+    });
+
+    it("does NOT render any preloads when the setting is disabled", () => {
+      seedSettings({
+        deckCardHoverAnimation: { enabled: false, slideCount: 6 },
+      });
+      render(
+        <MemoryRouter>
+          <SettingsProvider>
+            <DeckCardGrid
+              surface="public"
+              items={[item("a", "Alpha"), item("b", "Bravo")]}
+            />
+          </SettingsProvider>
+        </MemoryRouter>,
+      );
+      expect(
+        document.querySelectorAll("[data-hover-preload]").length,
+      ).toBe(0);
+    });
+
+    it("does NOT render preloads in list view, even when the setting is enabled", () => {
+      window.localStorage.setItem(
+        "slide-of-hand:view-preference:public",
+        "list",
+      );
+      seedSettings({
+        deckCardHoverAnimation: { enabled: true, slideCount: 5 },
+      });
+      render(
+        <MemoryRouter>
+          <SettingsProvider>
+            <DeckCardGrid surface="public" items={[item("a", "Alpha")]} />
+          </SettingsProvider>
+        </MemoryRouter>,
+      );
+      expect(
+        document.querySelectorAll("[data-hover-preload]").length,
+      ).toBe(0);
+    });
+
+    it("affects both surfaces (public and admin) since the setting is global", () => {
+      seedSettings({
+        deckCardHoverAnimation: { enabled: true, slideCount: 4 },
+      });
+      const { unmount } = render(
+        <MemoryRouter>
+          <SettingsProvider>
+            <DeckCardGrid surface="public" items={[item("a", "Alpha")]} />
+          </SettingsProvider>
+        </MemoryRouter>,
+      );
+      // Public surface: slideCount=4 → 3 preloads.
+      expect(
+        document.querySelectorAll("[data-hover-preload]").length,
+      ).toBe(3);
+      unmount();
+      cleanup();
+
+      render(
+        <MemoryRouter>
+          <SettingsProvider>
+            <DeckCardGrid surface="admin" items={[item("a", "Alpha")]} />
+          </SettingsProvider>
+        </MemoryRouter>,
+      );
+      // Admin surface: same global setting, same preload count.
+      expect(
+        document.querySelectorAll("[data-hover-preload]").length,
+      ).toBe(3);
+    });
   });
 });

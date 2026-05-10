@@ -82,6 +82,7 @@ describe("writeSettings()", () => {
       showSlideIndicators: false,
       presenterNextSlideShowsFinalPhase: false,
       notesDefaultMode: "rich",
+      deckCardHoverAnimation: { enabled: true, slideCount: 3 },
     });
   });
 
@@ -117,5 +118,151 @@ describe("resetSettings()", () => {
     const result = resetSettings();
     expect(result).toEqual(DEFAULT_SETTINGS);
     expect(window.localStorage.getItem(STORAGE_KEY)).toBeNull();
+  });
+});
+
+describe("deckCardHoverAnimation (issue #128)", () => {
+  it("DEFAULT_SETTINGS.deckCardHoverAnimation defaults to enabled=true, slideCount=3", () => {
+    expect(DEFAULT_SETTINGS.deckCardHoverAnimation).toEqual({
+      enabled: true,
+      slideCount: 3,
+    });
+  });
+
+  it("readSettings returns the default deckCardHoverAnimation when storage is empty", () => {
+    expect(readSettings().deckCardHoverAnimation).toEqual({
+      enabled: true,
+      slideCount: 3,
+    });
+  });
+
+  it("readSettings restores a persisted partial deckCardHoverAnimation", () => {
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        deckCardHoverAnimation: { enabled: false, slideCount: 5 },
+      }),
+    );
+    expect(readSettings().deckCardHoverAnimation).toEqual({
+      enabled: false,
+      slideCount: 5,
+    });
+  });
+
+  it("falls back to defaults when deckCardHoverAnimation is not an object", () => {
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ deckCardHoverAnimation: 42 }),
+    );
+    expect(readSettings().deckCardHoverAnimation).toEqual({
+      enabled: true,
+      slideCount: 3,
+    });
+  });
+
+  it("falls back to default when deckCardHoverAnimation is null", () => {
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ deckCardHoverAnimation: null }),
+    );
+    expect(readSettings().deckCardHoverAnimation).toEqual({
+      enabled: true,
+      slideCount: 3,
+    });
+  });
+
+  it("uses default `enabled` when missing", () => {
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ deckCardHoverAnimation: { slideCount: 5 } }),
+    );
+    expect(readSettings().deckCardHoverAnimation).toEqual({
+      enabled: true,
+      slideCount: 5,
+    });
+  });
+
+  it("uses default `enabled` when type mismatch (not boolean)", () => {
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        deckCardHoverAnimation: { enabled: "yes", slideCount: 2 },
+      }),
+    );
+    expect(readSettings().deckCardHoverAnimation).toEqual({
+      enabled: true,
+      slideCount: 2,
+    });
+  });
+
+  it("uses default `slideCount` when missing", () => {
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ deckCardHoverAnimation: { enabled: false } }),
+    );
+    expect(readSettings().deckCardHoverAnimation).toEqual({
+      enabled: false,
+      slideCount: 3,
+    });
+  });
+
+  it("uses default `slideCount` when type mismatch (not number)", () => {
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        deckCardHoverAnimation: { enabled: true, slideCount: "five" },
+      }),
+    );
+    expect(readSettings().deckCardHoverAnimation).toEqual({
+      enabled: true,
+      slideCount: 3,
+    });
+  });
+
+  it("clamps slideCount to 1 when below the allowed range", () => {
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        deckCardHoverAnimation: { enabled: true, slideCount: 0 },
+      }),
+    );
+    expect(readSettings().deckCardHoverAnimation.slideCount).toBe(1);
+  });
+
+  it("clamps slideCount to 8 when above the allowed range", () => {
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        deckCardHoverAnimation: { enabled: true, slideCount: 99 },
+      }),
+    );
+    expect(readSettings().deckCardHoverAnimation.slideCount).toBe(8);
+  });
+
+  it("rounds non-integer slideCount values", () => {
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        deckCardHoverAnimation: { enabled: true, slideCount: 4.7 },
+      }),
+    );
+    expect(readSettings().deckCardHoverAnimation.slideCount).toBe(5);
+  });
+
+  it("writeSettings persists deckCardHoverAnimation", () => {
+    const merged = writeSettings({
+      deckCardHoverAnimation: { enabled: false, slideCount: 6 },
+    });
+    expect(merged.deckCardHoverAnimation).toEqual({
+      enabled: false,
+      slideCount: 6,
+    });
+    const persisted = JSON.parse(
+      window.localStorage.getItem(STORAGE_KEY)!,
+    ) as { deckCardHoverAnimation: { enabled: boolean; slideCount: number } };
+    expect(persisted.deckCardHoverAnimation).toEqual({
+      enabled: false,
+      slideCount: 6,
+    });
   });
 });
