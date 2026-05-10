@@ -133,13 +133,40 @@ export async function getHighlighter(): Promise<ShikiHighlighter> {
 }
 
 /**
- * Resets the module-level singleton. Test-only — production code should
- * NOT call this (it would invalidate every consumer's outstanding
- * highlight call). Exported with a deliberate `__test`-prefixed name so
- * grep makes the intent obvious.
+ * Process-local memoization of `highlight()` output keyed by
+ * `${lang}::${code}`.
+ *
+ * Why: in multi-slot decks (e.g. several code slots showing the same
+ * snippet, or a slide that re-renders on phase change), `codeToHtml`
+ * gets called repeatedly with identical inputs. Tokenisation is the
+ * dominant cost in the Shiki pipeline once the highlighter is warm, so
+ * a flat `Map<string, string>` collapses the repeat work to O(1) hash
+ * lookups.
+ *
+ * - **Separator:** `::` (two colons), not `:`. Single-colon would let
+ *   `("a", "b:c")` and `("a:b", "c")` collide; `::` is vanishingly
+ *   unlikely to appear at a tuple boundary.
+ * - **Lifecycle:** module-scoped, persists for the life of the worker
+ *   isolate / browser tab. No invalidation hook (Shiki output is a pure
+ *   function of `(lang, code, theme)` and the theme is fixed).
+ * - **Memory:** entries are short HTML strings (few hundred bytes
+ *   each); the corpus of distinct snippets per deck is small. No
+ *   eviction policy in v1.
+ * - **Both branches:** the fallback HTML is cached too, so repeated
+ *   calls with an unsupported language don't re-throw through Shiki on
+ *   every invocation.
+ */
+const highlightCache = new Map<string, string>();
+
+/**
+ * Resets the module-level singleton AND the highlight cache. Test-only —
+ * production code should NOT call this (it would invalidate every
+ * consumer's outstanding highlight call). Exported with a deliberate
+ * `__test`-prefixed name so grep makes the intent obvious.
  */
 export function __resetHighlighterForTests(): void {
   highlighterPromise = null;
+  highlightCache.clear();
 }
 
 /**
@@ -167,10 +194,16 @@ function escapeHtml(code: string): string {
  * branch escapes manually too. Neither path emits unescaped user input.
  */
 export async function highlight(code: string, lang: string): Promise<string> {
+  const key = `${lang}::${code}`;
+  const cached = highlightCache.get(key);
+  if (cached !== undefined) return cached;
+  let html: string;
   try {
     const hl = await getHighlighter();
-    return hl.codeToHtml(code, { lang, theme: "github-light" });
+    html = hl.codeToHtml(code, { lang, theme: "github-light" });
   } catch {
-    return `<pre class="shiki-fallback"><code>${escapeHtml(code)}</code></pre>`;
+    html = `<pre class="shiki-fallback"><code>${escapeHtml(code)}</code></pre>`;
   }
+  highlightCache.set(key, html);
+  return html;
 }

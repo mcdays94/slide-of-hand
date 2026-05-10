@@ -7,15 +7,19 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+const { codeToHtmlSpy } = vi.hoisted(() => ({
+  codeToHtmlSpy: vi.fn((code: string, opts: { lang: string; theme: string }) => {
+    const escaped = code
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+    return `<pre class="shiki" data-lang="${opts.lang}" data-theme="${opts.theme}"><code>${escaped}</code></pre>`;
+  }),
+}));
+
 vi.mock("shiki/core", () => ({
   createHighlighterCore: vi.fn(async () => ({
-    codeToHtml: (code: string, opts: { lang: string; theme: string }) => {
-      const escaped = code
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;");
-      return `<pre class="shiki" data-lang="${opts.lang}" data-theme="${opts.theme}"><code>${escaped}</code></pre>`;
-    },
+    codeToHtml: codeToHtmlSpy,
   })),
 }));
 vi.mock("shiki/engine/javascript", () => ({
@@ -47,6 +51,7 @@ import {
 
 beforeEach(() => {
   __resetHighlighterForTests();
+  codeToHtmlSpy.mockClear();
 });
 afterEach(() => {
   vi.clearAllMocks();
@@ -102,5 +107,64 @@ describe("highlight", () => {
     // Confirm the raw markup did NOT survive — no real <a> tag is in the
     // output text outside the wrapped code block.
     expect(html).not.toMatch(/<a>(?:[^<]|<[^/])/);
+  });
+});
+
+describe("highlight cache", () => {
+  it("returns identical output across repeated calls with the same (lang, code)", async () => {
+    const a = await highlight("const x = 1;", "ts");
+    const b = await highlight("const x = 1;", "ts");
+    expect(a).toBe(b);
+  });
+
+  it("only invokes Shiki once per unique (lang, code) tuple", async () => {
+    await highlight("const x = 1;", "ts");
+    await highlight("const x = 1;", "ts");
+    await highlight("const x = 1;", "ts");
+    expect(codeToHtmlSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("caches distinct entries for distinct code with the same lang", async () => {
+    await highlight("const x = 1;", "ts");
+    await highlight("const y = 2;", "ts");
+    expect(codeToHtmlSpy).toHaveBeenCalledTimes(2);
+    // Re-issuing either call hits cache.
+    await highlight("const x = 1;", "ts");
+    await highlight("const y = 2;", "ts");
+    expect(codeToHtmlSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("caches distinct entries for the same code in different languages", async () => {
+    await highlight("x", "ts");
+    await highlight("x", "js");
+    expect(codeToHtmlSpy).toHaveBeenCalledTimes(2);
+    // Re-issuing either call hits cache.
+    await highlight("x", "ts");
+    await highlight("x", "js");
+    expect(codeToHtmlSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("caches the fallback path for unknown languages too", async () => {
+    // Force the Shiki path to throw so we exercise the fallback branch.
+    codeToHtmlSpy.mockImplementationOnce(() => {
+      throw new Error("unknown lang");
+    });
+    const a = await highlight("oops", "brainfuck");
+    const b = await highlight("oops", "brainfuck");
+    expect(a).toBe(b);
+    expect(a).toContain("oops");
+    // Spy was invoked once (and threw); the second call hits cache and
+    // does NOT re-enter Shiki.
+    expect(codeToHtmlSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not collide when lang+code separator boundary is ambiguous", async () => {
+    // If the cache key were `${lang}:${code}`, then ("a", "b:c") and
+    // ("a:b", "c") would both serialize to "a:b:c" and collide. Using
+    // `::` makes that vanishingly unlikely. Verify both tuples produce
+    // independent cache entries (and independent Shiki invocations).
+    await highlight("b:c", "a");
+    await highlight("c", "a:b");
+    expect(codeToHtmlSpy).toHaveBeenCalledTimes(2);
   });
 });
