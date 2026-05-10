@@ -133,6 +133,25 @@ function badRequest(message: string): Response {
   });
 }
 
+/**
+ * 400 response carrying the FULL list of validation errors (issue #93).
+ *
+ * Wire shape:
+ *   { error: errors[0], errors: [...all messages...] }
+ *
+ * The singular `error` field is kept as a back-compat alias of
+ * `errors[0]` so existing clients (tests, CLIs, future API consumers)
+ * that only read `error` continue to work; the editor banner reads
+ * `errors[]` and surfaces every entry at once.
+ */
+function badRequestWithErrors(errors: string[]): Response {
+  const safeErrors = errors.length > 0 ? errors : ["invalid deck"];
+  return new Response(
+    JSON.stringify({ error: safeErrors[0], errors: safeErrors }),
+    { status: 400, headers: NO_STORE_HEADERS },
+  );
+}
+
 function notFound(): Response {
   return new Response(JSON.stringify({ error: "not found" }), {
     status: 404,
@@ -160,18 +179,26 @@ function methodNotAllowed(allowed: string[]): Response {
 function validateDeck(
   raw: unknown,
   expectedSlug: string,
-): { ok: true; value: DataDeck } | { ok: false; error: string } {
+):
+  | { ok: true; value: DataDeck }
+  | { ok: false; errors: string[] } {
   const result = validateDataDeck(raw);
   if (!result.ok) {
-    // Surface the FIRST error to the wire — the original inline
-    // validator returned a single string; keeping that shape avoids
-    // churning every existing 400-asserting client/test.
-    return { ok: false, error: result.errors[0] ?? "invalid deck" };
+    // Surface the FULL error list (issue #93) — the original inline
+    // validator returned only a single string, but the editor benefits
+    // from seeing every problem in one pass. The `badRequestWithErrors`
+    // helper keeps `error` as an alias for back-compat.
+    return {
+      ok: false,
+      errors: result.errors.length > 0 ? result.errors : ["invalid deck"],
+    };
   }
   if (result.value.meta.slug !== expectedSlug) {
     return {
       ok: false,
-      error: `meta.slug must match URL slug (got "${result.value.meta.slug}", expected "${expectedSlug}")`,
+      errors: [
+        `meta.slug must match URL slug (got "${result.value.meta.slug}", expected "${expectedSlug}")`,
+      ],
     };
   }
   return { ok: true, value: result.value };
@@ -301,7 +328,7 @@ async function handleAdminWrite(
   }
   const validation = validateDeck(body, slug);
   if (!validation.ok) {
-    return badRequest(validation.error);
+    return badRequestWithErrors(validation.errors);
   }
   const deck = validation.value;
   // Persist the deck record first — it is the source of truth. If the

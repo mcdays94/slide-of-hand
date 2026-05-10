@@ -46,9 +46,13 @@ export interface SaveResult {
   status?: number;
   error?: string;
   /**
-   * Frontend validation errors discovered before POSTing. Present (and
-   * `ok === false`) when the draft fails `validateDataDeck` — the request
-   * is NOT sent in that case, the editor surfaces these inline.
+   * Validation errors to surface inline in the editor's banner. Populated
+   * from one of two sources:
+   *   1. Frontend `validateDataDeck` failure — the POST is NOT sent.
+   *   2. Server-side validation failure (issue #93) — POST returns 400
+   *      with `{ error, errors[] }`. We capture every entry from
+   *      `errors[]` (with `error` as a back-compat fallback for legacy
+   *      responses that omit the array).
    */
   validationErrors?: string[];
 }
@@ -427,15 +431,33 @@ export function useDeckEditor(slug: string): UseDeckEditor {
         },
       );
       if (!res.ok) {
+        // Issue #93: the server may now return a full `errors[]` array
+        // alongside the legacy singular `error`. Capture both so the
+        // editor's banner can render every entry; fall back to `error`
+        // for older responses (defensive — a deployed client may briefly
+        // outlive a deployed worker, or vice versa).
         let errorMessage: string | undefined;
+        let validationErrors: string[] | undefined;
         try {
-          const body = (await res.json()) as { error?: string };
+          const body = (await res.json()) as {
+            error?: string;
+            errors?: unknown;
+          };
           errorMessage = body?.error;
+          if (
+            Array.isArray(body?.errors) &&
+            body.errors.every((e) => typeof e === "string")
+          ) {
+            validationErrors = body.errors as string[];
+          }
         } catch {
           /* not JSON */
         }
         const result: SaveResult = { ok: false, status: res.status };
         if (errorMessage) result.error = errorMessage;
+        if (validationErrors && validationErrors.length > 0) {
+          result.validationErrors = validationErrors;
+        }
         return result;
       }
       await refetch();
