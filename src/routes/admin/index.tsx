@@ -114,9 +114,11 @@ function AdminDeckRow({ entry, ideUrl, showIdeButton }: AdminDeckRowProps) {
           <p className="mb-1 text-xl font-medium tracking-[-0.025em] text-cf-text">
             {deck.meta.title}
           </p>
-          <p className="text-sm text-cf-text-muted">
-            {deck.meta.description}
-          </p>
+          {deck.meta.description && (
+            <p className="text-sm text-cf-text-muted">
+              {deck.meta.description}
+            </p>
+          )}
           {deck.meta.author && (
             <p className="mt-3 text-xs text-cf-text-subtle">
               {deck.meta.author}

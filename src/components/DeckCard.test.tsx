@@ -37,6 +37,47 @@ describe("DeckCard", () => {
     expect(screen.getByText("An alpha deck.")).toBeTruthy();
   });
 
+  it("omits the description paragraph when description is undefined", () => {
+    // `DeckMeta.description` is optional; when absent the card must NOT
+    // emit an empty `<p>` (which would still take up vertical space and
+    // create an awkward gap below the title).
+    const { description, ...metaWithoutDescription } = baseMeta;
+    void description;
+    renderCard(metaWithoutDescription);
+    // Title still renders.
+    expect(screen.getByText("Alpha")).toBeTruthy();
+    // No description text from the baseMeta sneaks in.
+    expect(screen.queryByText("An alpha deck.")).toBeNull();
+    // No empty-string paragraph either: the only `<p>` left in the card
+    // body should be the kicker (date / event / runtime). The rendered
+    // card has the kicker `<p>` with the cf-tag class — every other `<p>`
+    // would be the absent description.
+    const paragraphs = Array.from(
+      document.querySelectorAll<HTMLParagraphElement>(
+        "[data-testid='deck-card'] p",
+      ),
+    );
+    for (const p of paragraphs) {
+      expect(p.textContent?.trim().length).toBeGreaterThan(0);
+    }
+  });
+
+  it("omits the description paragraph when description is the empty string", () => {
+    // Defensive: if a consumer ever passes `description: ""` (e.g. from
+    // a legacy KV record before this slice landed), we still skip the
+    // empty paragraph rather than render whitespace.
+    renderCard({ ...baseMeta, description: "" });
+    expect(screen.queryByText("An alpha deck.")).toBeNull();
+    const paragraphs = Array.from(
+      document.querySelectorAll<HTMLParagraphElement>(
+        "[data-testid='deck-card'] p",
+      ),
+    );
+    for (const p of paragraphs) {
+      expect(p.textContent?.trim().length).toBeGreaterThan(0);
+    }
+  });
+
   it("links to /decks/<slug>", () => {
     renderCard(baseMeta);
     const link = screen.getByRole("link");

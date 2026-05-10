@@ -196,11 +196,9 @@ export function dataSlideToSlideDef(
  *     follow-up): `<PresenterWindow>` takes a framework `Deck`, so
  *     KV-backed decks need this conversion to support presenter mode.
  *
- * The framework `DeckMeta` shape requires a `description` field; the
- * KV `DataDeckMeta` shape allows it to be missing. We coalesce to ""
- * to keep the framework type satisfied (the presenter window's header
- * doesn't surface description, and the public landing page renders
- * data-decks via a different code path).
+ * Framework `DeckMeta.description` is optional, matching the KV record's
+ * shape. Consumers (`<DeckCard>`, the admin row, the public index) test
+ * for absence and skip rendering rather than emitting an empty paragraph.
  */
 export function dataDeckToDeck(
   deck: DataDeckRecord,
@@ -209,9 +207,11 @@ export function dataDeckToDeck(
   const meta: DeckMeta = {
     slug: deck.meta.slug,
     title: deck.meta.title,
-    description: deck.meta.description ?? "",
     date: deck.meta.date,
   };
+  if (deck.meta.description !== undefined) {
+    meta.description = deck.meta.description;
+  }
   if (deck.meta.author !== undefined) meta.author = deck.meta.author;
   if (deck.meta.event !== undefined) meta.event = deck.meta.event;
   if (deck.meta.cover !== undefined) meta.cover = deck.meta.cover;

@@ -188,17 +188,17 @@ interface DecksListResponse {
 
 /**
  * Convert a KV deck summary into a `DeckMeta` so the public index can
- * render it through the same `<DeckCard>` as build-time decks. KV
- * summaries don't carry a `description`; we default to an empty string
- * (the card still renders cleanly with no description).
+ * render it through the same `<DeckCard>` as build-time decks. Both
+ * `DataDeckSummary.description` and `DeckMeta.description` are optional
+ * — when absent the card simply omits the description paragraph.
  */
 function summaryToDeckMeta(summary: DataDeckSummary): DeckMeta {
   const meta: DeckMeta = {
     slug: summary.slug,
     title: summary.title,
-    description: summary.description ?? "",
     date: summary.date,
   };
+  if (summary.description !== undefined) meta.description = summary.description;
   if (summary.cover !== undefined) meta.cover = summary.cover;
   if (summary.runtimeMinutes !== undefined) {
     meta.runtimeMinutes = summary.runtimeMinutes;
@@ -207,16 +207,16 @@ function summaryToDeckMeta(summary: DataDeckSummary): DeckMeta {
 }
 
 /**
- * Convert a full KV deck record's meta into a `DeckMeta`. Same defaulting
- * as `summaryToDeckMeta` — `description` falls back to an empty string.
+ * Convert a full KV deck record's meta into a `DeckMeta`. Optional fields
+ * (including `description`) are only assigned when present on the source.
  */
 function dataDeckMetaToDeckMeta(m: DataDeckMeta): DeckMeta {
   const meta: DeckMeta = {
     slug: m.slug,
     title: m.title,
-    description: m.description ?? "",
     date: m.date,
   };
+  if (m.description !== undefined) meta.description = m.description;
   if (m.author !== undefined) meta.author = m.author;
   if (m.event !== undefined) meta.event = m.event;
   if (m.cover !== undefined) meta.cover = m.cover;

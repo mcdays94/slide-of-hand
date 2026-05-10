@@ -173,9 +173,12 @@ describe("mergeDeckLists", () => {
     expect(merged.map((m) => m.slug)).toEqual(["public-one"]);
   });
 
-  it("converts KV summaries into DeckMeta shape (description default)", () => {
+  it("leaves description undefined on KV summaries that omit it", () => {
+    // `DeckMeta.description` is optional; we must not coalesce missing
+    // values to "" — consumers conditional-render the description.
     const merged = mergeDeckLists([], [summary("kv-no-desc", "2026-01-01")]);
-    expect(merged[0].description).toBe("");
+    expect(merged[0].description).toBeUndefined();
+    expect("description" in merged[0]).toBe(false);
   });
 
   it("preserves cover and runtimeMinutes from KV", () => {

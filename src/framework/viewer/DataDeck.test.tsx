@@ -359,11 +359,13 @@ describe("dataDeckToDeck (presenter-mode follow-up #61)", () => {
     expect(adapted.meta.date).toBe("2026-05-01");
   });
 
-  it("coalesces missing meta.description to an empty string", () => {
-    // Framework `DeckMeta` requires `description` (non-optional).
-    // The KV record allows it to be missing.
+  it("leaves missing meta.description undefined", () => {
+    // Framework `DeckMeta.description` is optional; the adapter must
+    // not invent an empty string when the KV record omits it. Consumers
+    // (cards, admin rows) check for absence and skip rendering entirely.
     const adapted = dataDeckToDeck(baseDeck());
-    expect(adapted.meta.description).toBe("");
+    expect(adapted.meta.description).toBeUndefined();
+    expect("description" in adapted.meta).toBe(false);
   });
 
   it("propagates author / event / cover / runtimeMinutes when present", () => {
