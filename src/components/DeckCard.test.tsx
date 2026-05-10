@@ -1,14 +1,27 @@
 /**
  * Tests for `<DeckCard>`.
  *
- * The card is the unit element of the public index. It accepts a `DeckMeta`
- * and renders a link to `/decks/<slug>` plus the visible meta (date, event,
- * runtime, title, description, tags, cover). Optional fields must be hidden
- * when absent — no empty wrappers, no stale labels.
+ * The card is the unit element of both the public index and the Studio
+ * admin grid. It accepts a `DeckMeta` plus a `view` mode (`grid` | `list`)
+ * and renders a link to the configured `to` path. Optional fields must
+ * be hidden when absent — no empty wrappers, no stale labels.
+ *
+ * Issue #127 unifies the public + admin card into this single component
+ * and adds optional admin slots:
+ *   - `visibility?`: renders a small badge on private cards (admin only).
+ *   - `onDelete?`:   renders a hover-revealed trashcan that opens a
+ *                    `<ConfirmDialog>` and invokes the callback on confirm.
+ *   - `ideHref?`:    renders the existing "Open in IDE" affordance.
  */
 
-import { afterEach, describe, expect, it } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { DeckCard } from "./DeckCard";
 import type { DeckMeta } from "@/framework/viewer/types";
@@ -22,10 +35,24 @@ const baseMeta: DeckMeta = {
   date: "2026-04-01",
 };
 
-function renderCard(meta: DeckMeta) {
+interface RenderOpts {
+  view?: "grid" | "list";
+  to?: string;
+  visibility?: "public" | "private";
+  onDelete?: (slug: string) => Promise<void> | void;
+  ideHref?: string;
+}
+
+function renderCard(meta: DeckMeta, opts: RenderOpts = {}) {
+  const { view = "grid", to, ...rest } = opts;
   return render(
     <MemoryRouter>
-      <DeckCard meta={meta} />
+      <DeckCard
+        meta={meta}
+        view={view}
+        to={to ?? `/decks/${meta.slug}`}
+        {...rest}
+      />
     </MemoryRouter>,
   );
 }
@@ -38,20 +65,11 @@ describe("DeckCard", () => {
   });
 
   it("omits the description paragraph when description is undefined", () => {
-    // `DeckMeta.description` is optional; when absent the card must NOT
-    // emit an empty `<p>` (which would still take up vertical space and
-    // create an awkward gap below the title).
     const { description, ...metaWithoutDescription } = baseMeta;
     void description;
     renderCard(metaWithoutDescription);
-    // Title still renders.
     expect(screen.getByText("Alpha")).toBeTruthy();
-    // No description text from the baseMeta sneaks in.
     expect(screen.queryByText("An alpha deck.")).toBeNull();
-    // No empty-string paragraph either: the only `<p>` left in the card
-    // body should be the kicker (date / event / runtime). The rendered
-    // card has the kicker `<p>` with the cf-tag class — every other `<p>`
-    // would be the absent description.
     const paragraphs = Array.from(
       document.querySelectorAll<HTMLParagraphElement>(
         "[data-testid='deck-card'] p",
@@ -63,9 +81,6 @@ describe("DeckCard", () => {
   });
 
   it("omits the description paragraph when description is the empty string", () => {
-    // Defensive: if a consumer ever passes `description: ""` (e.g. from
-    // a legacy KV record before this slice landed), we still skip the
-    // empty paragraph rather than render whitespace.
     renderCard({ ...baseMeta, description: "" });
     expect(screen.queryByText("An alpha deck.")).toBeNull();
     const paragraphs = Array.from(
@@ -78,10 +93,10 @@ describe("DeckCard", () => {
     }
   });
 
-  it("links to /decks/<slug>", () => {
-    renderCard(baseMeta);
+  it("links to the provided `to` path", () => {
+    renderCard(baseMeta, { to: "/admin/decks/alpha" });
     const link = screen.getByRole("link");
-    expect(link.getAttribute("href")).toBe("/decks/alpha");
+    expect(link.getAttribute("href")).toBe("/admin/decks/alpha");
   });
 
   it("renders the date in the kicker", () => {
@@ -101,7 +116,6 @@ describe("DeckCard", () => {
 
   it("renders runtime in minutes when present", () => {
     renderCard({ ...baseMeta, runtimeMinutes: 25 });
-    // The kicker uses a CSS uppercase transform; underlying text is "25 min".
     expect(screen.getByText(/25 min/i)).toBeTruthy();
   });
 
@@ -120,31 +134,17 @@ describe("DeckCard", () => {
 
   it("omits tag row when absent or empty", () => {
     renderCard({ ...baseMeta, tags: [] });
-    // No tag chip row should render. Easiest assertion: no element with the
-    // tag-chip data-attribute.
     expect(document.querySelector("[data-deck-tag]")).toBeNull();
   });
 
   it("renders cover image when present", () => {
     renderCard({ ...baseMeta, cover: "/decks/alpha/cover.png" });
-    // The cover image is decorative (`alt=""`) so we query the DOM directly
-    // rather than via getByRole — presentational images are not exposed.
     const img = document.querySelector("img");
     expect(img).not.toBeNull();
     expect(img?.getAttribute("src")).toBe("/decks/alpha/cover.png");
   });
 
-  // Note: the previous "omits cover image when absent" assertion was removed
-  // — the card now falls back to a build-time auto-thumbnail at
-  // `/thumbnails/<slug>/01.png` when `meta.cover` isn't set. The
-  // `onError`-driven fallback path (when neither cover nor thumbnail
-  // resolve) is covered below.
-
   it("falls back to the slide-1 auto-thumbnail when cover is absent", () => {
-    // When `meta.cover` is not set, the card uses the build-time thumbnail
-    // produced by `npm run thumbnails`, located at
-    // `/thumbnails/<slug>/01.png`. This is the default for any deck that
-    // hasn't opted into a custom cover image.
     renderCard(baseMeta);
     const img = document.querySelector("img");
     expect(img).not.toBeNull();
@@ -158,19 +158,119 @@ describe("DeckCard", () => {
   });
 
   it("hides the hero strip if the image fails to load", () => {
-    // Fresh clones (and decks where `npm run thumbnails` has never been run)
-    // have no PNG at `/thumbnails/<slug>/01.png`. The card must remain valid
-    // — no broken-image icon, no empty 16:9 frame.
     renderCard(baseMeta);
     const img = document.querySelector("img") as HTMLImageElement | null;
     expect(img).not.toBeNull();
-    // Simulate the browser's load failure. Use fireEvent so React's
-    // synthetic-event handler runs — a raw dispatchEvent bypasses React's
-    // delegation and the onError state update never fires.
     fireEvent.error(img!);
-    // After the error, the image and its 16:9 wrapper should be gone.
     expect(document.querySelector("img")).toBeNull();
-    // The card itself remains.
     expect(screen.getByTestId("deck-card")).toBeTruthy();
+  });
+
+  describe("view modes", () => {
+    it('renders with view="grid" by default-shaped layout', () => {
+      renderCard(baseMeta, { view: "grid" });
+      const card = screen.getByTestId("deck-card");
+      expect(card.getAttribute("data-view")).toBe("grid");
+    });
+
+    it('renders with view="list" exposes data-view=list', () => {
+      renderCard(baseMeta, { view: "list" });
+      const card = screen.getByTestId("deck-card");
+      expect(card.getAttribute("data-view")).toBe("list");
+    });
+  });
+
+  describe("visibility badge (admin slot)", () => {
+    it("renders a private badge when visibility=private", () => {
+      renderCard(baseMeta, { visibility: "private" });
+      const badge = document.querySelector(
+        "[data-visibility='private']",
+      ) as HTMLElement | null;
+      expect(badge).not.toBeNull();
+      expect(badge?.textContent).toMatch(/private/i);
+    });
+
+    it("does NOT render a badge when visibility is omitted (public surface)", () => {
+      renderCard(baseMeta);
+      expect(document.querySelector("[data-visibility]")).toBeNull();
+    });
+
+    it("does NOT render a badge for visibility=public (only private gets visual emphasis)", () => {
+      // Same convention as the original `<AdminDeckRow>`: visibility
+      // badge appears for `private` decks; `public` decks omit the
+      // chip to keep the grid uncluttered.
+      renderCard(baseMeta, { visibility: "public" });
+      expect(document.querySelector("[data-visibility='private']")).toBeNull();
+    });
+  });
+
+  describe("delete affordance (admin slot)", () => {
+    it("does NOT render a trashcan when onDelete is undefined", () => {
+      renderCard(baseMeta);
+      expect(screen.queryByTestId("delete-deck-alpha")).toBeNull();
+    });
+
+    it("renders a trashcan when onDelete is provided", () => {
+      renderCard(baseMeta, { onDelete: () => {} });
+      expect(screen.getByTestId("delete-deck-alpha")).toBeDefined();
+    });
+
+    it("clicking the trashcan opens the confirm dialog with the deck title", () => {
+      renderCard(baseMeta, { onDelete: () => {} });
+      expect(screen.queryByTestId("confirm-dialog")).toBeNull();
+      fireEvent.click(screen.getByTestId("delete-deck-alpha"));
+      expect(screen.getByTestId("confirm-dialog")).toBeDefined();
+      expect(screen.getByTestId("confirm-dialog").textContent).toMatch(
+        /Alpha/,
+      );
+    });
+
+    it("Cancel closes the dialog without invoking onDelete", async () => {
+      const onDelete = vi.fn();
+      renderCard(baseMeta, { onDelete });
+      fireEvent.click(screen.getByTestId("delete-deck-alpha"));
+      fireEvent.click(screen.getByTestId("confirm-dialog-cancel"));
+      await waitFor(() =>
+        expect(screen.queryByTestId("confirm-dialog")).toBeNull(),
+      );
+      expect(onDelete).not.toHaveBeenCalled();
+    });
+
+    it("Confirm invokes onDelete with the deck slug", async () => {
+      const onDelete = vi.fn().mockResolvedValue(undefined);
+      renderCard(baseMeta, { onDelete });
+      fireEvent.click(screen.getByTestId("delete-deck-alpha"));
+      fireEvent.click(screen.getByTestId("confirm-dialog-confirm"));
+      await waitFor(() => expect(onDelete).toHaveBeenCalledWith("alpha"));
+    });
+
+    it("surfaces an inline error when onDelete throws and keeps the dialog open", async () => {
+      const onDelete = vi
+        .fn()
+        .mockRejectedValue(new Error("kv unavailable"));
+      renderCard(baseMeta, { onDelete });
+      fireEvent.click(screen.getByTestId("delete-deck-alpha"));
+      fireEvent.click(screen.getByTestId("confirm-dialog-confirm"));
+      await waitFor(() =>
+        expect(screen.getByTestId("delete-error").textContent).toMatch(
+          /kv unavailable/,
+        ),
+      );
+      // Dialog stays open so the user can retry or cancel.
+      expect(screen.getByTestId("confirm-dialog")).toBeDefined();
+    });
+  });
+
+  describe("IDE link (admin slot)", () => {
+    it("does NOT render the IDE link when ideHref is omitted", () => {
+      renderCard(baseMeta);
+      expect(screen.queryByTestId("open-in-ide")).toBeNull();
+    });
+
+    it("renders the IDE link when ideHref is provided", () => {
+      renderCard(baseMeta, { ideHref: "vscode://example" });
+      const link = screen.getByTestId("open-in-ide");
+      expect(link.getAttribute("href")).toBe("vscode://example");
+    });
   });
 });

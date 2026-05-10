@@ -6,6 +6,10 @@
  * `meta.date` descending. Build-time wins precedence on slug collision (see
  * `src/lib/decks-registry.ts` top-of-file comment for why).
  *
+ * Composition is delegated to `<DeckCardGrid>` (issue #127), which is the
+ * unified renderer shared with the Studio admin index. The grid handles
+ * the Grid/List view toggle and persists the user's choice per-surface.
+ *
  * The page title is reset to "Slide of Hand" on mount — the deck viewer rewrites
  * it on navigate, so we must restore it when returning to the index.
  *
@@ -18,7 +22,10 @@
 import { useEffect } from "react";
 import { Link } from "react-router-dom";
 import { useDataDeckList } from "@/lib/decks-registry";
-import { DeckCard } from "@/components/DeckCard";
+import {
+  DeckCardGrid,
+  type DeckCardGridItem,
+} from "@/components/DeckCardGrid";
 
 export default function Root() {
   const { decks } = useDataDeckList();
@@ -28,6 +35,14 @@ export default function Root() {
       document.title = "Slide of Hand";
     }
   }, []);
+
+  // The public surface never carries admin slots — no visibility badge,
+  // no IDE link, no delete callback. The grid will silently render
+  // everything as straight cards.
+  const items: DeckCardGridItem[] = decks.map((meta) => ({
+    meta,
+    to: `/decks/${meta.slug}`,
+  }));
 
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-6xl flex-col gap-12 px-6 py-16 sm:px-8 sm:py-24">
@@ -71,25 +86,21 @@ export default function Root() {
         </p>
       </header>
 
-      {decks.length === 0 ? (
-        <section
-          className="cf-card flex flex-col items-center gap-3 px-8 py-16 text-center"
-          data-testid="empty-state"
-        >
-          <p className="cf-tag">Empty</p>
-          <p className="text-base text-cf-text-muted">
-            No decks discovered yet.
-          </p>
-        </section>
-      ) : (
-        <ul className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
-          {decks.map((meta) => (
-            <li key={meta.slug}>
-              <DeckCard meta={meta} />
-            </li>
-          ))}
-        </ul>
-      )}
+      <DeckCardGrid
+        surface="public"
+        items={items}
+        emptyState={
+          <section
+            className="cf-card flex flex-col items-center gap-3 px-8 py-16 text-center"
+            data-testid="empty-state"
+          >
+            <p className="cf-tag">Empty</p>
+            <p className="text-base text-cf-text-muted">
+              No decks discovered yet.
+            </p>
+          </section>
+        }
+      />
     </main>
   );
 }
