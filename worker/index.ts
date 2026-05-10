@@ -32,6 +32,7 @@ import {
 } from "./element-overrides";
 import { handleDecks, type DecksEnv } from "./decks";
 import { handleImages, type ImagesEnv } from "./images";
+import { handleAuthStatus, type AuthStatusEnv } from "./auth-status";
 
 export interface Env
   extends ThemesEnv,
@@ -39,12 +40,15 @@ export interface Env
     AnalyticsEnv,
     ElementOverridesEnv,
     DecksEnv,
-    ImagesEnv {
+    ImagesEnv,
+    AuthStatusEnv {
   ASSETS: Fetcher;
 }
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
+    const authStatusResponse = await handleAuthStatus(request, env);
+    if (authStatusResponse) return authStatusResponse;
     const themesResponse = await handleThemes(request, env);
     if (themesResponse) return themesResponse;
     const manifestsResponse = await handleManifests(request, env);
