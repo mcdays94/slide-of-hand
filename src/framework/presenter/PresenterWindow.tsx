@@ -29,6 +29,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Deck } from "@/framework/viewer/types";
+import { resolveInitialCursor } from "@/framework/viewer/useDeckState";
 import { PhaseProvider } from "@/framework/viewer/PhaseContext";
 import { SettingsModal } from "@/framework/viewer/SettingsModal";
 import { SettingsProvider, useSettings } from "@/framework/viewer/useSettings";
@@ -408,7 +409,26 @@ function PresenterWindowInner({ deck }: PresenterWindowProps) {
     [deck.slides],
   );
 
-  const [cursor, setCursor] = useState<Cursor>({ slide: 0, phase: 0 });
+  // Issue #122 — initial cursor comes from `?slide=N&phase=K` (priority)
+  // → sessionStorage (shared with audience-side <Deck>, so a reload of
+  // either window restores to the same position) → {0, 0}. Reuse the
+  // exact resolver the audience side uses so the two windows agree on
+  // initial-cursor priority.
+  const initialCursor = useMemo<Cursor>(() => {
+    const phasesPerSlide = visibleSlides.map((s) => s.phases ?? 0);
+    return resolveInitialCursor(
+      { slug: deck.meta.slug, phases: phasesPerSlide },
+      {
+        search: typeof window !== "undefined" ? window.location.search : "",
+        storage:
+          typeof window !== "undefined" ? window.sessionStorage : undefined,
+      },
+    );
+    // Locked to first mount per the AGENTS convention "URL on mount only".
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deck.meta.slug]);
+
+  const [cursor, setCursor] = useState<Cursor>(initialCursor);
 
   // Ref to the current-slide preview DOM node. Used by item E to scope
   // tool overlays / cursor tracking to that panel only.
@@ -425,6 +445,33 @@ function PresenterWindowInner({ deck }: PresenterWindowProps) {
   useEffect(() => {
     send({ type: "request-state" });
   }, [deck.meta.slug, send]);
+
+  // Issue #122 — mirror the cursor into the URL as `?slide=N&phase=K` so
+  // the presenter window is reload-safe and deep-linkable. Same pattern
+  // as the audience-side <Deck>: `history.replaceState` (NOT pushState)
+  // so the browser Back button still means "leave the deck", not "step
+  // backwards through reveals". Other query params (notably
+  // `?presenter=1` itself) survive the rewrite.
+  //
+  // Note that we ALSO write the same key into sessionStorage as the
+  // audience side (via the shared STORAGE_PREFIX in useDeckState), so
+  // the two windows stay in sync via the `state` broadcast on top of
+  // the URL/storage layers.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.set("slide", String(cursor.slide));
+      url.searchParams.set("phase", String(cursor.phase));
+      window.history.replaceState(window.history.state, "", url.toString());
+      window.sessionStorage.setItem(
+        `slide-of-hand-deck-cursor:${deck.meta.slug}`,
+        JSON.stringify(cursor),
+      );
+    } catch {
+      /* sandboxed iframes / private mode quotas — silently ignore */
+    }
+  }, [cursor.slide, cursor.phase, deck.meta.slug]);
 
   // Update document title to "Presenter — <deck title>".
   useEffect(() => {
