@@ -46,3 +46,7 @@ public/thumbnails/
 # OS
 Thumbs.db
 ehthumbs.db
+
+# Session-resume prompt — local-only, not part of the repo's public docs.
+# Regenerate at the end of each session for the next agent to pick up.
+RESUME.md

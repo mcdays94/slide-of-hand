@@ -234,9 +234,13 @@ export function NewDeckModal({ open, onClose }: NewDeckModalProps) {
             <h2 className="mb-1 text-xl font-medium tracking-[-0.02em] text-cf-text">
               New deck
             </h2>
-            <p className="mb-5 text-xs text-cf-text-muted">
+            <p className="mb-2 text-xs text-cf-text-muted">
               Enter a title to get started. Everything else has a sensible
               default.
+            </p>
+            <p className="mb-5 text-xs text-cf-text-subtle">
+              Slides are built from typed templates — pick a layout, fill the
+              slots. Constrained on purpose: the same shape AI agents drive.
             </p>
 
             <form onSubmit={handleSubmit} className="flex flex-col gap-4">
