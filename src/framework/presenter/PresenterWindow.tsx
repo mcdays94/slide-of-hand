@@ -209,6 +209,75 @@ function NextPreview({
   );
 }
 
+/**
+ * Render a filmstrip of the CURRENT slide's phases as the "lookahead"
+ * panel content. Used in place of <NextPreview> when the current slide
+ * has phases the presenter has not yet revealed (Mode A — issue #115).
+ *
+ * Each tile is a SlideThumbnail of the same slide rendered at a different
+ * phase. The current-phase tile is `emphasized` (orange border + ring)
+ * to mirror the main current-slide preview's treatment, so the eye ties
+ * "the big preview" and "the current tile in the filmstrip" together at
+ * a glance.
+ *
+ * Click → jump to that phase of the current slide. The corner label on
+ * each tile is "Now · Phase X/N" so the presenter can also navigate by
+ * counting down ("two more reveals before the next slide").
+ *
+ * The component does not own its outer 16:9 frame — it expects to fill
+ * its parent's full band, with each tile sized via container-query units
+ * relative to its own per-tile container. This matches <NextPreview>'s
+ * filmstrip branch (Mode B's filmstrip variant), so the call site can
+ * place either component inside the same band wrapper.
+ */
+function CurrentSlideFilmstrip({
+  deck,
+  currentIndex,
+  currentPhase,
+  phaseCount,
+  onJump,
+}: {
+  deck: Deck;
+  currentIndex: number;
+  currentPhase: number;
+  phaseCount: number;
+  onJump: (slideIndex: number, phase?: number) => void;
+}) {
+  return (
+    <div
+      data-testid="presenter-upcoming-current-filmstrip"
+      className="flex h-full w-full items-center justify-center gap-1.5"
+    >
+      {Array.from({ length: phaseCount }).map((_, p) => (
+        <div
+          key={p}
+          data-testid={`presenter-upcoming-current-phase-${p}`}
+          className="relative flex h-full min-w-0 flex-1 items-center justify-center"
+          style={{ containerType: "size" }}
+        >
+          <div
+            className="relative"
+            style={{
+              width: "min(100cqw, calc(100cqh * 16 / 9))",
+              height: "min(100cqh, calc(100cqw * 9 / 16))",
+            }}
+          >
+            <SlideThumbnail
+              deck={deck}
+              slideIndex={currentIndex}
+              phase={p}
+              scale={0.32}
+              emphasized={p === currentPhase}
+              cornerLabel={`Now · Phase ${p + 1}/${phaseCount}`}
+              onClick={() => onJump(currentIndex, p)}
+            />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 interface Cursor {
   slide: number;
   phase: number;
@@ -636,6 +705,28 @@ function PresenterWindowInner({ deck }: PresenterWindowProps) {
                   branches OR per-tile in the filmstrip branch. */}
               {(() => {
                 const showsFinal = settings.presenterNextSlideShowsFinalPhase;
+                // Mode A — current slide still has phases to reveal.
+                // Show a filmstrip of the CURRENT slide so the presenter
+                // can see how many reveals are left. Switches to Mode B
+                // once we land on the last phase. Issue #115.
+                const current = visibleSlides[cursor.slide];
+                const currentPhaseCount = (current?.phases ?? 0) + 1;
+                const inModeA =
+                  !!current && cursor.phase < currentPhaseCount - 1;
+                if (inModeA) {
+                  return (
+                    <CurrentSlideFilmstrip
+                      deck={deck}
+                      currentIndex={cursor.slide}
+                      currentPhase={cursor.phase}
+                      phaseCount={currentPhaseCount}
+                      onJump={onJump}
+                    />
+                  );
+                }
+                // Mode B — current slide on its last phase (or single-
+                // phase). Show the next-slide preview, governed by the
+                // existing presenterNextSlideShowsFinalPhase setting.
                 const next = visibleSlides[cursor.slide + 1];
                 const phaseCount = (next?.phases ?? 0) + 1;
                 const isFilmstripBranch =
