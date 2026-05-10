@@ -49,6 +49,11 @@ describe("<PresenterWindow> — keyboard navigation (item A)", () => {
   beforeEach(() => {
     document.body.innerHTML = "";
     window.sessionStorage.clear();
+    // #122: PresenterWindow now reads `?slide=N&phase=K` from the URL
+    // on mount and writes back on every cursor change. Reset between
+    // tests so the previous test's URL writes don't leak as initial
+    // cursor state.
+    window.history.replaceState(null, "", "/");
   });
   afterEach(() => cleanup());
 
@@ -206,6 +211,7 @@ describe("<PresenterWindow> — header layout (item B)", () => {
   beforeEach(() => {
     document.body.innerHTML = "";
     window.sessionStorage.clear();
+    window.history.replaceState(null, "", "/");
   });
   afterEach(() => cleanup());
 
@@ -312,6 +318,7 @@ describe("<PresenterWindow> — upcoming preview lookahead (#115)", () => {
     document.body.innerHTML = "";
     window.sessionStorage.clear();
     window.localStorage.clear();
+    window.history.replaceState(null, "", "/");
   });
   afterEach(() => cleanup());
 
@@ -507,6 +514,193 @@ describe("<PresenterWindow> — upcoming preview lookahead (#115)", () => {
         /^presenter-upcoming-current-phase-\d+$/,
       );
       expect(tiles).toHaveLength(3);
+    });
+  });
+});
+
+/**
+ * URL sync (issue #122). The presenter window mirrors slide+phase to
+ * `?slide=N&phase=K` via `history.replaceState`, matching the audience-
+ * side <Deck> behaviour, so the URL is deep-linkable + reload-safe and
+ * preserves other query params (notably `?presenter=1`).
+ */
+describe("<PresenterWindow> — URL sync (#122)", () => {
+  // Same FakeBC helper idiom as the keyboard tests above.
+  function withFakeBC<T>(fn: (posted: unknown[]) => T): T {
+    const posted: unknown[] = [];
+    const RealBC = globalThis.BroadcastChannel;
+    class FakeBC {
+      name: string;
+      onmessage: ((e: MessageEvent) => void) | null = null;
+      onmessageerror: (() => void) | null = null;
+      constructor(n: string) {
+        this.name = n;
+      }
+      postMessage(msg: unknown) {
+        posted.push(msg);
+      }
+      close() {}
+      addEventListener() {}
+      removeEventListener() {}
+      dispatchEvent() {
+        return true;
+      }
+    }
+    globalThis.BroadcastChannel = FakeBC as unknown as typeof BroadcastChannel;
+    try {
+      return fn(posted);
+    } finally {
+      globalThis.BroadcastChannel = RealBC;
+    }
+  }
+
+  // 4 slides, varying phase counts so we can exercise the clamp.
+  const richDeck: Deck = {
+    meta: {
+      slug: "test-url-sync",
+      title: "URL Sync Test",
+      description: "test",
+      date: "2026-05-10",
+    },
+    slides: [
+      { id: "first", phases: 0, render: () => <div>First</div> }, // 1 phase
+      { id: "second", phases: 1, render: () => <div>Second</div> }, // 2 phases
+      { id: "third", phases: 3, render: () => <div>Third</div> }, // 4 phases
+      { id: "fourth", phases: 0, render: () => <div>Fourth</div> }, // 1 phase
+    ],
+  };
+
+  // Set the test URL via window.history.replaceState before render so
+  // the mount-time `window.location.search` parser sees the deep link.
+  function navigateTestUrl(url: string) {
+    window.history.replaceState(null, "", url);
+  }
+
+  beforeEach(() => {
+    document.body.innerHTML = "";
+    window.sessionStorage.clear();
+    window.localStorage.clear();
+    // Always start each test from a clean URL.
+    navigateTestUrl("/decks/test-url-sync?presenter=1");
+  });
+  afterEach(() => {
+    cleanup();
+    navigateTestUrl("/");
+  });
+
+  it("starts at slide 0 phase 0 when the URL has no slide/phase params", () => {
+    withFakeBC(() => {
+      render(<PresenterWindow deck={richDeck} />);
+      // After mount, the effect writes the cursor back into the URL.
+      const url = new URL(window.location.href);
+      expect(url.searchParams.get("slide")).toBe("0");
+      expect(url.searchParams.get("phase")).toBe("0");
+      // `presenter=1` survives the rewrite.
+      expect(url.searchParams.get("presenter")).toBe("1");
+    });
+  });
+
+  it("reads `?slide=N&phase=K` from the URL on mount as the initial cursor", () => {
+    withFakeBC(() => {
+      navigateTestUrl("/decks/test-url-sync?presenter=1&slide=2&phase=2");
+      render(<PresenterWindow deck={richDeck} />);
+      // Slide 2 has 4 phases, so phase=2 is valid; cursor lands there.
+      // We can verify by inspecting the rendered current-slide chip.
+      // The header includes `<NN>/<NN>` slide counter that shows the
+      // 1-indexed current slide.
+      const header = document.body.textContent ?? "";
+      expect(header).toContain("03 / 04"); // slide 2 (1-indexed: 03) of 4
+    });
+  });
+
+  it("clamps an out-of-range slide to the last visible slide", () => {
+    withFakeBC(() => {
+      navigateTestUrl("/decks/test-url-sync?presenter=1&slide=99&phase=0");
+      render(<PresenterWindow deck={richDeck} />);
+      const header = document.body.textContent ?? "";
+      // 4 slides total → last is slide 3 (1-indexed: 04).
+      expect(header).toContain("04 / 04");
+    });
+  });
+
+  it("clamps an out-of-range phase to the last phase of the target slide", () => {
+    withFakeBC(() => {
+      // Slide 1 has 2 phases (phase 0..1). phase=99 should clamp to 1.
+      navigateTestUrl("/decks/test-url-sync?presenter=1&slide=1&phase=99");
+      render(<PresenterWindow deck={richDeck} />);
+      // The URL is rewritten to the clamped value after mount.
+      const url = new URL(window.location.href);
+      expect(url.searchParams.get("slide")).toBe("1");
+      expect(url.searchParams.get("phase")).toBe("1");
+    });
+  });
+
+  it("updates `?slide=N&phase=K` as the presenter advances", () => {
+    withFakeBC(() => {
+      render(<PresenterWindow deck={richDeck} />);
+      // Cursor at 0/0. Advance once → slide 0 phase 0 advances to slide 1
+      // phase 0 (slide 0 is single-phase).
+      act(() => {
+        fireEvent.keyDown(window, { key: "ArrowRight" });
+      });
+      const url = new URL(window.location.href);
+      expect(url.searchParams.get("slide")).toBe("1");
+      expect(url.searchParams.get("phase")).toBe("0");
+      expect(url.searchParams.get("presenter")).toBe("1");
+    });
+  });
+
+  it("updates phase within the same slide", () => {
+    withFakeBC(() => {
+      // Land on slide 1 phase 0 (slide 1 has 2 phases).
+      navigateTestUrl("/decks/test-url-sync?presenter=1&slide=1&phase=0");
+      render(<PresenterWindow deck={richDeck} />);
+      act(() => {
+        fireEvent.keyDown(window, { key: "ArrowRight" });
+      });
+      // Same slide, phase 1 (last phase of slide 1).
+      const url = new URL(window.location.href);
+      expect(url.searchParams.get("slide")).toBe("1");
+      expect(url.searchParams.get("phase")).toBe("1");
+    });
+  });
+
+  it("preserves unrelated query params on every URL rewrite", () => {
+    withFakeBC(() => {
+      navigateTestUrl(
+        "/decks/test-url-sync?presenter=1&debug=trace&utm_source=hello",
+      );
+      render(<PresenterWindow deck={richDeck} />);
+      act(() => {
+        fireEvent.keyDown(window, { key: "ArrowRight" });
+      });
+      const url = new URL(window.location.href);
+      expect(url.searchParams.get("presenter")).toBe("1");
+      expect(url.searchParams.get("debug")).toBe("trace");
+      expect(url.searchParams.get("utm_source")).toBe("hello");
+      expect(url.searchParams.get("slide")).toBe("1");
+      expect(url.searchParams.get("phase")).toBe("0");
+    });
+  });
+
+  it("uses `replaceState` (not `pushState`) so navigation does not pollute browser history", () => {
+    withFakeBC(() => {
+      const replaceSpy = vi.spyOn(window.history, "replaceState");
+      const pushSpy = vi.spyOn(window.history, "pushState");
+      try {
+        render(<PresenterWindow deck={richDeck} />);
+        // Mount triggers an initial URL write.
+        expect(replaceSpy).toHaveBeenCalled();
+        const replaceCallsBefore = replaceSpy.mock.calls.length;
+        act(() => {
+          fireEvent.keyDown(window, { key: "ArrowRight" });
+        });
+        expect(replaceSpy.mock.calls.length).toBeGreaterThan(replaceCallsBefore);
+        expect(pushSpy).not.toHaveBeenCalled();
+      } finally {
+        replaceSpy.mockRestore();
+        pushSpy.mockRestore();
+      }
     });
   });
 });
