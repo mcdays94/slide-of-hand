@@ -9,6 +9,7 @@
 
 import type { ReactNode } from "react";
 import type { SlideTemplate } from "@/framework/templates/types";
+import { richtextProseClasses } from "../richtext-prose";
 
 const defaultTemplate: SlideTemplate<{
   title: "text";
@@ -43,7 +44,9 @@ const defaultTemplate: SlideTemplate<{
         <h2 className="text-5xl font-medium tracking-[-0.03em] text-cf-text">
           {s.title}
         </h2>
-        <div className="text-lg leading-relaxed text-cf-text-muted">
+        <div
+          className={`text-lg leading-relaxed text-cf-text-muted ${richtextProseClasses}`}
+        >
           {s.body}
         </div>
       </div>

@@ -81,4 +81,32 @@ describe("default template", () => {
     const { getByRole } = render(<>{renderDataSlide(slide, 0, registry)}</>);
     expect(getByRole("alert").textContent).toMatch(/body/);
   });
+
+  // Issue #86: react-markdown emits correct <ul><li> DOM, but Tailwind
+  // preflight zeroes `list-style` on <ul>/<ol>, so bullets disappear on
+  // the public viewer unless the body container restores list styling
+  // via arbitrary variants. Without these classes, a markdown list
+  // renders as flush text. The classes also harmonise paragraph
+  // spacing, inline code, bold/italic, and links with the warm-brown
+  // palette.
+  it("applies richtext prose styling to the body container", () => {
+    const slide: DataSlide = {
+      id: "s",
+      template: "default",
+      slots: {
+        title: { kind: "text", value: "Title" },
+        body: { kind: "richtext", value: "- Item 1\n- Item 2\n- Item 3" },
+      },
+    };
+    const { container } = render(<>{renderDataSlide(slide, 0, registry)}</>);
+    // Sanity: the markdown list actually rendered.
+    expect(container.querySelectorAll("li")).toHaveLength(3);
+    // The body container restores `list-disc` for nested <ul>s.
+    const styled = container.querySelector('[class*="list-disc"]');
+    expect(styled).not.toBeNull();
+    // It also restores `list-decimal` for ordered lists.
+    expect(container.querySelector('[class*="list-decimal"]')).not.toBeNull();
+    // Inline-code styling is in place.
+    expect(container.querySelector('[class*="font-mono"]')).not.toBeNull();
+  });
 });

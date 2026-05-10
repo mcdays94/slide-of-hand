@@ -8,6 +8,7 @@
 
 import type { ReactNode } from "react";
 import type { SlideTemplate } from "@/framework/templates/types";
+import { richtextProseClasses } from "../richtext-prose";
 
 const quote: SlideTemplate<{
   quote: "richtext";
@@ -46,7 +47,16 @@ const quote: SlideTemplate<{
           <span aria-hidden className="mr-2 text-cf-orange">
             &ldquo;
           </span>
-          {s.quote}
+          {/*
+           * Prose styling is applied to a wrapper around the
+           * richtext content rather than the <blockquote> itself
+           * because the blockquote also carries decorative leading
+           * and trailing quote-mark <span>s. Applying prose at the
+           * blockquote level would space those decorative elements
+           * away from the quote text. See `richtextProseClasses`
+           * docstring (issue #86).
+           */}
+          <span className={`inline ${richtextProseClasses}`}>{s.quote}</span>
           <span aria-hidden className="ml-1 text-cf-orange">
             &rdquo;
           </span>

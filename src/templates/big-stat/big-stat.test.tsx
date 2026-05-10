@@ -98,4 +98,22 @@ describe("big-stat template", () => {
     const { container } = render(<>{renderDataSlide(slide, 0, registry)}</>);
     expect(container.textContent).toContain("Median request latency");
   });
+
+  // Issue #86: bullets inside a `context` markdown list must be visible.
+  it("applies richtext prose styling to the context container", () => {
+    const slide: DataSlide = {
+      id: "s",
+      template: "big-stat",
+      slots: {
+        stat: { kind: "stat", value: "10ms" },
+        context: {
+          kind: "richtext",
+          value: "- Edge latency\n- Worker cold-start\n- Cache hit ratio",
+        },
+      },
+    };
+    const { container } = render(<>{renderDataSlide(slide, 0, registry)}</>);
+    expect(container.querySelectorAll("li")).toHaveLength(3);
+    expect(container.querySelector('[class*="list-disc"]')).not.toBeNull();
+  });
 });
