@@ -509,4 +509,52 @@ describe("<PresenterWindow> — upcoming preview lookahead (#115)", () => {
       expect(tiles).toHaveLength(3);
     });
   });
+
+  // Regression for issue #117 — thumbnails were rendering content
+  // bunched in the left half of each tile because the inner div was
+  // sized as `100/scale%` of the containing tile rather than at the
+  // canonical 1920×1080 design viewport. The fix is to render at a
+  // FIXED pixel size and let CSS container queries drive the scale.
+  describe("SlideThumbnail design-viewport invariant (#117)", () => {
+    it("renders the slide JSX into a fixed 1920×1080 inner div, scaled via 100cqw", () => {
+      withFakeBC(() => {
+        render(<PresenterWindow deck={richDeck} />);
+        // Mode A is active on slide 0 phase 0. Inspect any current-
+        // slide filmstrip tile.
+        const tile0 = screen.getByTestId(
+          "presenter-upcoming-current-phase-0",
+        );
+        const scaled = tile0.querySelector("div[style*='transform']");
+        expect(scaled).toBeTruthy();
+        const style = scaled?.getAttribute("style") ?? "";
+        // Inner viewport must be the canonical 1920×1080 in ABSOLUTE
+        // pixels — never a percentage of the parent. A percentage
+        // would make absolute Tailwind sizes (text-5xl, max-w-5xl,
+        // px-12) land in wrong proportions, which is the #117 bug.
+        expect(style).toMatch(/width:\s*1920px/);
+        expect(style).toMatch(/height:\s*1080px/);
+        // Scale must be derived from the actual rendered width via
+        // a container query, not a hard-coded number.
+        expect(style).toMatch(/transform:\s*scale\(calc\(100cqw/);
+      });
+    });
+
+    it("the SlideThumbnail's outer element is a CQ size context (so 100cqw resolves to its own width)", () => {
+      withFakeBC(() => {
+        render(<PresenterWindow deck={richDeck} />);
+        const tile0 = screen.getByTestId(
+          "presenter-upcoming-current-phase-0",
+        );
+        const btn = tile0.querySelector("[data-testid^='thumbnail-']");
+        expect(btn).toBeTruthy();
+        // `containerType: size` must be set on the SlideThumbnail's
+        // outer element. Without it, `100cqw` inside would resolve
+        // to an unrelated ancestor's width and the scale would be
+        // wrong by an unpredictable factor.
+        const style =
+          (btn as HTMLElement | null)?.getAttribute("style") ?? "";
+        expect(style).toMatch(/container-type:\s*size/);
+      });
+    });
+  });
 });
