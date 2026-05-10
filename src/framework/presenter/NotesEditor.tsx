@@ -30,6 +30,7 @@ import {
 } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import TurndownService from "turndown";
+import { useAccessAuth } from "@/lib/use-access-auth";
 import {
   clearNotesOverride,
   readNotesOverride,
@@ -143,6 +144,13 @@ export function NotesEditor({
   defaultNotes,
   fontSizeClass,
 }: NotesEditorProps) {
+  // Issue #120: editing requires a valid Cloudflare Access session.
+  // The presenter view itself is public, but speaker-notes editing
+  // belongs to the deck author. While the probe is in-flight we treat
+  // the editor as read-only to avoid a flash of editable UI.
+  const authStatus = useAccessAuth();
+  const canEdit = authStatus === "authenticated";
+
   // The source-of-truth value, in markdown. Initialized from
   // localStorage (override) or from the build-time ReactNode (converted
   // to HTML, then HTML -> markdown via turndown).
@@ -199,7 +207,11 @@ export function NotesEditor({
   }, [html, mode]);
 
   // Rich-mode: on input, convert HTML back to markdown + persist.
+  // No-op when read-only (unauthenticated): contentEditable is off,
+  // so this shouldn't fire, but the guard is defense-in-depth in case
+  // a browser plugin or assistive tech triggers an input event.
   const onRichInput = useCallback(() => {
+    if (!canEdit) return;
     const el = richRef.current;
     if (!el) return;
     let next = "";
@@ -210,32 +222,38 @@ export function NotesEditor({
     }
     setMarkdown(next);
     persist(next);
-  }, [persist]);
+  }, [persist, canEdit]);
 
   const onMarkdownChange = useCallback(
     (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+      if (!canEdit) return;
       const next = e.target.value;
       setMarkdown(next);
       persist(next);
     },
-    [persist],
+    [persist, canEdit],
   );
 
-  const exec = useCallback((cmd: string, value?: string) => {
-    if (typeof document === "undefined") return;
-    document.execCommand(cmd, false, value);
-    // Trigger an input event so onRichInput fires + persists.
-    const el = richRef.current;
-    if (el) {
-      el.dispatchEvent(new Event("input", { bubbles: true }));
-    }
-  }, []);
+  const exec = useCallback(
+    (cmd: string, value?: string) => {
+      if (!canEdit) return;
+      if (typeof document === "undefined") return;
+      document.execCommand(cmd, false, value);
+      // Trigger an input event so onRichInput fires + persists.
+      const el = richRef.current;
+      if (el) {
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+    },
+    [canEdit],
+  );
 
   const onReset = useCallback(() => {
+    if (!canEdit) return;
     clearNotesOverride(slug, slideIndex);
     setMarkdown(buildTimeMarkdown);
     setHasOverride(false);
-  }, [slug, slideIndex, buildTimeMarkdown]);
+  }, [slug, slideIndex, buildTimeMarkdown, canEdit]);
 
   // Cleanup debounce on unmount.
   useEffect(() => {
@@ -243,7 +261,11 @@ export function NotesEditor({
       if (debounceRef.current) {
         clearTimeout(debounceRef.current);
         // Flush pending write on unmount so we don't lose data.
-        writeNotesOverride(slug, slideIndex, markdown);
+        // Only flushes if we were authenticated to begin with — read-
+        // only callers shouldn't be writing on unmount.
+        if (canEdit) {
+          writeNotesOverride(slug, slideIndex, markdown);
+        }
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -253,9 +275,15 @@ export function NotesEditor({
     <div
       data-testid="notes-editor"
       data-mode={mode}
+      data-auth-status={authStatus}
+      data-can-edit={canEdit ? "true" : "false"}
       className="flex h-full min-h-0 flex-col gap-2"
     >
-      {/* Toolbar */}
+      {/* Toolbar — mode toggle is always visible (read-only users may
+          still want to flip between rich and markdown views), but the
+          rich-mode formatting buttons + the reset button only appear
+          when `canEdit` is true (i.e. the user has a valid Access
+          session). */}
       <div className="flex flex-wrap items-center gap-1 font-mono text-[10px] uppercase tracking-[0.2em]">
         <button
           type="button"
@@ -285,7 +313,7 @@ export function NotesEditor({
         >
           Markdown
         </button>
-        {mode === "rich" && (
+        {canEdit && mode === "rich" && (
           <>
             <span aria-hidden className="mx-1 h-4 w-px bg-cf-border" />
             <button
@@ -341,7 +369,7 @@ export function NotesEditor({
           </>
         )}
         <span className="flex-1" />
-        {hasOverride && (
+        {canEdit && hasOverride && (
           <button
             type="button"
             data-testid="notes-reset"
@@ -355,23 +383,50 @@ export function NotesEditor({
         )}
       </div>
 
+      {/* Read-only banner — shown only when the auth probe has resolved
+          to "unauthenticated". During the brief "checking" state we
+          render no banner (and the editor is also disabled), so there
+          is no flash of either editable UI or "sign in" copy on a
+          legitimately-authenticated user's screen. */}
+      {authStatus === "unauthenticated" && (
+        <p
+          data-testid="notes-readonly-banner"
+          className="rounded-md border border-dashed border-cf-border bg-cf-bg-100 px-3 py-2 font-mono text-[10px] uppercase tracking-[0.2em] text-cf-text-subtle"
+        >
+          Read-only ·{" "}
+          <a
+            href="/admin"
+            data-testid="notes-readonly-signin-link"
+            data-interactive
+            className="text-cf-orange underline-offset-2 hover:underline"
+          >
+            sign in via /admin
+          </a>{" "}
+          to edit speaker notes.
+        </p>
+      )}
+
       {/* Editor surface */}
       {mode === "rich" ? (
         <div
           ref={richRef}
           data-testid="notes-rich-editor"
-          contentEditable
+          contentEditable={canEdit}
           suppressContentEditableWarning
           onInput={onRichInput}
-          data-interactive
-          className={`presenter-notes flex-1 space-y-3 overflow-y-auto rounded-md border border-cf-border bg-cf-bg-100 p-3 pr-2 text-cf-text-muted outline-none focus:border-cf-orange/60 ${fontSizeClass}`}
+          data-interactive={canEdit ? true : undefined}
+          aria-readonly={canEdit ? undefined : true}
+          className={`presenter-notes flex-1 space-y-3 overflow-y-auto rounded-md border border-cf-border bg-cf-bg-100 p-3 pr-2 text-cf-text-muted outline-none focus:border-cf-orange/60 ${fontSizeClass} ${
+            canEdit ? "" : "cursor-default select-text"
+          }`}
         />
       ) : (
         <textarea
           data-testid="notes-markdown-editor"
-          data-interactive
+          data-interactive={canEdit ? true : undefined}
           value={markdown}
           onChange={onMarkdownChange}
+          readOnly={!canEdit}
           spellCheck={false}
           className={`flex-1 resize-none rounded-md border border-cf-border bg-cf-bg-100 p-3 font-mono text-cf-text-muted outline-none focus:border-cf-orange/60 ${fontSizeClass}`}
         />
