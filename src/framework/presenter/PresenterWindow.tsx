@@ -545,6 +545,8 @@ export function PresenterWindow({ deck }: PresenterWindowProps) {
               slideTitle={currentSlide?.title}
               slideNumber={cursor.slide + 1}
               totalSlides={visibleSlides.length}
+              deckSlug={deck.meta.slug}
+              slideIndex={cursor.slide}
             />
           </div>
           <div className="flex-shrink-0 border-t border-cf-border pt-3">

@@ -15,6 +15,7 @@
  */
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { MinusIcon, PlusIcon } from "./NavControls";
+import { NotesEditor } from "./NotesEditor";
 
 const MIN_FONT_SIZE = 12;
 const MAX_FONT_SIZE = 22;
@@ -46,6 +47,11 @@ export interface SpeakerNotesProps {
   slideTitle?: string;
   slideNumber?: number;
   totalSlides?: number;
+  /** Item G (#111): deck slug + slide index let the editor persist
+   *  per-slide overrides to localStorage. Optional so non-editable
+   *  contexts can fall back to read-only display. */
+  deckSlug?: string;
+  slideIndex?: number;
 }
 
 export function SpeakerNotes({
@@ -53,6 +59,8 @@ export function SpeakerNotes({
   slideTitle,
   slideNumber,
   totalSlides,
+  deckSlug,
+  slideIndex,
 }: SpeakerNotesProps) {
   const [fontSize, setFontSize] = useState<number>(() =>
     readPersistedFontSize(),
@@ -162,12 +170,23 @@ export function SpeakerNotes({
       )}
       <div
         data-testid="speaker-notes-body"
-        className={`presenter-notes flex-1 space-y-3 overflow-y-auto pr-1 text-cf-text-muted ${fontSizeClass}`}
+        className={`flex min-h-0 flex-1 flex-col text-cf-text-muted ${fontSizeClass}`}
       >
-        {notes ?? (
-          <p className="text-cf-text-subtle italic">
-            No notes for this slide.
-          </p>
+        {deckSlug && typeof slideIndex === "number" ? (
+          <NotesEditor
+            slug={deckSlug}
+            slideIndex={slideIndex}
+            defaultNotes={notes}
+            fontSizeClass={fontSizeClass}
+          />
+        ) : (
+          <div className="presenter-notes space-y-3 overflow-y-auto pr-1">
+            {notes ?? (
+              <p className="text-cf-text-subtle italic">
+                No notes for this slide.
+              </p>
+            )}
+          </div>
         )}
       </div>
     </section>
