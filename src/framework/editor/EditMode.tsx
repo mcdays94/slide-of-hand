@@ -32,7 +32,7 @@
  * after a reorder). An id-based source of truth survives both.
  */
 
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { renderDataSlide } from "@/framework/templates/render";
 import { templateRegistry } from "@/framework/templates/registry";
@@ -43,7 +43,26 @@ import { SlotEditor } from "./SlotEditor";
 import { Filmstrip } from "./Filmstrip";
 import { DeckMetadataPanel } from "./DeckMetadataPanel";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { StudioAgentToggle } from "@/components/StudioAgentToggle";
 import { adminWriteHeaders } from "@/lib/admin-fetch";
+
+/**
+ * Issue #131 phase 1: the in-Studio AI agent panel.
+ *
+ * Lazy-loaded for the same reason `NotesEditor` is — its deps
+ * (`agents/react` + `@cloudflare/ai-chat/react` + `ai` +
+ * `@ai-sdk/react`) total ~300 KB minified. The main EditMode bundle
+ * shouldn't pay for them; only users who open the panel do.
+ *
+ * Mirrors PR #134's TipTap pattern: `React.lazy()` with `.then(m =>
+ * ({ default: m.StudioAgentPanel }))` because the component is a
+ * named export (not default).
+ */
+const StudioAgentPanel = lazy(() =>
+  import("@/components/StudioAgentPanel").then((m) => ({
+    default: m.StudioAgentPanel,
+  })),
+);
 
 export interface EditModeProps {
   slug: string;
@@ -73,6 +92,12 @@ export function EditMode({ slug }: EditModeProps) {
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  // In-Studio AI agent panel (#131 phase 1). Local state — the panel
+  // is lazy-mounted only while open. See the import of
+  // `StudioAgentPanel` at the top of this file for the lazy-load
+  // rationale.
+  const [agentOpen, setAgentOpen] = useState(false);
 
   const draft = editor.draft;
   const slides = draft?.slides ?? [];
@@ -245,6 +270,10 @@ export function EditMode({ slug }: EditModeProps) {
               {saveStatus.message}
             </span>
           )}
+          <StudioAgentToggle
+            open={agentOpen}
+            onToggle={() => setAgentOpen((o) => !o)}
+          />
           <button
             type="button"
             data-interactive
@@ -437,6 +466,21 @@ export function EditMode({ slug }: EditModeProps) {
         onUpdateMeta={(updater) => editor.updateMeta(updater)}
         onClose={() => setMetaPanelOpen(false)}
       />
+
+      {/* ── In-Studio AI agent panel (#131 phase 1) ─────────────────
+          Lazy-mounted only while open so the heavy chat-SDK chunks
+          aren't downloaded until the user actually engages with the
+          agent. The Suspense fallback is intentionally invisible —
+          opening the panel and seeing nothing for ~50ms while the
+          chunk loads is less jarring than a flashing splash. */}
+      {agentOpen && (
+        <Suspense fallback={null}>
+          <StudioAgentPanel
+            deckSlug={slug}
+            onClose={() => setAgentOpen(false)}
+          />
+        </Suspense>
+      )}
 
       {/* ── Delete-deck confirmation (#130) ───────────────────────── */}
       <ConfirmDialog

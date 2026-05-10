@@ -19,6 +19,8 @@
  *   - `/api/decks*` (public read + admin write) — `worker/decks.ts` (issue #57)
  *   - `/images/*` (public serve) and `/api/admin/images/*`
  *     (Access-gated upload/index) — `worker/images.ts` (issue #58)
+ *   - `/api/admin/agents/*` (Access-gated WebSocket + HTTP) —
+ *     `worker/agent.ts` (issue #131 / in-Studio AI agent phase 1)
  *
  * Cloudflare Access enforces auth at the edge for everything under
  * `/admin/*`; the Worker does not validate JWTs itself.
@@ -33,6 +35,12 @@ import {
 import { handleDecks, type DecksEnv } from "./decks";
 import { handleImages, type ImagesEnv } from "./images";
 import { handleAuthStatus, type AuthStatusEnv } from "./auth-status";
+import { handleAgent, type AgentEnv } from "./agent";
+
+// Re-export the agent DO class so wrangler can find it from the same
+// module as the default handler. Cloudflare requires the Durable
+// Object class to be exported from the Worker entry point.
+export { DeckAuthorAgent } from "./agent";
 
 export interface Env
   extends ThemesEnv,
@@ -41,7 +49,8 @@ export interface Env
     ElementOverridesEnv,
     DecksEnv,
     ImagesEnv,
-    AuthStatusEnv {
+    AuthStatusEnv,
+    AgentEnv {
   ASSETS: Fetcher;
 }
 
@@ -64,6 +73,11 @@ export default {
     if (decksResponse) return decksResponse;
     const imagesResponse = await handleImages(request, env);
     if (imagesResponse) return imagesResponse;
+    // Agent route (issue #131 phase 1). Must run BEFORE the ASSETS
+    // fallback because it serves WebSocket upgrades and JSON, not
+    // static files.
+    const agentResponse = await handleAgent(request, env);
+    if (agentResponse) return agentResponse;
     return env.ASSETS.fetch(request);
   },
 } satisfies ExportedHandler<Env>;
