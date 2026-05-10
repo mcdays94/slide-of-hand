@@ -1,0 +1,1266 @@
+/* ============================================================
+ * cf247-dtx-manchester — deck-local styles.
+ *
+ * Lifted from the source repo's `src/index.css` and scoped under
+ * `.cf247-slide` so the rules can't bleed into other decks.
+ *
+ * Color tokens reference the platform-wide CSS variables defined in
+ * `src/styles/index.css` (`--color-cf-orange`, `--color-cf-bg-100`,
+ * etc.). Source-specific tokens that don't exist platform-wide
+ * (`--cf247-purple`, the four `--accent-*` hues, `--cf247-cf-text`)
+ * are declared LOCALLY on `.cf247-slide` so they're available to
+ * every descendant — and only descendants.
+ *
+ * Source repo: gitlab.cfdata.org/mdias/cf247-dtx-manchester
+ * ============================================================ */
+
+.cf247-slide {
+  /* Brand */
+  --cf-orange: var(--color-cf-orange);
+  --cf-orange-hover: var(--color-cf-orange-hover);
+  --cf-orange-light: var(--color-cf-orange-light);
+  --cf-orange-glow: rgba(255, 72, 1, 0.18);
+
+  /* Car Finance 247 brand purple — sampled directly from the logo PNG. */
+  --cf247-purple: #6905f2;
+  --cf247-purple-hover: #8533ff;
+  --cf247-purple-light: rgba(105, 5, 242, 0.1);
+  --cf247-purple-glow: rgba(105, 5, 242, 0.25);
+
+  /* Accent palette — used by the request-flow + timeline */
+  --accent-red: #ff3d6e;
+  --accent-blue: #0a95ff;
+  --accent-green: #10b981;
+  --accent-violet: #7c3aed;
+
+  /* Map source tokens to platform tokens so the source CSS keeps working. */
+  --cf-text: var(--color-cf-text);
+  --cf-text-muted: var(--color-cf-text-muted);
+  --cf-text-subtle: var(--color-cf-text-subtle);
+  --cf-bg-page: var(--color-cf-bg-page);
+  --cf-bg-100: var(--color-cf-bg-100);
+  --cf-bg-200: var(--color-cf-bg-200);
+  --cf-bg-300: var(--color-cf-bg-300);
+  --cf-border: var(--color-cf-border);
+  --cf-border-light: var(--color-cf-border-light);
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+  --ease-entrance: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-button: cubic-bezier(0.25, 0.46, 0.45, 0.94);
+}
+
+/* ============================================================
+ * Slide stage — replaces the source's `.stage / .slide / .slide__inner`.
+ * The platform Slide renders us with `layout: "full"` so each slide
+ * fills the slide-shell exactly. `.cf247-slide` IS that fill, with
+ * the source's dot-pattern background.
+ * ============================================================ */
+
+.cf247-slide {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  background: var(--cf-bg-100);
+  /* Subtle dot-pattern background, like the design system uses */
+  background-image: radial-gradient(circle, var(--cf-border) 0.75px, transparent 0.75px);
+  background-size: 22px 22px;
+  font-family: var(--font-sans);
+  color: var(--cf-text);
+}
+
+.cf247-slide--backdrop {
+  background: #000;
+  background-image: none;
+}
+
+.cf247-slide__inner {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  text-align: center;
+  padding: clamp(24px, 5vh, 80px) clamp(32px, 6vw, 96px);
+  position: relative;
+}
+
+/* ============================================================
+ * Chrome (top + bottom strips)
+ * ============================================================ */
+
+.cf247-slide .chrome-top,
+.cf247-slide .chrome-bottom {
+  position: absolute;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  padding: clamp(12px, 1.6vh, 22px) clamp(20px, 2.4vw, 36px);
+  z-index: 5;
+  font-size: clamp(11px, 1.05vw, 14px);
+  color: var(--cf-text-subtle);
+  pointer-events: none;
+}
+
+.cf247-slide .chrome-top {
+  top: 0;
+  justify-content: space-between;
+}
+
+.cf247-slide .chrome-bottom {
+  bottom: 0;
+  justify-content: space-between;
+}
+
+.cf247-slide .chrome-top::after,
+.cf247-slide .chrome-bottom::before {
+  content: "";
+  position: absolute;
+  left: clamp(20px, 2.4vw, 36px);
+  right: clamp(20px, 2.4vw, 36px);
+  height: 1px;
+  background-image: linear-gradient(to right, var(--cf-border) 50%, transparent 50%);
+  background-size: 12px 1px;
+  background-repeat: repeat-x;
+}
+.cf247-slide .chrome-top::after {
+  bottom: 0;
+}
+.cf247-slide .chrome-bottom::before {
+  top: 0;
+}
+
+.cf247-slide .chrome__brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 500;
+  color: var(--cf-text-muted);
+  letter-spacing: -0.01em;
+}
+
+.cf247-slide .chrome__brand svg {
+  height: 22px;
+  width: auto;
+  color: var(--cf-orange);
+}
+
+.cf247-slide .chrome__brand-logo {
+  height: 28px;
+  width: 28px;
+  object-fit: contain;
+  border-radius: 4px;
+}
+
+.cf247-slide .chrome__dtx-logo {
+  height: 20px;
+  width: auto;
+  border-radius: 0;
+  display: block;
+}
+
+.cf247-slide .chrome__brand-x {
+  font-family: var(--font-mono);
+  color: var(--cf-text-subtle);
+  font-size: 0.95em;
+  margin: 0 4px;
+  font-weight: 400;
+}
+
+.cf247-slide .chrome__event {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.cf247-slide .chrome__progress {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.cf247-slide .chrome__progress-text {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  letter-spacing: 0.06em;
+  font-variant-numeric: tabular-nums;
+}
+
+.cf247-slide .chrome__progress-bar {
+  width: clamp(80px, 10vw, 140px);
+  height: 3px;
+  background: var(--cf-border);
+  border-radius: 9999px;
+  overflow: hidden;
+}
+
+.cf247-slide .chrome__progress-fill {
+  height: 100%;
+  background: var(--cf-orange);
+  border-radius: 9999px;
+  transition: width 0.4s var(--ease-entrance);
+}
+
+/* ============================================================
+ * Corner brackets — signature CF Workers Design System element.
+ * Scoped: cf247-corner-bracket / cf247-corner-brackets so this can
+ * coexist with the platform's existing `.cf-corner-brackets`.
+ * ============================================================ */
+
+.cf247-slide .corner-brackets {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  user-select: none;
+}
+
+.cf247-slide .corner-bracket {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  border: 1px solid var(--cf-border);
+  border-radius: 1.5px;
+  background: var(--cf-bg-100);
+}
+
+.cf247-slide .corner-bracket--tl {
+  top: -5px;
+  left: -5px;
+}
+.cf247-slide .corner-bracket--tr {
+  top: -5px;
+  right: -5px;
+}
+.cf247-slide .corner-bracket--bl {
+  bottom: -5px;
+  left: -5px;
+}
+.cf247-slide .corner-bracket--br {
+  bottom: -5px;
+  right: -5px;
+}
+
+/* ============================================================
+ * Typography utilities (slide content)
+ * ============================================================ */
+
+.cf247-slide .eyebrow {
+  font-family: var(--font-mono);
+  font-size: clamp(11px, 1.1vw, 14px);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--cf-orange);
+  font-weight: 500;
+  margin: 0 0 clamp(20px, 3vh, 36px);
+}
+
+.cf247-slide .h1 {
+  font-size: clamp(40px, 6.5vw, 96px);
+  font-weight: 500;
+  letter-spacing: -0.035em;
+  line-height: 1;
+  margin: 0;
+  color: var(--cf-text);
+}
+
+.cf247-slide .h2 {
+  font-size: clamp(32px, 5vw, 72px);
+  font-weight: 500;
+  letter-spacing: -0.03em;
+  line-height: 1.05;
+  margin: 0;
+  color: var(--cf-text);
+}
+
+.cf247-slide .h3 {
+  font-size: clamp(22px, 3vw, 42px);
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+  margin: 0;
+  color: var(--cf-text);
+}
+
+.cf247-slide .lede {
+  font-size: clamp(18px, 1.9vw, 28px);
+  line-height: 1.45;
+  color: var(--cf-text-muted);
+  font-weight: 400;
+  margin: clamp(16px, 2.5vh, 32px) 0 0;
+  max-width: 28ch;
+}
+
+.cf247-slide .lede--wide {
+  max-width: 44ch;
+}
+
+.cf247-slide .body {
+  font-size: clamp(15px, 1.5vw, 22px);
+  line-height: 1.5;
+  color: var(--cf-text-muted);
+  margin: 0;
+}
+
+.cf247-slide .text-orange {
+  color: var(--cf-orange);
+}
+
+.cf247-slide .text-cf247 {
+  color: var(--cf247-purple);
+}
+
+.cf247-slide .text-strong {
+  color: var(--cf-text);
+  font-weight: 500;
+}
+
+/* ============================================================
+ * Generic blocks
+ * ============================================================ */
+
+.cf247-slide .stack {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: clamp(12px, 2vh, 28px);
+}
+
+.cf247-slide .row {
+  display: flex;
+  align-items: center;
+  gap: clamp(12px, 2vw, 32px);
+}
+
+.cf247-slide .divider {
+  width: 1px;
+  align-self: stretch;
+  background-image: linear-gradient(to bottom, var(--cf-border) 50%, transparent 50%);
+  background-size: 1px 12px;
+  background-repeat: repeat-y;
+}
+
+/* Cards used inside slides (renamed from .card to avoid colliding with
+   any platform-wide `.card` rule someone might add later). */
+.cf247-slide .card {
+  position: relative;
+  background: var(--cf-bg-200);
+  border: 1px solid var(--cf-border);
+  border-radius: 14px;
+  padding: clamp(20px, 2.4vw, 36px);
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.cf247-slide .card__icon {
+  width: clamp(36px, 3.5vw, 52px);
+  height: clamp(36px, 3.5vw, 52px);
+  border-radius: 10px;
+  background: var(--cf-orange-light);
+  color: var(--cf-orange);
+  display: grid;
+  place-items: center;
+  margin-bottom: clamp(8px, 1.2vh, 14px);
+}
+
+.cf247-slide .card__icon svg {
+  width: 60%;
+  height: 60%;
+}
+
+.cf247-slide .card__title {
+  font-size: clamp(18px, 1.8vw, 24px);
+  font-weight: 500;
+  color: var(--cf-text);
+  margin: 0;
+  letter-spacing: -0.02em;
+}
+
+.cf247-slide .card__body {
+  font-size: clamp(13px, 1.2vw, 18px);
+  line-height: 1.45;
+  color: var(--cf-text-muted);
+  margin: 0;
+}
+
+/* ============================================================
+ * Connectivity-cloud slide (cloudflare) — staggered pillar + stat entrance,
+ * plus an odometer-style count-up using @property + counter().
+ * ============================================================ */
+
+.cf247-slide .cf-pillar {
+  opacity: 0;
+  transform: translateX(20px);
+  animation: cf247PillarSlideIn 0.55s var(--ease-entrance) both;
+}
+
+@keyframes cf247PillarSlideIn {
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.cf247-slide .cf-stat {
+  opacity: 0;
+  transform: translateY(18px);
+  animation: cf247StatSlideIn 0.55s var(--ease-entrance) both;
+}
+
+@keyframes cf247StatSlideIn {
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@property --cf247-stat-num {
+  syntax: "<integer>";
+  inherits: false;
+  initial-value: 0;
+}
+
+.cf247-slide .cf-stat__digit {
+  --cf247-stat-num: 0;
+  counter-reset: cf247-stat-num var(--cf247-stat-num);
+  animation-duration: 1.4s;
+  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+  animation-fill-mode: both;
+  animation-iteration-count: 1;
+}
+
+.cf247-slide .cf-stat__digit::before {
+  content: counter(cf247-stat-num);
+}
+
+.cf247-slide .cf-stat__digit--t330 {
+  animation-name: cf247StatCountTo330;
+}
+.cf247-slide .cf-stat__digit--t500 {
+  animation-name: cf247StatCountTo500;
+}
+.cf247-slide .cf-stat__digit--t20 {
+  animation-name: cf247StatCountTo20;
+}
+.cf247-slide .cf-stat__digit--t50 {
+  animation-name: cf247StatCountTo50;
+}
+
+@keyframes cf247StatCountTo330 {
+  from { --cf247-stat-num: 0; }
+  to { --cf247-stat-num: 330; }
+}
+@keyframes cf247StatCountTo500 {
+  from { --cf247-stat-num: 0; }
+  to { --cf247-stat-num: 500; }
+}
+@keyframes cf247StatCountTo20 {
+  from { --cf247-stat-num: 0; }
+  to { --cf247-stat-num: 20; }
+}
+@keyframes cf247StatCountTo50 {
+  from { --cf247-stat-num: 0; }
+  to { --cf247-stat-num: 50; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cf247-slide .cf-pillar,
+  .cf247-slide .cf-stat,
+  .cf247-slide .cf-stat__digit {
+    animation: none !important;
+    opacity: 1;
+    transform: none;
+  }
+  .cf247-slide .cf-stat__digit--t330 { --cf247-stat-num: 330; }
+  .cf247-slide .cf-stat__digit--t500 { --cf247-stat-num: 500; }
+  .cf247-slide .cf-stat__digit--t20 { --cf247-stat-num: 20; }
+  .cf247-slide .cf-stat__digit--t50 { --cf247-stat-num: 50; }
+}
+
+/* ============================================================
+ * Tug-of-war slide
+ * ============================================================ */
+
+.cf247-slide .tug-pillar {
+  transition: transform 0.3s var(--ease-button);
+}
+
+.cf247-slide .tug-pillar--dimmed {
+  opacity: 0.6;
+}
+
+.cf247-slide .tug-pillar--highlight {
+  animation:
+    cf247TugDevPull 2.4s ease-in-out infinite,
+    cf247TugHighlightPulse 3.4s ease-in-out infinite;
+}
+
+@keyframes cf247TugDevPull {
+  0%, 100% { transform: translateX(0) scaleX(1) scaleY(1) skewX(0deg); }
+  25% { transform: translateX(-12px) scaleX(0.92) scaleY(1.04) skewX(4deg); }
+  50% { transform: translateX(0) scaleX(1) scaleY(1) skewX(0deg); }
+  75% { transform: translateX(12px) scaleX(0.92) scaleY(1.04) skewX(-4deg); }
+}
+
+@keyframes cf247TugHighlightPulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255, 72, 1, 0); }
+  50% {
+    box-shadow:
+      0 0 0 4px rgba(255, 72, 1, 0.08),
+      0 8px 28px rgba(255, 72, 1, 0.18);
+  }
+}
+
+.cf247-slide .tug-pillar__handoff {
+  position: absolute;
+  top: -14px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  background: var(--cf-bg-100);
+  border: 1px solid var(--cf-orange);
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: clamp(9px, 0.85vw, 11px);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--cf-orange);
+  font-weight: 600;
+  white-space: nowrap;
+  box-shadow: 0 4px 12px rgba(255, 72, 1, 0.18);
+  animation:
+    cf247TugHandoffAppear 0.6s var(--ease-entrance) 0.9s backwards,
+    cf247TugHandoffPulse 3s ease-in-out 1.6s infinite;
+}
+
+@keyframes cf247TugHandoffAppear {
+  from { opacity: 0; transform: translate(-50%, -8px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
+}
+
+@keyframes cf247TugHandoffPulse {
+  0%, 100% { box-shadow: 0 4px 12px rgba(255, 72, 1, 0.18); }
+  50% { box-shadow: 0 4px 18px rgba(255, 72, 1, 0.34); }
+}
+
+.cf247-slide .tug-connector {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: var(--cf-text-subtle);
+  font-family: var(--font-mono);
+  font-size: clamp(18px, 1.8vw, 26px);
+  user-select: none;
+}
+
+.cf247-slide .tug-connector__arrow {
+  display: inline-block;
+  animation: cf247TugConnector 2.4s ease-in-out infinite;
+}
+
+.cf247-slide .tug-connector--pull-left .tug-connector__arrow {
+  animation-name: cf247TugConnectorPullLeft;
+  color: var(--cf-text-muted);
+}
+
+.cf247-slide .tug-connector--pull-right .tug-connector__arrow {
+  animation-name: cf247TugConnectorPullRight;
+  color: var(--cf-orange);
+  animation-delay: 1.2s;
+}
+
+@keyframes cf247TugConnectorPullLeft {
+  0%, 100% { transform: translateX(0); opacity: 0.5; }
+  50% { transform: translateX(-4px); opacity: 1; }
+}
+
+@keyframes cf247TugConnectorPullRight {
+  0%, 100% { transform: translateX(0); opacity: 0.55; }
+  50% { transform: translateX(4px); opacity: 1; }
+}
+
+.cf247-slide .tug-pillar__icon--float {
+  animation: cf247TugFloat 3s ease-in-out infinite;
+}
+
+@keyframes cf247TugFloat {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-3px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cf247-slide .tug-pillar--highlight,
+  .cf247-slide .tug-pillar__handoff,
+  .cf247-slide .tug-connector__arrow,
+  .cf247-slide .tug-pillar__icon--float {
+    animation: none !important;
+    transform: none !important;
+  }
+}
+
+/* ============================================================
+ * Request flow (forgotten-problems) — animated request travelling
+ * through the Cloudflare stack.
+ * ============================================================ */
+
+.cf247-slide .flow {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  max-width: 1480px;
+  gap: clamp(6px, 0.8vw, 14px);
+  margin-top: clamp(28px, 4.5vh, 56px);
+  padding: clamp(8px, 1vh, 14px) 0;
+}
+
+.cf247-slide .flow__line {
+  position: absolute;
+  top: 50%;
+  left: clamp(40px, 4vw, 72px);
+  right: clamp(50px, 5vw, 92px);
+  height: 3px;
+  margin-top: -1.5px;
+  background: linear-gradient(
+    to right,
+    rgba(82, 16, 0, 0.35) 0%,
+    var(--accent-violet) 22%,
+    var(--accent-green) 42%,
+    var(--accent-red) 60%,
+    var(--accent-blue) 78%,
+    var(--cf247-purple) 100%
+  );
+  border-radius: 2px;
+  z-index: 0;
+  pointer-events: none;
+}
+
+@property --cf247-orb-color {
+  syntax: "<color>";
+  inherits: false;
+  initial-value: #ff4801;
+}
+
+.cf247-slide .flow__pulse {
+  position: absolute;
+  top: -16.5px;
+  left: 0;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  --cf247-orb-color: #ff4801;
+  background: radial-gradient(
+    circle at center,
+    #fff 0%,
+    var(--cf247-orb-color) 38%,
+    var(--cf247-orb-color) 70%,
+    color-mix(in srgb, var(--cf247-orb-color) 40%, transparent) 100%
+  );
+  box-shadow:
+    0 0 0 5px color-mix(in srgb, var(--cf247-orb-color) 22%, transparent),
+    0 0 32px 8px color-mix(in srgb, var(--cf247-orb-color) 65%, transparent),
+    -16px 0 30px 4px color-mix(in srgb, var(--cf247-orb-color) 45%, transparent),
+    -36px 0 36px 2px color-mix(in srgb, var(--cf247-orb-color) 25%, transparent),
+    -56px 0 36px 0 color-mix(in srgb, var(--cf247-orb-color) 12%, transparent);
+  z-index: 3;
+  animation: cf247FlowPulse 5s linear infinite backwards;
+}
+
+@keyframes cf247FlowPulse {
+  0%   { left: 0; opacity: 0; transform: scale(0.5); --cf247-orb-color: #ff4801; }
+  4%   { opacity: 1; transform: scale(1); }
+  8%   { --cf247-orb-color: #ff4801; }
+  9%   { --cf247-orb-color: #7c3aed; }
+  31%  { --cf247-orb-color: #7c3aed; }
+  32%  { --cf247-orb-color: #10b981; }
+  55%  { --cf247-orb-color: #10b981; }
+  56%  { --cf247-orb-color: #ff3d6e; }
+  79%  { --cf247-orb-color: #ff3d6e; }
+  80%  { --cf247-orb-color: #0a95ff; }
+  96%  { left: calc(100% - 36px); opacity: 1; transform: scale(1); --cf247-orb-color: #0a95ff; }
+  100% { left: calc(100% - 36px); opacity: 0; transform: scale(0.5); --cf247-orb-color: #0a95ff; }
+}
+
+.cf247-slide .flow__pulse--blocked-ddos {
+  animation: cf247FlowPulseBlockedDdos 5s linear infinite backwards;
+  animation-delay: 1.6s;
+}
+
+@keyframes cf247FlowPulseBlockedDdos {
+  0%   { left: 0; opacity: 0; transform: scale(0.5); --cf247-orb-color: #ff4801; }
+  4%   { opacity: 1; transform: scale(1); }
+  55%  { left: calc(58.42% - 21px); opacity: 1; transform: scale(1); --cf247-orb-color: #ff4801; }
+  56%  { left: calc(58.42% - 21px); opacity: 1; transform: scale(1); --cf247-orb-color: #ff3d6e; }
+  61%  { left: calc(58.42% - 21px); opacity: 1; transform: scale(1.7); --cf247-orb-color: #ff3d6e; }
+  70%  { left: calc(58.42% - 21px); opacity: 0; transform: scale(2.4); --cf247-orb-color: #ff3d6e; }
+  100% { left: calc(58.42% - 21px); opacity: 0; transform: scale(0.5); --cf247-orb-color: #ff3d6e; }
+}
+
+.cf247-slide .flow__pulse--blocked-waf {
+  animation: cf247FlowPulseBlockedWaf 5s linear infinite backwards;
+  animation-delay: 3.4s;
+}
+
+@keyframes cf247FlowPulseBlockedWaf {
+  0%   { left: 0; opacity: 0; transform: scale(0.5); --cf247-orb-color: #ff4801; }
+  4%   { opacity: 1; transform: scale(1); }
+  79%  { left: calc(83.07% - 30px); opacity: 1; transform: scale(1); --cf247-orb-color: #ff4801; }
+  80%  { left: calc(83.07% - 30px); opacity: 1; transform: scale(1); --cf247-orb-color: #ff3d6e; }
+  85%  { left: calc(83.07% - 30px); opacity: 1; transform: scale(1.7); --cf247-orb-color: #ff3d6e; }
+  93%  { left: calc(83.07% - 30px); opacity: 0; transform: scale(2.4); --cf247-orb-color: #ff3d6e; }
+  100% { left: calc(83.07% - 30px); opacity: 0; transform: scale(0.5); --cf247-orb-color: #ff3d6e; }
+}
+
+.cf247-slide .flow__cf-zone {
+  position: relative;
+  z-index: 1;
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-around;
+  gap: clamp(6px, 0.8vw, 12px);
+  padding: clamp(22px, 2.8vh, 34px) clamp(8px, 1vw, 16px) clamp(12px, 1.4vh, 18px);
+  background: rgba(255, 72, 1, 0.045);
+  border: 1.5px dashed var(--cf-orange);
+  border-radius: 16px;
+  box-shadow: 0 0 0 4px rgba(255, 72, 1, 0.04);
+}
+
+.cf247-slide .flow__cf-tab {
+  position: absolute;
+  top: -14px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: clamp(4px, 0.6vh, 7px) clamp(12px, 1.2vw, 18px);
+  background: var(--cf-bg-100);
+  border: 1px solid var(--cf-orange);
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: clamp(11px, 1vw, 14px);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--cf-orange);
+  font-weight: 600;
+  white-space: nowrap;
+  z-index: 2;
+}
+
+.cf247-slide .flow__stage {
+  position: relative;
+  z-index: 1;
+  flex: 0 0 auto;
+  width: clamp(80px, 8vw, 120px);
+  background: var(--cf-bg-200);
+  border: 1px solid var(--cf-border);
+  border-radius: 10px;
+  padding: clamp(10px, 1.3vh, 14px) clamp(6px, 0.7vw, 10px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: clamp(4px, 0.6vh, 8px);
+  box-shadow: 0 1px 3px rgba(82, 16, 0, 0.04), 0 4px 12px rgba(82, 16, 0, 0.02);
+  animation: cf247FlowStageLit 5s linear infinite;
+}
+
+.cf247-slide .flow__stage[data-stage="0"] { animation-delay: 0.7s; }
+.cf247-slide .flow__stage[data-stage="1"] { animation-delay: 1.7s; }
+.cf247-slide .flow__stage[data-stage="2"] { animation-delay: 2.7s; }
+.cf247-slide .flow__stage[data-stage="3"] { animation-delay: 3.7s; }
+
+@keyframes cf247FlowStageLit {
+  0% {
+    border-color: var(--cf-border);
+    background: var(--cf-bg-200);
+    box-shadow: 0 1px 3px rgba(82, 16, 0, 0.04), 0 4px 12px rgba(82, 16, 0, 0.02);
+  }
+  3% {
+    border-color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 8%, var(--cf-bg-200));
+    box-shadow:
+      0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent),
+      0 8px 28px color-mix(in srgb, var(--accent) 30%, transparent);
+  }
+  8% {
+    border-color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 8%, var(--cf-bg-200));
+    box-shadow:
+      0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent),
+      0 8px 28px color-mix(in srgb, var(--accent) 30%, transparent);
+  }
+  14%, 100% {
+    border-color: var(--cf-border);
+    background: var(--cf-bg-200);
+    box-shadow: 0 1px 3px rgba(82, 16, 0, 0.04), 0 4px 12px rgba(82, 16, 0, 0.02);
+  }
+}
+
+.cf247-slide .flow__stage-icon {
+  width: clamp(28px, 2.6vw, 38px);
+  height: clamp(28px, 2.6vw, 38px);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--accent);
+  display: grid;
+  place-items: center;
+  animation: cf247FlowStageIcon 5s linear infinite;
+  animation-delay: inherit;
+}
+
+.cf247-slide .flow__stage[data-stage="0"] .flow__stage-icon { animation-delay: 0.7s; }
+.cf247-slide .flow__stage[data-stage="1"] .flow__stage-icon { animation-delay: 1.7s; }
+.cf247-slide .flow__stage[data-stage="2"] .flow__stage-icon { animation-delay: 2.7s; }
+.cf247-slide .flow__stage[data-stage="3"] .flow__stage-icon { animation-delay: 3.7s; }
+
+@keyframes cf247FlowStageIcon {
+  0%, 14%, 100% { transform: scale(1); }
+  4%, 8% { transform: scale(1.12); }
+}
+
+.cf247-slide .flow__stage-icon svg {
+  width: 56%;
+  height: 56%;
+}
+
+.cf247-slide .flow__stage-title {
+  font-size: clamp(15px, 1.5vw, 20px);
+  font-weight: 600;
+  color: var(--cf-text);
+  letter-spacing: -0.02em;
+}
+
+.cf247-slide .flow__endpoint {
+  position: relative;
+  z-index: 1;
+  flex: 0 0 auto;
+  width: clamp(58px, 5.6vw, 84px);
+  height: clamp(58px, 5.6vw, 84px);
+}
+
+.cf247-slide .flow__endpoint-icon {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  background: var(--cf-bg-100);
+  border: 1px solid var(--cf-border);
+  display: grid;
+  place-items: center;
+  color: var(--cf-text-muted);
+  box-shadow: 0 1px 3px rgba(82, 16, 0, 0.04), 0 6px 16px rgba(82, 16, 0, 0.06);
+}
+
+.cf247-slide .flow__endpoint-icon svg {
+  width: 50%;
+  height: 50%;
+}
+
+.cf247-slide .flow__endpoint-label {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  pointer-events: none;
+  font-family: var(--font-mono);
+  font-size: clamp(10px, 0.95vw, 13px);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--cf-text-subtle);
+}
+
+.cf247-slide .flow__endpoint--origin .flow__endpoint-icon {
+  border-color: var(--cf247-purple-light);
+  background: var(--cf-bg-100);
+  box-shadow:
+    0 0 0 3px var(--cf247-purple-light),
+    0 8px 22px var(--cf247-purple-glow);
+  animation: cf247FlowOriginAck 5s linear infinite;
+}
+
+@keyframes cf247FlowOriginAck {
+  0%, 90%, 100% {
+    transform: scale(1);
+    box-shadow:
+      0 0 0 3px var(--cf247-purple-light),
+      0 8px 22px var(--cf247-purple-glow);
+  }
+  94%, 97% {
+    transform: scale(1.08);
+    box-shadow:
+      0 0 0 5px color-mix(in srgb, var(--cf247-purple) 30%, transparent),
+      0 10px 28px var(--cf247-purple-glow);
+  }
+}
+
+.cf247-slide .flow__endpoint--origin .flow__endpoint-label {
+  color: var(--cf247-purple);
+  font-weight: 600;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cf247-slide .flow__pulse,
+  .cf247-slide .flow__stage,
+  .cf247-slide .flow__stage-icon,
+  .cf247-slide .flow__endpoint--origin .flow__endpoint-icon {
+    animation: none !important;
+  }
+}
+
+/* ============================================================
+ * cf-card — pure Workers DS feature card (renamed prefix to avoid
+ * leaking).
+ * ============================================================ */
+
+.cf247-slide .cf-card {
+  position: relative;
+  background: var(--cf-bg-200);
+  border: 1px solid var(--cf-border);
+  border-radius: 12px;
+  padding: clamp(20px, 2.4vw, 28px);
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: clamp(8px, 1vh, 12px);
+  box-shadow: 0 1px 3px rgba(82, 16, 0, 0.04), 0 4px 12px rgba(82, 16, 0, 0.02);
+  transition:
+    border-color 0.15s ease,
+    border-style 0.15s ease,
+    background-color 0.2s ease;
+}
+
+.cf247-slide .cf-card:hover {
+  border-style: dashed;
+  border-color: var(--accent, var(--cf-orange));
+  background: var(--cf-bg-300);
+}
+
+.cf247-slide .cf-card__icon {
+  width: clamp(40px, 3.4vw, 52px);
+  height: clamp(40px, 3.4vw, 52px);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--accent);
+  display: grid;
+  place-items: center;
+  margin-bottom: clamp(8px, 1.2vh, 14px);
+}
+
+.cf247-slide .cf-card__icon svg {
+  width: 56%;
+  height: 56%;
+}
+
+.cf247-slide .cf-card__title {
+  font-size: clamp(18px, 1.8vw, 24px);
+  font-weight: 500;
+  color: var(--cf-text);
+  margin: 0;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+}
+
+.cf247-slide .cf-card__body {
+  font-size: clamp(13px, 1.2vw, 18px);
+  line-height: 1.5;
+  color: var(--cf-text-muted);
+  margin: 0;
+}
+
+/* ============================================================
+ * Timeline (story slide)
+ * ============================================================ */
+
+.cf247-slide .timeline {
+  position: relative;
+  width: 100%;
+  max-width: 1200px;
+  margin-top: clamp(36px, 5vh, 60px);
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: clamp(12px, 1.6vw, 28px);
+  align-items: start;
+}
+
+.cf247-slide .timeline__line {
+  position: absolute;
+  top: clamp(32px, 3.3vw, 48px);
+  left: clamp(40px, 5vw, 70px);
+  right: clamp(8px, 1vw, 16px);
+  height: 3px;
+  margin-top: -1.5px;
+  z-index: 0;
+  pointer-events: none;
+  border-radius: 2px;
+  background: linear-gradient(
+    to right,
+    rgba(82, 16, 0, 0.5) 0%,
+    var(--accent-red) 33%,
+    var(--cf-orange) 66%,
+    var(--accent-green) 100%
+  );
+  box-shadow: 0 1px 6px rgba(255, 72, 1, 0.18);
+  transform: scaleX(0);
+  transform-origin: left center;
+  animation: cf247TimelineDraw 6s linear 0.5s forwards;
+}
+
+@keyframes cf247TimelineDraw {
+  0%   { transform: scaleX(0); }
+  100% { transform: scaleX(1); }
+}
+
+.cf247-slide .timeline__playhead {
+  position: absolute;
+  top: clamp(32px, 3.3vw, 48px);
+  width: clamp(40px, 4.4vw, 60px);
+  height: clamp(40px, 4.4vw, 60px);
+  margin-top: calc(clamp(40px, 4.4vw, 60px) / -2);
+  left: 12.5%;
+  transform: translateX(-50%) scale(0.5);
+  border-radius: 50%;
+  background: var(--cf-bg-100);
+  border: 2px solid var(--cf247-purple);
+  display: grid;
+  place-items: center;
+  z-index: 5;
+  opacity: 0;
+  box-shadow:
+    0 0 0 4px var(--cf247-purple-light),
+    0 8px 24px var(--cf247-purple-glow);
+  animation: cf247TimelinePlayhead 6s linear 0.5s forwards;
+}
+
+.cf247-slide .timeline__playhead img {
+  width: 78%;
+  height: 78%;
+  object-fit: contain;
+}
+
+@keyframes cf247TimelinePlayhead {
+  0%   { left: 12.5%; transform: translateX(-50%) scale(0.5); opacity: 0; }
+  3%   { left: 12.5%; transform: translateX(-50%) scale(1); opacity: 1; }
+  100% {
+    left: calc(100% - clamp(8px, 1vw, 16px));
+    transform: translateX(-50%) scale(1);
+    opacity: 1;
+  }
+}
+
+.cf247-slide .timeline__node {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: clamp(12px, 1.6vh, 22px);
+  opacity: 0;
+  transform: translateY(14px);
+  animation: cf247TimelineNodeAppear 0.6s var(--ease-entrance) forwards;
+  animation-delay: calc(0.2s + var(--node-index) * 1.76s);
+}
+
+@keyframes cf247TimelineNodeAppear {
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.cf247-slide .timeline__circle {
+  position: relative;
+  width: clamp(64px, 6.6vw, 96px);
+  height: clamp(64px, 6.6vw, 96px);
+  border-radius: 50%;
+  background: var(--cf-bg-100);
+  border: 1px solid var(--cf-border);
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  box-shadow:
+    0 1px 3px rgba(82, 16, 0, 0.04),
+    0 6px 16px rgba(82, 16, 0, 0.06);
+}
+
+.cf247-slide .timeline__icon {
+  width: 56%;
+  height: 56%;
+  display: grid;
+  place-items: center;
+  color: var(--cf-text-muted);
+  opacity: 0;
+  animation: cf247TimelineIconAppear 0.45s var(--ease-entrance) both;
+  animation-delay: calc(0.7s + var(--node-index) * 1.76s);
+}
+
+.cf247-slide .timeline__icon svg {
+  width: 100%;
+  height: 100%;
+}
+
+@keyframes cf247TimelineIconAppear {
+  to { opacity: 1; }
+}
+
+.cf247-slide .timeline__node--neutral .timeline__circle {
+  border-color: var(--cf-border);
+}
+
+.cf247-slide .timeline__node--alert .timeline__circle {
+  border-color: var(--accent-red);
+  background: color-mix(in srgb, var(--accent-red) 8%, var(--cf-bg-100));
+}
+.cf247-slide .timeline__node--alert .timeline__icon {
+  color: var(--accent-red);
+}
+
+.cf247-slide .timeline__node--cloudflare .timeline__circle {
+  border-color: var(--cf-orange);
+  background: color-mix(in srgb, var(--cf-orange) 10%, var(--cf-bg-100));
+  box-shadow:
+    0 0 0 4px color-mix(in srgb, var(--cf-orange) 14%, transparent),
+    0 8px 24px color-mix(in srgb, var(--cf-orange) 22%, transparent);
+}
+.cf247-slide .timeline__node--cloudflare .timeline__icon {
+  color: var(--cf-orange);
+}
+
+.cf247-slide .timeline__node--now .timeline__circle {
+  border-color: var(--accent-green);
+  background: color-mix(in srgb, var(--accent-green) 10%, var(--cf-bg-100));
+}
+.cf247-slide .timeline__node--now .timeline__icon {
+  color: var(--accent-green);
+}
+
+.cf247-slide .timeline__pulse {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  border: 2px solid var(--accent-green);
+  opacity: 0;
+  animation: cf247TimelinePulse 2.6s var(--ease-entrance) infinite;
+  animation-delay: 6.8s;
+}
+
+@keyframes cf247TimelinePulse {
+  0%   { transform: scale(1); opacity: 0.7; }
+  80%  { transform: scale(1.4); opacity: 0; }
+  100% { transform: scale(1.4); opacity: 0; }
+}
+
+.cf247-slide .timeline__card {
+  position: relative;
+  background: var(--cf-bg-200);
+  border: 1px solid var(--cf-border);
+  border-radius: 12px;
+  padding: clamp(12px, 1.6vh, 18px) clamp(14px, 1.4vw, 20px);
+  text-align: center;
+  width: 100%;
+  box-shadow: 0 1px 3px rgba(82, 16, 0, 0.04), 0 4px 12px rgba(82, 16, 0, 0.02);
+}
+
+.cf247-slide .timeline__date {
+  font-family: var(--font-mono);
+  font-size: clamp(10px, 0.95vw, 13px);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--cf-text-subtle);
+  margin-bottom: 6px;
+}
+
+.cf247-slide .timeline__node--alert .timeline__date { color: var(--accent-red); }
+.cf247-slide .timeline__node--cloudflare .timeline__date { color: var(--cf-orange); }
+.cf247-slide .timeline__node--now .timeline__date { color: var(--accent-green); }
+
+.cf247-slide .timeline__title {
+  font-size: clamp(15px, 1.6vw, 22px);
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  color: var(--cf-text);
+  line-height: 1.2;
+  margin-bottom: 6px;
+  min-height: 2.4em;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+
+.cf247-slide .timeline__desc {
+  font-size: clamp(11px, 1.05vw, 14px);
+  color: var(--cf-text-muted);
+  line-height: 1.4;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cf247-slide .timeline__line {
+    animation: none !important;
+    transform: scaleX(1);
+  }
+  .cf247-slide .timeline__node {
+    animation: none !important;
+    opacity: 1;
+    transform: none;
+  }
+  .cf247-slide .timeline__icon {
+    animation: none !important;
+    opacity: 1;
+  }
+  .cf247-slide .timeline__pulse,
+  .cf247-slide .timeline__playhead {
+    animation: none !important;
+  }
+  .cf247-slide .timeline__playhead {
+    left: calc(100% - clamp(8px, 1vw, 16px));
+    opacity: 1;
+    transform: translateX(-50%) scale(1);
+  }
+}
+
+/* ============================================================
+ * Slide entrance — scoped to `.cf247-slide__inner > *`
+ * ============================================================ */
+
+@keyframes cf247SlideFadeUp {
+  from { opacity: 0; transform: translateY(14px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes cf247SlideFadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.cf247-slide__inner > * {
+  animation: cf247SlideFadeUp 0.55s var(--ease-entrance) backwards;
+}
+
+.cf247-slide__inner > *:nth-child(1) { animation-delay: 0.05s; }
+.cf247-slide__inner > *:nth-child(2) { animation-delay: 0.18s; }
+.cf247-slide__inner > *:nth-child(3) { animation-delay: 0.3s; }
+.cf247-slide__inner > *:nth-child(4) { animation-delay: 0.42s; }
+.cf247-slide__inner > *:nth-child(5) { animation-delay: 0.54s; }
+.cf247-slide__inner > *:nth-child(6) { animation-delay: 0.66s; }
+
+.cf247-slide .chrome-top,
+.cf247-slide .chrome-bottom {
+  animation: cf247SlideFadeIn 0.6s var(--ease-entrance) 0.3s backwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cf247-slide__inner > *,
+  .cf247-slide .chrome-top,
+  .cf247-slide .chrome-bottom {
+    animation: none !important;
+  }
+}
