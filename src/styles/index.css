@@ -32,13 +32,49 @@
 
   /* Brand accents (same in both modes) */
   --color-cf-orange: #FF4801;
+  --color-cf-orange-hover: #FF7038;
+  --color-cf-orange-light: rgba(255, 72, 1, 0.08);
   --color-cf-blue: #0A95FF;
   --color-cf-green: #19E306;
 
+  /* Page-level surface (heavier than bg-100). Used by deck imports. */
+  --color-cf-bg-page: #F5F1EB;
+  --color-cf-border-light: rgba(224, 211, 189, 0.5);
+
+  /* Product category accents (used by some imported decks for vendor badges). */
+  --color-cf-compute: #0A95FF;
+  --color-cf-storage: #EE0DDB;
+  --color-cf-ai: #19E306;
+  --color-cf-media: #9616FF;
+
   /* Semantic accents — used for status / pacing feedback. */
-  --color-cf-success: #19E306;
-  --color-cf-warning: #FF9F0A;
+  --color-cf-success: #16A34A;
+  --color-cf-success-bg: #DCF7E3;
+  --color-cf-warning: #EAB308;
+  --color-cf-error: #DC2626;
+  --color-cf-info: #2563EB;
   --color-cf-danger:  #E5484D;
+
+  /* Typography fallbacks for imported decks. */
+  --font-sans:
+    "Inter", "FT Kunst Grotesk", -apple-system, BlinkMacSystemFont, "Segoe UI",
+    Roboto, sans-serif;
+  --font-mono:
+    "JetBrains Mono", "Apercu Mono Pro", "SF Mono", "Fira Code", Consolas,
+    monospace;
+
+  /* Cloudflare Workers Design System easings (cubic-bezier shorthand). */
+  --ease-cf-standard: cubic-bezier(0, 0, 0.2, 1);
+  --ease-cf-button: cubic-bezier(0.25, 0.46, 0.45, 0.94);
+  --ease-cf-active: cubic-bezier(0.55, 0.085, 0.68, 0.53);
+  --ease-cf-entrance: cubic-bezier(0.16, 1, 0.3, 1);
+
+  /* Shadow tokens. */
+  --shadow-cf-card:
+    0 1px 3px rgba(82, 16, 0, 0.04), 0 4px 12px rgba(82, 16, 0, 0.02);
+  --shadow-cf-lg:
+    0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -4px rgba(0, 0, 0, 0.1);
+  --shadow-cf-focus: 0 0 0 3px rgba(255, 72, 1, 0.2);
 }
 
 /**
@@ -47,6 +83,7 @@
  * family so dark mode doesn't feel like a different design system.
  */
 .dark {
+  --color-cf-bg-page: #0D0D0D;
   --color-cf-bg-100: #1A1310;
   --color-cf-bg-200: #221915;
   --color-cf-bg-300: #2C211B;
@@ -56,6 +93,7 @@
   --color-cf-text-subtle: #8E7A66;
 
   --color-cf-border: #3A2E26;
+  --color-cf-border-light: rgba(58, 46, 38, 0.5);
 }
 
 html,
@@ -150,5 +188,138 @@ html.dark {
 [data-tool-active="marker"],
 [data-tool-active="marker"] * {
   cursor: crosshair !important;
+}
+
+/* =====================================================================
+   Signature decorative classes — imported from cf-zt-ai (issue #98).
+   These are deck-author conveniences that any deck may use; they're not
+   coupled to a single deck.
+   ===================================================================== */
+
+/* Corner brackets — 8px decorative anchors at each corner of a card */
+.cf-corner-brackets {
+  position: relative;
+}
+.cf-corner-bracket {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  background: var(--color-cf-bg-100);
+  border: 1px solid var(--color-cf-border);
+  border-radius: 1.5px;
+  z-index: 10;
+  pointer-events: none;
+}
+
+/* Dot pattern background — radial gradient on a 12px grid */
+.cf-dot-pattern {
+  background-image: radial-gradient(
+    circle,
+    var(--color-cf-border) 0.75px,
+    transparent 0.75px
+  );
+  background-size: 12px 12px;
+}
+
+/* Dashed line dividers */
+.cf-dashed-line-h {
+  height: 1px;
+  background-image: linear-gradient(
+    to right,
+    var(--color-cf-border) 50%,
+    transparent 50%
+  );
+  background-size: 16px 1px;
+  background-repeat: repeat-x;
+}
+.cf-dashed-line-v {
+  width: 1px;
+  background-image: linear-gradient(
+    to bottom,
+    var(--color-cf-border) 50%,
+    transparent 50%
+  );
+  background-size: 1px 16px;
+  background-repeat: repeat-y;
+}
+
+/* Live indicator dot (pulsing) */
+.cf-live-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 9999px;
+  background: var(--color-cf-error);
+  position: relative;
+}
+.cf-live-dot::after {
+  content: "";
+  position: absolute;
+  inset: -4px;
+  border-radius: 9999px;
+  background: var(--color-cf-error);
+  opacity: 0.4;
+  animation: cf-pulse 1.6s ease-in-out infinite;
+}
+@keyframes cf-pulse {
+  0%,
+  100% {
+    transform: scale(0.8);
+    opacity: 0.4;
+  }
+  50% {
+    transform: scale(1.4);
+    opacity: 0;
+  }
+}
+
+/* Float animation for decorative icons */
+@keyframes cf-float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-3px);
+  }
+}
+.cf-float {
+  animation: cf-float 3s ease-in-out infinite;
+}
+
+/* Caret blink for typewriters / chat bubbles */
+@keyframes cf-blink {
+  0%,
+  50% {
+    opacity: 1;
+  }
+  51%,
+  100% {
+    opacity: 0;
+  }
+}
+.cf-caret {
+  animation: cf-blink 1s steps(1, end) infinite;
+}
+
+/* Stream marquee for prompt log */
+@keyframes cf-stream-up {
+  from {
+    transform: translateY(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+/* Hide scrollbars on slide content */
+.cf-no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.cf-no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
 }
 
