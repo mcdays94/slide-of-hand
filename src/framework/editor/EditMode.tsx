@@ -42,6 +42,8 @@ import { useDeckEditor } from "./useDeckEditor";
 import { SlotEditor } from "./SlotEditor";
 import { Filmstrip } from "./Filmstrip";
 import { DeckMetadataPanel } from "./DeckMetadataPanel";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { adminWriteHeaders } from "@/lib/admin-fetch";
 
 export interface EditModeProps {
   slug: string;
@@ -63,6 +65,14 @@ export function EditMode({ slug }: EditModeProps) {
     null,
   );
   const [metaPanelOpen, setMetaPanelOpen] = useState(false);
+
+  // Delete-deck flow (#130). The button only ever surfaces in EditMode,
+  // which is itself only mounted for KV-backed decks (build-time decks
+  // bypass this route — see `src/routes/admin/decks.$slug.tsx`). So there's
+  // no extra source-vs-kv gating to do here.
+  const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const draft = editor.draft;
   const slides = draft?.slides ?? [];
@@ -135,6 +145,49 @@ export function EditMode({ slug }: EditModeProps) {
     editor.reset();
     setSaveStatus({ kind: "idle" });
     setValidationErrors(null);
+  };
+
+  const handleDelete = async () => {
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      const res = await fetch(
+        `/api/admin/decks/${encodeURIComponent(slug)}`,
+        {
+          method: "DELETE",
+          headers: adminWriteHeaders(),
+        },
+      );
+      if (!res.ok) {
+        let message = `Failed to delete deck (${res.status})`;
+        try {
+          const body = (await res.json()) as { error?: string };
+          if (body?.error) message = body.error;
+        } catch {
+          /* not JSON — keep generic message */
+        }
+        setDeleteError(message);
+        setDeleting(false);
+        return;
+      }
+      // Success: close the dialog and navigate back to /admin. The
+      // admin index re-fetches its list on mount, so the deleted deck
+      // is gone the moment the user lands there.
+      setConfirmDeleteOpen(false);
+      setDeleting(false);
+      navigate("/admin");
+    } catch (e) {
+      setDeleteError(
+        e instanceof Error ? e.message : "Network error — try again.",
+      );
+      setDeleting(false);
+    }
+  };
+
+  const cancelDelete = () => {
+    if (deleting) return; // mid-flight; ignore until response lands
+    setConfirmDeleteOpen(false);
+    setDeleteError(null);
   };
 
   const handleAddSlide = (templateId: string) => {
@@ -222,6 +275,20 @@ export function EditMode({ slug }: EditModeProps) {
             className="cf-btn-ghost disabled:opacity-40"
           >
             Reset
+          </button>
+          <button
+            type="button"
+            data-interactive
+            data-testid="edit-delete"
+            onClick={() => {
+              setDeleteError(null);
+              setConfirmDeleteOpen(true);
+            }}
+            className="cf-btn-ghost text-cf-orange hover:text-cf-orange"
+            aria-label="Delete deck"
+            title="Delete deck"
+          >
+            Delete deck
           </button>
           <button
             type="button"
@@ -369,6 +436,34 @@ export function EditMode({ slug }: EditModeProps) {
         meta={draft.meta}
         onUpdateMeta={(updater) => editor.updateMeta(updater)}
         onClose={() => setMetaPanelOpen(false)}
+      />
+
+      {/* ── Delete-deck confirmation (#130) ───────────────────────── */}
+      <ConfirmDialog
+        isOpen={confirmDeleteOpen}
+        title="Delete deck?"
+        body={
+          <>
+            <p>
+              Delete <strong>{draft.meta.title}</strong>? This cannot be
+              undone.
+            </p>
+            {deleteError && (
+              <p
+                role="alert"
+                data-testid="delete-error"
+                className="mt-3 rounded border border-cf-orange/40 bg-cf-orange/10 px-3 py-2 text-xs text-cf-orange"
+              >
+                {deleteError}
+              </p>
+            )}
+          </>
+        }
+        confirmLabel={deleting ? "Deleting…" : "Delete"}
+        cancelLabel="Cancel"
+        destructive
+        onConfirm={handleDelete}
+        onCancel={cancelDelete}
       />
     </main>
   );
