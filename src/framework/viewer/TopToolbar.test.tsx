@@ -253,3 +253,94 @@ describe("<TopToolbar> proximity behaviour", () => {
     expect(bar.className).not.toContain("pointer-events-none");
   });
 });
+
+describe("<TopToolbar> AI agent toggle (#131 phase 1 follow-up)", () => {
+  it("renders the StudioAgentToggle in admin mode when onAgentToggle is provided", () => {
+    renderInRouter(
+      <PresenterModeProvider enabled={true}>
+        <TopToolbar
+          slug="hello"
+          currentSlide={0}
+          currentPhase={0}
+          agentOpen={false}
+          onAgentToggle={() => {}}
+        />
+      </PresenterModeProvider>,
+    );
+    expect(screen.getByTestId("studio-agent-toggle")).toBeTruthy();
+  });
+
+  it("does NOT render the toggle in admin mode when onAgentToggle is omitted", () => {
+    renderInRouter(
+      <PresenterModeProvider enabled={true}>
+        <TopToolbar slug="hello" currentSlide={0} currentPhase={0} />
+      </PresenterModeProvider>,
+    );
+    expect(screen.queryByTestId("studio-agent-toggle")).toBeNull();
+  });
+
+  it("does NOT render the toggle in public mode (presenter mode disabled)", () => {
+    renderInRouter(
+      <PresenterModeProvider enabled={false}>
+        <TopToolbar
+          slug="hello"
+          currentSlide={0}
+          currentPhase={0}
+          agentOpen={false}
+          onAgentToggle={() => {}}
+        />
+      </PresenterModeProvider>,
+    );
+    expect(screen.queryByTestId("studio-agent-toggle")).toBeNull();
+  });
+
+  it("clicking the toggle invokes onAgentToggle", () => {
+    const onAgentToggle = vi.fn();
+    renderInRouter(
+      <PresenterModeProvider enabled={true}>
+        <TopToolbar
+          slug="hello"
+          currentSlide={0}
+          currentPhase={0}
+          agentOpen={false}
+          onAgentToggle={onAgentToggle}
+        />
+      </PresenterModeProvider>,
+    );
+    fireEvent.click(screen.getByTestId("studio-agent-toggle"));
+    expect(onAgentToggle).toHaveBeenCalledTimes(1);
+  });
+
+  it("reflects the open state via aria-expanded", () => {
+    const { rerender } = renderInRouter(
+      <PresenterModeProvider enabled={true}>
+        <TopToolbar
+          slug="hello"
+          currentSlide={0}
+          currentPhase={0}
+          agentOpen={false}
+          onAgentToggle={() => {}}
+        />
+      </PresenterModeProvider>,
+    );
+    expect(
+      screen.getByTestId("studio-agent-toggle").getAttribute("aria-expanded"),
+    ).toBe("false");
+    rerender(
+      <MemoryRouter>
+        <PresenterModeProvider enabled={true}>
+          <TopToolbar
+            slug="hello"
+            currentSlide={0}
+            currentPhase={0}
+            agentOpen={true}
+            onAgentToggle={() => {}}
+          />
+        </PresenterModeProvider>
+      </MemoryRouter>,
+    );
+    expect(
+      screen.getByTestId("studio-agent-toggle").getAttribute("aria-expanded"),
+    ).toBe("true");
+  });
+});
