@@ -2,7 +2,8 @@
  * Tests for `/decks/<slug>` — the public deck route.
  *
  * Three resolution paths (Slice 5 / #61):
- *   1. Build-time hit → render the existing source-based `<Deck>`.
+ *   1. Build-time hit → lazy-load the deck's chunk and render the
+ *      existing source-based `<Deck>` (issue #105).
  *   2. Build-time miss + KV hit → render `<DataDeck>` (which wraps `<Deck>`).
  *   3. Both miss → 404 page.
  *
@@ -115,18 +116,36 @@ async function renderRouteAt(slug: string, queryString = "") {
   );
 }
 
+/**
+ * Build a stubbed registry module that emulates the lazy build-time deck
+ * API. `buildTimeDecks` is a slug → Deck map; lookups simulate
+ * `hasBuildTimeDeck` and `getDeckResource` as a synchronously-resolved
+ * resource (no real chunk fetching in tests).
+ */
+function makeRegistryMock(buildTimeDecks: Record<string, Deck>) {
+  return async () => {
+    const actual = await vi.importActual<
+      typeof import("@/lib/decks-registry")
+    >("@/lib/decks-registry");
+    return {
+      ...actual,
+      hasBuildTimeDeck: (slug: string) => Boolean(buildTimeDecks[slug]),
+      getDeckResource: (slug: string) => ({
+        // Resource read returns the Deck synchronously — there is no
+        // pending state in tests, so Suspense never throws.
+        read: () => buildTimeDecks[slug],
+      }),
+      getDeckMetaBySlug: (slug: string) => buildTimeDecks[slug]?.meta,
+    };
+  };
+}
+
 describe("/decks/<slug> — KV fallback (Slice 5)", () => {
   it("renders source <Deck> when slug hits the build-time registry", async () => {
-    vi.doMock("@/lib/decks-registry", async () => {
-      const actual = await vi.importActual<
-        typeof import("@/lib/decks-registry")
-      >("@/lib/decks-registry");
-      return {
-        ...actual,
-        getDeckBySlug: (slug: string) =>
-          slug === "source-deck" ? sourceDeck : undefined,
-      };
-    });
+    vi.doMock(
+      "@/lib/decks-registry",
+      makeRegistryMock({ "source-deck": sourceDeck }),
+    );
 
     await renderRouteAt("source-deck");
     expect(screen.getByTestId("source-deck-stub")).toBeTruthy();
@@ -141,15 +160,7 @@ describe("/decks/<slug> — KV fallback (Slice 5)", () => {
       "fetch",
       mockFetchSequence([{ ok: true, body: dataDeckRecord }]),
     );
-    vi.doMock("@/lib/decks-registry", async () => {
-      const actual = await vi.importActual<
-        typeof import("@/lib/decks-registry")
-      >("@/lib/decks-registry");
-      return {
-        ...actual,
-        getDeckBySlug: () => undefined,
-      };
-    });
+    vi.doMock("@/lib/decks-registry", makeRegistryMock({}));
 
     await renderRouteAt("kv-deck");
     await waitFor(() =>
@@ -166,15 +177,7 @@ describe("/decks/<slug> — KV fallback (Slice 5)", () => {
       "fetch",
       mockFetchSequence([{ ok: false, body: { error: "not found" } }]),
     );
-    vi.doMock("@/lib/decks-registry", async () => {
-      const actual = await vi.importActual<
-        typeof import("@/lib/decks-registry")
-      >("@/lib/decks-registry");
-      return {
-        ...actual,
-        getDeckBySlug: () => undefined,
-      };
-    });
+    vi.doMock("@/lib/decks-registry", makeRegistryMock({}));
 
     await renderRouteAt("missing-deck");
     await waitFor(() =>
@@ -191,15 +194,7 @@ describe("/decks/<slug> — KV fallback (Slice 5)", () => {
       "fetch",
       mockFetchSequence([{ ok: false, body: { error: "not found" } }]),
     );
-    vi.doMock("@/lib/decks-registry", async () => {
-      const actual = await vi.importActual<
-        typeof import("@/lib/decks-registry")
-      >("@/lib/decks-registry");
-      return {
-        ...actual,
-        getDeckBySlug: () => undefined,
-      };
-    });
+    vi.doMock("@/lib/decks-registry", makeRegistryMock({}));
 
     await renderRouteAt("private-only");
     await waitFor(() =>
@@ -213,15 +208,7 @@ describe("/decks/<slug> — KV fallback (Slice 5)", () => {
       "fetch",
       mockFetchSequence([{ ok: true, body: dataDeckRecord }]),
     );
-    vi.doMock("@/lib/decks-registry", async () => {
-      const actual = await vi.importActual<
-        typeof import("@/lib/decks-registry")
-      >("@/lib/decks-registry");
-      return {
-        ...actual,
-        getDeckBySlug: () => undefined,
-      };
-    });
+    vi.doMock("@/lib/decks-registry", makeRegistryMock({}));
 
     await renderRouteAt("kv-deck", "?presenter=1");
     await waitFor(() =>
@@ -238,15 +225,10 @@ describe("/decks/<slug> — KV fallback (Slice 5)", () => {
   it("does not fire a KV fetch when the build-time registry has the slug", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
-    vi.doMock("@/lib/decks-registry", async () => {
-      const actual = await vi.importActual<
-        typeof import("@/lib/decks-registry")
-      >("@/lib/decks-registry");
-      return {
-        ...actual,
-        getDeckBySlug: () => sourceDeck,
-      };
-    });
+    vi.doMock(
+      "@/lib/decks-registry",
+      makeRegistryMock({ "source-deck": sourceDeck }),
+    );
 
     await renderRouteAt("source-deck");
     // Hook still mounts but with no slug-shaped fetch — we assert the

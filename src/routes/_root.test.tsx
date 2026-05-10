@@ -60,17 +60,19 @@ async function renderRoot(decks: Deck[], kvSummaries: DataDeckSummary[] = []) {
     const actual = await vi.importActual<
       typeof import("@/lib/decks-registry")
     >("@/lib/decks-registry");
-    // We override `useDataDeckList` rather than `getPublicDecks` because
-    // the hook in the actual module would otherwise call its own bound
-    // reference of `getPublicDecks` (vi.doMock can't intercept same-module
-    // calls). Delegate the merge logic to the real `mergeDeckLists` so we
-    // still exercise the precedence + sort code path.
+    // We override `useDataDeckList` rather than `getPublicDeckMetas`
+    // because the hook in the actual module would otherwise call its own
+    // bound reference of `getPublicDeckMetas` (vi.doMock can't intercept
+    // same-module calls). Delegate the merge logic to the real
+    // `mergeDeckLists` so we still exercise the precedence + sort code path.
     return {
       ...actual,
-      getPublicDecks: () => decks,
-      getAllDecks: () => decks,
-      getDeckBySlug: (slug: string) =>
-        decks.find((d) => d.meta.slug === slug),
+      getPublicDeckMetas: () => decks.map((d) => d.meta),
+      getAllDeckMetas: () => decks.map((d) => d.meta),
+      getDeckMetaBySlug: (slug: string) =>
+        decks.find((d) => d.meta.slug === slug)?.meta,
+      hasBuildTimeDeck: (slug: string) =>
+        decks.some((d) => d.meta.slug === slug),
       useDataDeckList: () => ({
         decks: actual.mergeDeckLists(
           decks.map((d) => d.meta),

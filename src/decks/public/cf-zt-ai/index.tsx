@@ -8,6 +8,7 @@
  * Source repo: gitlab.cfdata.org/mdias/cf-zt-ai-slides
  */
 import type { Deck } from "@/framework/viewer/types";
+import { meta } from "./meta";
 
 import { titleSlide } from "./slides/01-title";
 import { aiMomentSlide } from "./slides/02-the-ai-moment";
@@ -31,16 +32,7 @@ import { recapSlide } from "./slides/recap";
 import { thanksSlide } from "./slides/thanks";
 
 const deck: Deck = {
-  meta: {
-    slug: "cf-zt-ai",
-    title: "Cloudflare Zero Trust × AI",
-    description:
-      "An animated, interactive walk-through of Cloudflare's Zero Trust story for AI — discover, govern, protect, observe, empower.",
-    date: "2026-05-10",
-    author: "Miguel Caetano Dias",
-    tags: ["zero-trust", "ai"],
-    runtimeMinutes: 18,
-  },
+  meta,
   slides: [
     titleSlide,
     aiMomentSlide,

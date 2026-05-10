@@ -14,11 +14,25 @@
  *      this module fetch them at runtime. KV decks created via the Slice
  *      6+ editor land here without any redeploy.
  *
+ * Lazy-loading split (issue #105):
+ *   The registry does TWO globs per visibility:
+ *
+ *     - `meta.ts` is loaded **eagerly**. The deck index card grid + admin
+ *       list need slug/title/date/cover synchronously on app boot.
+ *     - `index.tsx` is loaded **lazily**. The full `Deck` (with slides)
+ *       is only fetched when someone visits `/decks/<slug>`. Heavy
+ *       per-deck dependencies (Three.js, topojson, react-three-fiber,
+ *       …) end up in their own chunks and never enter the main bundle.
+ *
+ *   `loadDeckBySlug(slug)` returns a `Promise<Deck | undefined>` mirroring
+ *   the runtime ergonomics of `useDataDeck` for KV-backed decks. The route
+ *   wraps the resolution in a `<Suspense>` boundary.
+ *
  * Public vs private:
  *   - Public source decks ship in the deployed bundle and appear at `/`.
  *   - Private source decks are gitignored and only present in dev. The
- *     admin viewer resolves both via `getAllDecks()` / `getAllDeckEntries()`;
- *     the public index page uses `getPublicDecks()`.
+ *     admin viewer resolves both via `getAllDeckMetas()` /
+ *     `getAllDeckEntries()`; the public index page uses `getPublicDeckMetas()`.
  *   - KV decks carry their own `visibility` flag. The `/api/decks` listing
  *     only ever returns `public` summaries (the Worker filters on the
  *     server side); this module also defensively re-filters on the client
@@ -40,15 +54,23 @@ import type { Deck, DeckMeta } from "@/framework/viewer/types";
 import type { DataDeck, DataDeckMeta, Visibility } from "./deck-record";
 import { adminWriteHeaders } from "./admin-fetch";
 
-type GlobModule = { default: Deck };
-type GlobResult = Record<string, GlobModule>;
+type MetaModule = { meta: DeckMeta };
+type MetaGlobResult = Record<string, MetaModule>;
+type DeckLoader = () => Promise<{ default: Deck }>;
+type LoaderGlobResult = Record<string, DeckLoader>;
 
-const PATH_RE = /\/decks\/(public|private)\/([^/]+)\/index\.tsx?$/;
+const META_PATH_RE = /\/decks\/(public|private)\/([^/]+)\/meta\.ts$/;
+const INDEX_PATH_RE = /\/decks\/(public|private)\/([^/]+)\/index\.tsx?$/;
 
 export interface RegistryEntry {
   visibility: "public" | "private";
   folder: string;
-  deck: Deck;
+  /**
+   * Eagerly-loaded deck metadata. Used by the index card grid + admin list.
+   * Slides are NOT in this object — they're loaded lazily on demand via
+   * `loadDeckBySlug(slug)`.
+   */
+  meta: DeckMeta;
   /**
    * Where the deck came from. Build-time / source decks ("source") live
    * under `src/decks/<visibility>/<slug>/index.tsx`; KV-backed decks
@@ -60,7 +82,8 @@ export interface RegistryEntry {
 }
 
 /**
- * Pure transformation from a glob result into a sorted, validated entry list.
+ * Pure transformation from a meta-glob result into a sorted, validated
+ * entry list.
  *
  * Exported so tests can pass synthetic glob results without spinning up Vite.
  *
@@ -69,90 +92,281 @@ export interface RegistryEntry {
  * admin route can list every locally-available deck.)
  */
 export function buildRegistry(
-  modules: GlobResult,
+  modules: MetaGlobResult,
   prod = false,
 ): RegistryEntry[] {
   const entries: RegistryEntry[] = [];
   for (const [path, mod] of Object.entries(modules)) {
-    const match = PATH_RE.exec(path);
+    const match = META_PATH_RE.exec(path);
     if (!match) continue;
     const [, visibility, folder] = match;
     if (prod && visibility === "private") continue;
-    const deck = mod.default;
-    if (!deck || !deck.meta || !Array.isArray(deck.slides)) {
+    const meta = mod.meta;
+    if (!meta || typeof meta.slug !== "string" || typeof meta.title !== "string") {
       throw new Error(
-        `[decks-registry] ${path} does not default-export a Deck (expected { meta, slides }).`,
+        `[decks-registry] ${path} does not export a valid \`meta\` (expected DeckMeta with slug + title).`,
       );
     }
-    if (deck.meta.slug !== folder) {
+    if (meta.slug !== folder) {
       throw new Error(
-        `[decks-registry] Slug mismatch in ${path}: meta.slug="${deck.meta.slug}" but folder is "${folder}". They MUST match.`,
+        `[decks-registry] Slug mismatch in ${path}: meta.slug="${meta.slug}" but folder is "${folder}". They MUST match.`,
       );
     }
     entries.push({
       visibility: visibility as "public" | "private",
       folder,
-      deck,
+      meta,
     });
   }
   // Sort by date descending (newest first); fall back to slug for stable order.
   entries.sort((a, b) => {
-    const da = a.deck.meta.date;
-    const db = b.deck.meta.date;
-    if (da === db) return a.deck.meta.slug.localeCompare(b.deck.meta.slug);
+    const da = a.meta.date;
+    const db = b.meta.date;
+    if (da === db) return a.meta.slug.localeCompare(b.meta.slug);
     return db.localeCompare(da);
   });
   return entries;
 }
 
 /**
- * Two separate globs — each is a literal-string call (Vite's static analyser
- * requires that). The private glob is gated behind `import.meta.env.PROD`,
- * which Vite replaces with the literal `true` / `false` at build time. With
- * `false` (production), the ternary statically resolves to `{}` and Vite's
+ * Pure helper that builds a slug → loader map from a lazy-glob result.
+ * Exported so tests can assert the loader map's shape (and confirm the
+ * registry isn't accidentally pulling in the heavy index files eagerly).
+ */
+export function buildLoaderMap(
+  modules: LoaderGlobResult,
+  prod = false,
+): Map<string, DeckLoader> {
+  const map = new Map<string, DeckLoader>();
+  for (const [path, loader] of Object.entries(modules)) {
+    const match = INDEX_PATH_RE.exec(path);
+    if (!match) continue;
+    const [, visibility, folder] = match;
+    if (prod && visibility === "private") continue;
+    map.set(folder, loader);
+  }
+  return map;
+}
+
+/**
+ * Eager globs hit ONLY each deck's `meta.ts` — a tiny TypeScript file
+ * exporting the `DeckMeta` literal. The cost on app boot is therefore
+ * ~4 × O(string-literal) per deck, regardless of how heavy the slides are.
+ *
+ * Lazy globs hit each deck's `index.tsx`. Vite turns these into separate
+ * chunks (one per deck), each containing the deck's slides + components +
+ * any heavy libraries that live under the deck folder. The chunks are
+ * fetched only when `loadDeckBySlug(slug)` is called — i.e. when a
+ * visitor actually navigates to `/decks/<slug>`.
+ *
+ * The private globs are gated behind `import.meta.env.PROD`, which Vite
+ * replaces with the literal `true` / `false` at build time. With `true`
+ * (production), the ternary statically resolves to `{}` and Vite's
  * dead-code elimination drops every `@/decks/private/*` import from the
- * bundle. In dev mode `false` is the value, so `import.meta.env.PROD` is
- * `false`, both globs run, and the registry sees public + private decks.
+ * bundle.
  *
  * (`import.meta.env.PROD` is `true` only inside `vite build`, never under
  * `vite` / `vitest`.)
  */
-const publicModules = import.meta.glob(
-  "@/decks/public/*/index.tsx",
+const publicMetaModules = import.meta.glob<MetaModule>(
+  "@/decks/public/*/meta.ts",
   { eager: true },
-) as GlobResult;
+);
 
-const privateModules = import.meta.env.PROD
-  ? ({} as GlobResult)
-  : (import.meta.glob("@/decks/private/*/index.tsx", {
+const privateMetaModules = import.meta.env.PROD
+  ? ({} as MetaGlobResult)
+  : (import.meta.glob<MetaModule>("@/decks/private/*/meta.ts", {
       eager: true,
-    }) as GlobResult);
+    }) as MetaGlobResult);
 
-const modules: GlobResult = { ...publicModules, ...privateModules };
+const publicDeckLoaders = import.meta.glob<{ default: Deck }>(
+  "@/decks/public/*/index.tsx",
+);
 
-const registry = buildRegistry(modules, import.meta.env.PROD);
+const privateDeckLoaders = import.meta.env.PROD
+  ? ({} as LoaderGlobResult)
+  : (import.meta.glob<{ default: Deck }>(
+      "@/decks/private/*/index.tsx",
+    ) as LoaderGlobResult);
 
-/** Every discovered deck — public + private in dev; public only in prod. */
-export function getAllDecks(): Deck[] {
-  return registry.map((e) => e.deck);
+const metaModules: MetaGlobResult = {
+  ...publicMetaModules,
+  ...privateMetaModules,
+};
+
+const deckLoaders: LoaderGlobResult = {
+  ...publicDeckLoaders,
+  ...privateDeckLoaders,
+};
+
+const registry = buildRegistry(metaModules, import.meta.env.PROD);
+const loaderMap = buildLoaderMap(deckLoaders, import.meta.env.PROD);
+
+// ──────────────────────────────────────────────────────────────────────────
+// Eager API — `DeckMeta`-only views over the registry. These are the
+// only build-time-deck APIs that consumers should reach for at app boot.
+// ──────────────────────────────────────────────────────────────────────────
+
+/** Every discovered deck's meta — public + private in dev; public only in prod. */
+export function getAllDeckMetas(): DeckMeta[] {
+  return registry.map((e) => e.meta);
 }
 
 /**
- * Every discovered registry entry (with visibility info). Use for the admin
- * deck list, which renders a visibility badge per row.
+ * Every discovered registry entry (with visibility + meta). Use for the
+ * admin deck list, which renders a visibility badge per row.
  */
 export function getAllDeckEntries(): RegistryEntry[] {
   return registry;
 }
 
-/** Public decks only. Use for the public index page. */
-export function getPublicDecks(): Deck[] {
-  return registry.filter((e) => e.visibility === "public").map((e) => e.deck);
+/** Public deck metas only. Use for the public index page. */
+export function getPublicDeckMetas(): DeckMeta[] {
+  return registry.filter((e) => e.visibility === "public").map((e) => e.meta);
 }
 
-/** Resolve a single deck by slug (public or private in dev; public only in prod). */
+/** Resolve a single deck's meta by slug (public or private in dev; public only in prod). */
+export function getDeckMetaBySlug(slug: string): DeckMeta | undefined {
+  return registry.find((e) => e.meta.slug === slug)?.meta;
+}
+
+/**
+ * Returns true iff the build-time registry has a deck with this slug.
+ * Use this on the deck route to decide whether to lazy-load via
+ * `loadDeckBySlug(slug)` or fall through to the KV fetch.
+ */
+export function hasBuildTimeDeck(slug: string): boolean {
+  return registry.some((e) => e.meta.slug === slug);
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Lazy API — `Promise<Deck>`. The deck route awaits this; everything else
+// should stick to the meta APIs above.
+// ──────────────────────────────────────────────────────────────────────────
+
+/**
+ * Lazy-load a build-time deck by slug. Returns `undefined` (synchronously
+ * resolved) when the slug isn't in the build-time registry; otherwise
+ * returns a Promise that resolves with the full `Deck` (slides + meta)
+ * once the deck's chunk has been fetched.
+ *
+ * Pair with `useDeckResource(slug)` + a `<Suspense>` boundary at the call
+ * site — this keeps the TTFP fast and means the visitor only pays for the
+ * deck they're actually viewing.
+ *
+ * If the loader fails (network error, missing chunk, etc.) the promise
+ * rejects. The caller is responsible for handling the error — typically
+ * by showing the same 404 page used for unknown slugs.
+ */
+export async function loadDeckBySlug(slug: string): Promise<Deck | undefined> {
+  const loader = loaderMap.get(slug);
+  if (!loader) return undefined;
+  const mod = await loader();
+  const deck = mod.default;
+  if (!deck || !deck.meta || !Array.isArray(deck.slides)) {
+    throw new Error(
+      `[decks-registry] Deck "${slug}" loaded but did not default-export a Deck (expected { meta, slides }).`,
+    );
+  }
+  return deck;
+}
+
+/**
+ * Suspense-compatible resource. Throws the in-flight promise on the first
+ * `read()` so a `<Suspense>` boundary unwinds; resolves synchronously on
+ * subsequent reads.
+ */
+export type SuspenseResource<T> = { read(): T };
+
+function wrapPromise<T>(promise: Promise<T>): SuspenseResource<T> {
+  let status: "pending" | "success" | "error" = "pending";
+  let result: T;
+  let error: unknown;
+  const suspender = promise.then(
+    (value) => {
+      status = "success";
+      result = value;
+    },
+    (err) => {
+      status = "error";
+      error = err;
+    },
+  );
+  return {
+    read() {
+      if (status === "pending") throw suspender;
+      if (status === "error") throw error;
+      return result;
+    },
+  };
+}
+
+/**
+ * Per-slug Suspense resource cache. Build-time decks rarely change in a
+ * single browsing session, so reusing the same resource means navigating
+ * away and back to a deck doesn't re-trigger the loading splash. Lazy
+ * chunks are themselves cached by the browser, so "refetching" a resolved
+ * deck is effectively free anyway.
+ *
+ * Exported only so tests can clear it between cases.
+ */
+const deckResources = new Map<string, SuspenseResource<Deck | undefined>>();
+
+/**
+ * Get a Suspense-compatible resource for the build-time deck at `slug`.
+ * Call `resource.read()` inside a component wrapped in `<Suspense>`; the
+ * first call throws the in-flight promise, subsequent calls return the
+ * resolved `Deck` (or `undefined` if no build-time deck has that slug).
+ *
+ * Resources are memoised per-slug for the lifetime of the module — a
+ * single browsing session never re-fetches the same deck.
+ */
+export function getDeckResource(
+  slug: string,
+): SuspenseResource<Deck | undefined> {
+  let resource = deckResources.get(slug);
+  if (!resource) {
+    resource = wrapPromise(loadDeckBySlug(slug));
+    deckResources.set(slug, resource);
+  }
+  return resource;
+}
+
+/** Test-only: clear the per-slug Suspense cache. */
+export function __resetDeckResourceCache(): void {
+  deckResources.clear();
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Backwards-compatibility shims.
+//
+// Older call sites — `getPublicDecks()`, `getAllDecks()`, `getDeckBySlug()` —
+// returned `Deck[]` / `Deck`. Slides are now lazy, so a fully synchronous
+// `Deck` is no longer available. These shims return shaped objects whose
+// `meta` is real but `slides` is an empty array, so any consumer that only
+// reads `.meta.X` keeps working.
+//
+// Any consumer that still touches `.slides` on a build-time deck must
+// migrate to `loadDeckBySlug(slug)` and a `<Suspense>` boundary.
+// ──────────────────────────────────────────────────────────────────────────
+
+/** @deprecated use `getAllDeckMetas()`; slides are no longer eagerly available. */
+export function getAllDecks(): Deck[] {
+  return registry.map((e) => ({ meta: e.meta, slides: [] }));
+}
+
+/** @deprecated use `getPublicDeckMetas()`; slides are no longer eagerly available. */
+export function getPublicDecks(): Deck[] {
+  return registry
+    .filter((e) => e.visibility === "public")
+    .map((e) => ({ meta: e.meta, slides: [] }));
+}
+
+/** @deprecated use `getDeckMetaBySlug()`; slides are no longer eagerly available. */
 export function getDeckBySlug(slug: string): Deck | undefined {
-  return registry.find((e) => e.deck.meta.slug === slug)?.deck;
+  const meta = getDeckMetaBySlug(slug);
+  if (!meta) return undefined;
+  return { meta, slides: [] };
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -288,7 +502,7 @@ export function mergeAdminDeckLists(
   buildTime: RegistryEntry[],
   kv: DataDeckSummary[],
 ): RegistryEntry[] {
-  const buildTimeSlugs = new Set(buildTime.map((e) => e.deck.meta.slug));
+  const buildTimeSlugs = new Set(buildTime.map((e) => e.meta.slug));
   // Tag every build-time entry with `source: "source"` so consumers can
   // distinguish KV rows even when the entry survived a no-op merge.
   const sourceEntries: RegistryEntry[] = buildTime.map((e) => ({
@@ -300,15 +514,15 @@ export function mergeAdminDeckLists(
     .map((s) => ({
       visibility: s.visibility,
       folder: s.slug,
-      deck: { meta: summaryToDeckMeta(s), slides: [] },
+      meta: summaryToDeckMeta(s),
       source: "kv" as const,
     }));
 
   const combined = [...sourceEntries, ...kvEntries];
   combined.sort((a, b) => {
-    const da = a.deck.meta.date;
-    const db = b.deck.meta.date;
-    if (da === db) return a.deck.meta.slug.localeCompare(b.deck.meta.slug);
+    const da = a.meta.date;
+    const db = b.meta.date;
+    if (da === db) return a.meta.slug.localeCompare(b.meta.slug);
     return db.localeCompare(da);
   });
   return combined;
@@ -369,8 +583,8 @@ export function useDataDeckList(): UseDataDeckListResult {
   }, []);
 
   // Build-time list is module-load-stable; we read it on every render so
-  // `getPublicDecks()` can be re-mocked in tests without a remount.
-  const buildTimeMetas = getPublicDecks().map((d) => d.meta);
+  // `getPublicDeckMetas()` can be re-mocked in tests without a remount.
+  const buildTimeMetas = getPublicDeckMetas();
   const decks = mergeDeckLists(buildTimeMetas, kv);
 
   return { decks, isLoading };

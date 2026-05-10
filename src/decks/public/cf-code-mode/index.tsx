@@ -16,6 +16,7 @@
  * AI_GATEWAY_TOKEN) and the corresponding routes from the source repo.
  */
 import type { Deck } from "@/framework/viewer/types";
+import { meta } from "./meta";
 
 import { titleSlide } from "./slides/01-title";
 import { hookSlide } from "./slides/02-hook";
@@ -44,17 +45,7 @@ import { recapSlide } from "./slides/15-recap";
 import { closingSlide } from "./slides/16-try-it-now";
 
 const deck: Deck = {
-  meta: {
-    slug: "cf-code-mode",
-    title: "Cloudflare Code Mode & Dynamic Workers",
-    description:
-      "DTX Manchester 2026 booth deck. Interactive slides with live MCP-vs-Code-Mode comparison powered by Workers AI.",
-    date: "2026-05-06",
-    author: "Miguel Caetano Dias",
-    event: "DTX Manchester 2026",
-    tags: ["code-mode", "mcp", "ai"],
-    runtimeMinutes: 20,
-  },
+  meta,
   slides: [
     titleSlide,
     hookSlide,

@@ -7,6 +7,7 @@
  */
 
 import type { Deck } from "@/framework/viewer/types";
+import { meta } from "./meta";
 import { coverSlide } from "./01-cover";
 import { whatIsThisSlide } from "./02-what-is-this";
 import { phaseDemoSlide } from "./03-phase-demo";
@@ -14,16 +15,7 @@ import { sectionSlide } from "./04-section";
 import { thanksSlide } from "./05-thanks";
 
 const deck: Deck = {
-  meta: {
-    slug: "hello",
-    title: "Hello, Slide of Hand",
-    description:
-      "A short demo of the Slide of Hand framework — phase reveals, layouts, presenter affordances.",
-    date: "2026-05-01",
-    author: "Miguel Caetano Dias",
-    runtimeMinutes: 2,
-    tags: ["demo", "framework"],
-  },
+  meta,
   slides: [
     coverSlide,
     whatIsThisSlide,

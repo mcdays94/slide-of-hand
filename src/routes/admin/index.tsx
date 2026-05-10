@@ -70,15 +70,15 @@ interface AdminDeckRowProps {
  * used by `<DeckCard>` and `<OverviewTile>`.
  */
 function AdminDeckRow({ entry, ideUrl, showIdeButton }: AdminDeckRowProps) {
-  const { deck, visibility } = entry;
-  const heroSrc = deck.meta.cover ?? `/thumbnails/${deck.meta.slug}/01.png`;
+  const { meta, visibility } = entry;
+  const heroSrc = meta.cover ?? `/thumbnails/${meta.slug}/01.png`;
   const [imageFailed, setImageFailed] = useState(false);
   const showHero = !imageFailed;
 
   return (
     <li className="relative">
       <Link
-        to={`/admin/decks/${deck.meta.slug}`}
+        to={`/admin/decks/${meta.slug}`}
         className="cf-card group block overflow-hidden text-left no-underline"
       >
         {showHero && (
@@ -95,10 +95,8 @@ function AdminDeckRow({ entry, ideUrl, showIdeButton }: AdminDeckRowProps) {
         <div className="p-6">
           <div className="mb-3 flex items-center justify-between">
             <p className="cf-tag">
-              {deck.meta.date}
-              {deck.meta.runtimeMinutes
-                ? ` · ${deck.meta.runtimeMinutes} min`
-                : ""}
+              {meta.date}
+              {meta.runtimeMinutes ? ` · ${meta.runtimeMinutes} min` : ""}
             </p>
             <span
               data-visibility={visibility}
@@ -112,17 +110,15 @@ function AdminDeckRow({ entry, ideUrl, showIdeButton }: AdminDeckRowProps) {
             </span>
           </div>
           <p className="mb-1 text-xl font-medium tracking-[-0.025em] text-cf-text">
-            {deck.meta.title}
+            {meta.title}
           </p>
-          {deck.meta.description && (
-            <p className="text-sm text-cf-text-muted">
-              {deck.meta.description}
-            </p>
+          {meta.description && (
+            <p className="text-sm text-cf-text-muted">{meta.description}</p>
           )}
-          {deck.meta.author && (
+          {meta.author && (
             <p className="mt-3 text-xs text-cf-text-subtle">
-              {deck.meta.author}
-              {deck.meta.event ? ` · ${deck.meta.event}` : ""}
+              {meta.author}
+              {meta.event ? ` · ${meta.event}` : ""}
             </p>
           )}
         </div>
@@ -131,8 +127,8 @@ function AdminDeckRow({ entry, ideUrl, showIdeButton }: AdminDeckRowProps) {
         <a
           href={ideUrl}
           onClick={(e) => e.stopPropagation()}
-          aria-label={`Open ${deck.meta.slug} in IDE`}
-          title={`Open ${deck.meta.slug} in IDE`}
+          aria-label={`Open ${meta.slug} in IDE`}
+          title={`Open ${meta.slug} in IDE`}
           data-testid="open-in-ide"
           className="absolute bottom-3 right-3 inline-flex h-7 w-7 items-center justify-center rounded border border-cf-border bg-cf-bg-100 text-cf-text-muted no-underline transition-colors hover:border-cf-text hover:text-cf-text"
         >
@@ -195,12 +191,12 @@ export default function AdminIndex() {
               ? vscodeUrlForDeckSource(
                   projectRoot,
                   entry.visibility,
-                  entry.deck.meta.slug,
+                  entry.meta.slug,
                 )
               : "";
             return (
               <AdminDeckRow
-                key={entry.deck.meta.slug}
+                key={entry.meta.slug}
                 entry={entry}
                 ideUrl={ideUrl}
                 showIdeButton={rowShowIdeButton}

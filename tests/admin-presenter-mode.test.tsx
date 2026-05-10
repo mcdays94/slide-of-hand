@@ -21,18 +21,30 @@ vi.mock("@/framework/viewer/Deck", () => ({
   },
 }));
 
+const stubDeck = {
+  meta: {
+    slug: "stub",
+    title: "Stub",
+    description: "Stub deck",
+    date: "2026-05-01",
+  },
+  slides: [{ id: "title", render: () => null }],
+};
+
 vi.mock("@/lib/decks-registry", () => ({
-  getDeckBySlug: () => ({
-    meta: {
-      slug: "stub",
-      title: "Stub",
-      description: "Stub deck",
-      date: "2026-05-01",
-    },
-    slides: [{ id: "title", render: () => null }],
-  }),
+  // Lazy build-time deck API (issue #105). The route reads
+  // `hasBuildTimeDeck(slug)` first, then suspends on `getDeckResource(slug)`.
+  // Tests stub both with the same `stub` deck so the route renders.
+  hasBuildTimeDeck: (slug: string) => slug === "stub",
+  getDeckResource: () => ({ read: () => stubDeck }),
+  getDeckMetaBySlug: (slug: string) =>
+    slug === "stub" ? stubDeck.meta : undefined,
+  // Backwards-compat shim still used by some legacy call sites.
+  getDeckBySlug: (slug: string) => (slug === "stub" ? stubDeck : undefined),
   getAllDecks: () => [],
+  getAllDeckMetas: () => [],
   getPublicDecks: () => [],
+  getPublicDeckMetas: () => [],
   getAllDeckEntries: () => [],
   // Slice 5 (#61): the route reads the KV hook even when the build-time
   // registry has the slug (the hook short-circuits on empty slug). The
