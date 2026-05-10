@@ -474,38 +474,49 @@ export function EditMode({ slug }: EditModeProps) {
  * template. The "(none)" placeholder is a real `<option>` because
  * a `<select>` always emits a value; we treat the empty value as a
  * no-op in `handleAddSlide`.
+ *
+ * Authoring stance (issue #132): the platform is template-based, not a
+ * free-form canvas. Typed slots keep decks easy for AI agents to drive
+ * — same shape, same edits. If a template doesn't fit, the right move
+ * is to add a new template (or ask the in-Studio AI), not to build a
+ * free-form editor.
  */
 function AddSlidePicker({ onAdd }: { onAdd: (templateId: string) => void }) {
   const templates = templateRegistry.list();
   return (
-    <div className="flex items-center gap-2">
-      <label
-        htmlFor="add-slide-template"
-        className="font-mono text-[10px] uppercase tracking-[0.25em] text-cf-text-muted"
-      >
-        Add slide
-      </label>
-      <select
-        id="add-slide-template"
-        data-interactive
-        data-testid="add-slide-template"
-        defaultValue=""
-        onChange={(e) => {
-          const value = e.target.value;
-          if (!value) return;
-          onAdd(value);
-          // Reset the select so the same template can be added again.
-          e.target.value = "";
-        }}
-        className="rounded border border-cf-border bg-cf-bg-100 px-2 py-1 text-xs"
-      >
-        <option value="">Pick a template…</option>
-        {templates.map((t) => (
-          <option key={t.id} value={t.id}>
-            {t.label}
-          </option>
-        ))}
-      </select>
+    <div className="flex flex-col items-end gap-1">
+      <div className="flex items-center gap-2">
+        <label
+          htmlFor="add-slide-template"
+          className="font-mono text-[10px] uppercase tracking-[0.25em] text-cf-text-muted"
+        >
+          Add slide
+        </label>
+        <select
+          id="add-slide-template"
+          data-interactive
+          data-testid="add-slide-template"
+          defaultValue=""
+          onChange={(e) => {
+            const value = e.target.value;
+            if (!value) return;
+            onAdd(value);
+            // Reset the select so the same template can be added again.
+            e.target.value = "";
+          }}
+          className="rounded border border-cf-border bg-cf-bg-100 px-2 py-1 text-xs"
+        >
+          <option value="">Pick a template…</option>
+          {templates.map((t) => (
+            <option key={t.id} value={t.id}>
+              {t.label}
+            </option>
+          ))}
+        </select>
+      </div>
+      <p className="max-w-[16rem] text-right text-[10px] leading-snug text-cf-text-subtle">
+        Slides come from typed templates — agent-friendly by design.
+      </p>
     </div>
   );
 }
