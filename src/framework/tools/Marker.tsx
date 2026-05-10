@@ -25,6 +25,13 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useCursorPosition } from "./useCursorPosition";
+import {
+  getToolScope,
+  hasExplicitToolScope,
+  isCursorInScope,
+  normalizeCursorToScope,
+} from "./useToolScope";
 
 const MARKER_KEY = "e";
 const MARKER_RESOLVED_COLOR = "#FF4801";
@@ -64,6 +71,9 @@ interface Stroke {
 export interface MarkerProps {
   /** Optional callback called when marker mode toggles (used by composition). */
   onActiveChange?: (active: boolean) => void;
+  /** BroadcastChannel slug. When set + scoping is in effect, marker
+   *  broadcasts normalized cursor positions for audience-side mirroring. */
+  slug?: string;
 }
 
 /**
@@ -84,7 +94,7 @@ export function computeStrokeOpacity(
   return 1 - elapsed / fadeMs;
 }
 
-export function Marker({ onActiveChange }: MarkerProps = {}) {
+export function Marker({ onActiveChange, slug }: MarkerProps = {}) {
   // `active` = E key currently held. Strokes are live (releasedAt === null)
   // while active is true. When E is released, all strokes' releasedAt is
   // stamped, and the canvas stays mounted long enough for the fade to
@@ -100,11 +110,56 @@ export function Marker({ onActiveChange }: MarkerProps = {}) {
   const drawingRef = useRef<boolean>(false);
   const rafRef = useRef<number | null>(null);
   const unmountTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const channelRef = useRef<BroadcastChannel | null>(null);
+  const livePos = useCursorPosition(active);
 
   // Keep external observers in sync.
   useEffect(() => {
     onActiveChange?.(active);
   }, [active, onActiveChange]);
+
+  // Open the broadcast channel for cross-window tool sync (item F).
+  useEffect(() => {
+    if (!slug || typeof BroadcastChannel === "undefined") return;
+    const ch = new BroadcastChannel(`slide-of-hand-deck-${slug}`);
+    channelRef.current = ch;
+    return () => {
+      ch.close();
+      channelRef.current = null;
+    };
+  }, [slug]);
+
+  // Broadcast tool start/stop.
+  useEffect(() => {
+    try {
+      channelRef.current?.postMessage({
+        type: "tool",
+        tool: active ? "marker" : null,
+      });
+    } catch {
+      /* channel may be closed */
+    }
+  }, [active]);
+
+  // Broadcast normalized cursor while drawing inside an explicit scope.
+  useEffect(() => {
+    if (!active || !livePos) return;
+    if (!hasExplicitToolScope()) return;
+    const scope = getToolScope();
+    if (!isCursorInScope(livePos, scope)) return;
+    const norm = normalizeCursorToScope(livePos, scope);
+    if (!norm) return;
+    try {
+      channelRef.current?.postMessage({
+        type: "cursor",
+        tool: "marker",
+        x: norm.x,
+        y: norm.y,
+      });
+    } catch {
+      /* no listener / closed */
+    }
+  }, [active, livePos]);
 
   // Hold-to-draw: E key held → mode active; release E → strokes fade.
   // Esc immediately deactivates as a safety hatch.
@@ -152,12 +207,16 @@ export function Marker({ onActiveChange }: MarkerProps = {}) {
   }, []);
 
   // Resize the canvas backing store to match the slide size whenever active.
+  // Item E (#111): prefer the explicit tool-scope element if present
+  // (e.g. <PresenterWindow>'s current-slide preview); otherwise fall back
+  // to the slide-shell. This scopes the marker canvas + pointer capture
+  // to the panel only — stroking outside it has no effect.
   const resizeCanvas = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const slideEl = document.querySelector<HTMLElement>(
-      "[data-testid='slide-shell']",
-    );
+    const slideEl =
+      getToolScope() ??
+      document.querySelector<HTMLElement>("[data-testid='slide-shell']");
     const rect =
       slideEl?.getBoundingClientRect() ??
       ({

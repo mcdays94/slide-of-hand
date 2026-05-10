@@ -52,6 +52,7 @@ import { computeSelector, fingerprint, findBySelector } from "@/lib/element-sele
 import { mergeSlides } from "@/lib/manifest-merge";
 import { usePresenterMode } from "@/framework/presenter/mode";
 import { PresenterAffordances } from "@/framework/presenter/PresenterAffordances";
+import { AudienceToolMirror } from "@/framework/tools/AudienceToolMirror";
 import { slideTransition } from "@/lib/motion";
 
 const THEME_STORAGE_KEY = "slide-of-hand-theme";
@@ -982,6 +983,16 @@ export function Deck({ slug, title, slides }: DeckProps) {
           />
         )}
         <PresenterAffordances />
+        {/* Item F (#111): on the AUDIENCE-facing deck (i.e. NOT the
+            presenter window — distinguished by the `?presenter=1` URL
+            param being absent), subscribe to broadcast tool cursors so
+            the audience sees the presenter's laser / magnifier / marker
+            overlays in real time. `presenterMode` is true for the
+            public `/decks/<slug>` route too (decision 2026-05-10 —
+            global tool affordances), so we can't use it to gate this. */}
+        {location.search.indexOf("presenter=1") === -1 && (
+          <AudienceToolMirror slug={slug} />
+        )}
       </div>
       <TopToolbar
         slug={slug}

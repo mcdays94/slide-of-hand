@@ -37,8 +37,14 @@
  * coexist with any other filter on the page.
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { getCursorPosition, useCursorPosition } from "./useCursorPosition";
+import {
+  getToolScope,
+  hasExplicitToolScope,
+  isCursorInScope,
+  normalizeCursorToScope,
+} from "./useToolScope";
 
 const MAGNIFIER_KEY = "w";
 const MAGNIFIER_DEFAULT_RADIUS = 100;
@@ -65,16 +71,62 @@ function viewportCentre(): CursorPos {
 export interface MagnifierProps {
   /** Optional callback called when the magnifier activates / deactivates. */
   onActiveChange?: (active: boolean) => void;
+  /** BroadcastChannel slug. When set + scoping is in effect, magnifier
+   *  broadcasts normalized cursor positions for audience-side mirroring. */
+  slug?: string;
 }
 
-export function Magnifier({ onActiveChange }: MagnifierProps = {}) {
+export function Magnifier({ onActiveChange, slug }: MagnifierProps = {}) {
   const [active, setActive] = useState(false);
   const [radius, setRadius] = useState(MAGNIFIER_DEFAULT_RADIUS);
   const livePos = useCursorPosition(active);
+  const channelRef = useRef<BroadcastChannel | null>(null);
 
   useEffect(() => {
     onActiveChange?.(active);
   }, [active, onActiveChange]);
+
+  // Open / close the broadcast channel only when slug changes.
+  useEffect(() => {
+    if (!slug || typeof BroadcastChannel === "undefined") return;
+    const ch = new BroadcastChannel(`slide-of-hand-deck-${slug}`);
+    channelRef.current = ch;
+    return () => {
+      ch.close();
+      channelRef.current = null;
+    };
+  }, [slug]);
+
+  // Broadcast `tool` start/stop and normalized cursor while active.
+  useEffect(() => {
+    try {
+      channelRef.current?.postMessage({
+        type: "tool",
+        tool: active ? "magnifier" : null,
+      });
+    } catch {
+      /* channel may be closed */
+    }
+  }, [active]);
+
+  useEffect(() => {
+    if (!active || !livePos) return;
+    if (!hasExplicitToolScope()) return;
+    const scope = getToolScope();
+    if (!isCursorInScope(livePos, scope)) return;
+    const norm = normalizeCursorToScope(livePos, scope);
+    if (!norm) return;
+    try {
+      channelRef.current?.postMessage({
+        type: "cursor",
+        tool: "magnifier",
+        x: norm.x,
+        y: norm.y,
+      });
+    } catch {
+      /* no listener / closed */
+    }
+  }, [active, livePos]);
 
   // ── W hold-to-activate ───────────────────────────────────────────────
   useEffect(() => {
@@ -128,13 +180,24 @@ export function Magnifier({ onActiveChange }: MagnifierProps = {}) {
 
   if (!active) return null;
 
+  // Item E (#111): when an explicit scope is set (e.g. inside
+  // <PresenterWindow>), hide the magnifier when the cursor leaves the
+  // scope. Re-entering re-shows it.
+  if (hasExplicitToolScope() && !isCursorInScope(livePos, getToolScope())) {
+    return null;
+  }
+
   const pos = livePos ?? getCursorPosition() ?? viewportCentre();
 
   // The DOM clone needs the slide's bounding rect to position correctly
   // (so the cursor in the original maps to the lens centre when scaled).
+  // Item E (#111): when scoped, clone the scope element instead of the
+  // slide-shell so the magnifier shows what's under the cursor inside
+  // the scoped panel.
   const slideEl =
     typeof document !== "undefined"
-      ? document.querySelector<HTMLElement>("[data-testid='slide-shell']")
+      ? (getToolScope() ??
+        document.querySelector<HTMLElement>("[data-testid='slide-shell']"))
       : null;
   const slideRect = slideEl?.getBoundingClientRect();
   const cw = slideRect?.width ?? 0;

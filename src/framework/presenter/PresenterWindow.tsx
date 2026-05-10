@@ -27,7 +27,7 @@
  *     small decks; cf-slides' ResizeObserver-based approach was tempting
  *     but brings its own quirks and we don't need it for the v1 deck).
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Deck } from "@/framework/viewer/types";
 import { PhaseProvider } from "@/framework/viewer/PhaseContext";
 import { useDeckBroadcast } from "./broadcast";
@@ -45,7 +45,6 @@ import {
 import {
   classifyPacing,
   expectedRuntimeMs,
-  formatDelta,
   formatElapsed,
   usePausableElapsedTime,
 } from "./usePresenterTimer";
@@ -59,17 +58,27 @@ interface Cursor {
   phase: number;
 }
 
-const PACING_TEXT_CLASSES: Record<"green" | "amber" | "red", string> = {
-  green: "text-cf-success",
-  amber: "text-cf-warning",
-  red: "text-cf-danger",
-};
-
-const PACING_DOT_CLASSES: Record<"green" | "amber" | "red", string> = {
-  green: "bg-cf-success",
-  amber: "bg-cf-warning",
-  red: "bg-cf-danger",
-};
+/**
+ * Pacing colour for the elapsed clock. The standalone pacing chip was
+ * removed in #111; the calculation still subtly tints the elapsed digits
+ * so the presenter sees pacing at-a-glance without a separate visual
+ * element competing for attention.
+ *
+ * Returns the bare colour utility (`text-cf-orange` is the default
+ * green-ish-on-cream "on pace" treatment) so the consumer can compose it
+ * into the className alongside the paused-state and font-mono utilities.
+ */
+function pacingTextClass(p: "green" | "amber" | "red"): string {
+  switch (p) {
+    case "amber":
+      return "text-cf-warning";
+    case "red":
+      return "text-cf-danger";
+    case "green":
+    default:
+      return "text-cf-orange";
+  }
+}
 
 /**
  * Live mini-render of a slide, scaled with CSS transform.
@@ -133,7 +142,24 @@ function SlideThumbnail({
             transform: `scale(${scale})`,
           }}
         >
-          <div className={`${inner} h-full w-full bg-cf-bg-100 text-cf-text`}>
+          {/* `key={slideIndex}` forces a fresh React mount whenever the
+              cursor moves to a different slide. Without it, React
+              reconciles the inner subtree across slide changes, which:
+                - leaves framer-motion variants in their last "animate"
+                  state instead of re-running the entrance, and
+                - leaves WebGL / R3F canvases mid-frame, sometimes black.
+              The cf-code-mode cover slide hits both: its motion.div
+              wrappers freeze at opacity 0 (initial state, never animated
+              because parent reconciled instead of mounted), and the
+              <Globe3D> canvas occasionally fails to redraw. Mounting
+              fresh is cheap (these are thumbnails) and gives the
+              "every visit looks like the first" semantics the deck
+              authors wrote their entrance animations against. (Issue
+              #111 item D.) */}
+          <div
+            key={slideIndex}
+            className={`${inner} h-full w-full bg-cf-bg-100 text-cf-text`}
+          >
             <PhaseProvider phase={phase}>
               {slide.render({ phase })}
             </PhaseProvider>
@@ -155,6 +181,10 @@ export function PresenterWindow({ deck }: PresenterWindowProps) {
   );
 
   const [cursor, setCursor] = useState<Cursor>({ slide: 0, phase: 0 });
+
+  // Ref to the current-slide preview DOM node. Used by item E to scope
+  // tool overlays / cursor tracking to that panel only.
+  const currentPreviewRef = useRef<HTMLDivElement | null>(null);
 
   const { send } = useDeckBroadcast(deck.meta.slug, (msg) => {
     if (msg.type === "state" && msg.deckSlug === deck.meta.slug) {
@@ -244,6 +274,63 @@ export function PresenterWindow({ deck }: PresenterWindowProps) {
     }
   }, [cursor, onJump, totalPhases, visibleSlides.length]);
 
+  const goFirst = useCallback(() => onJump(0, 0), [onJump]);
+  const goLast = useCallback(() => {
+    const last = Math.max(0, visibleSlides.length - 1);
+    const lastSlide = visibleSlides[last];
+    const lastPhase = lastSlide?.phases ?? 0;
+    onJump(last, lastPhase);
+  }, [onJump, visibleSlides]);
+
+  // ── Keyboard navigation (item A / #111) ────────────────────────────────
+  // Mirror the public viewer's keyboard handlers so the presenter window
+  // reacts to → / ← / Space / Enter / Backspace / Home / End. Without
+  // this the presenter could only navigate via the chevron buttons.
+  //
+  // Same `Element`-target guard as Deck.tsx: synthetic events dispatched
+  // on `window` carry `target = Window`, which has no `.closest()`.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const target = e.target;
+      if (
+        target instanceof Element &&
+        target.closest(
+          "[data-interactive], input, select, textarea, [contenteditable=true]",
+        )
+      ) {
+        return;
+      }
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      switch (e.key) {
+        case "ArrowRight":
+        case "PageDown":
+        case " ":
+        case "Enter":
+          e.preventDefault();
+          goNext();
+          break;
+        case "ArrowLeft":
+        case "PageUp":
+        case "Backspace":
+          e.preventDefault();
+          goPrev();
+          break;
+        case "Home":
+          e.preventDefault();
+          goFirst();
+          break;
+        case "End":
+          e.preventDefault();
+          goLast();
+          break;
+        default:
+          break;
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [goNext, goPrev, goFirst, goLast]);
+
   const isAtStart = cursor.slide === 0 && cursor.phase === 0;
   const isAtEnd =
     cursor.slide === visibleSlides.length - 1 &&
@@ -264,6 +351,7 @@ export function PresenterWindow({ deck }: PresenterWindowProps) {
   return (
     <main
       data-testid="presenter-window"
+      data-deck-slug={deck.meta.slug}
       className="flex h-screen min-h-screen w-screen flex-col overflow-hidden bg-cf-bg-200 text-cf-text"
     >
       {/* ── HEADER ─────────────────────────────────────────────────────── */}
@@ -277,8 +365,9 @@ export function PresenterWindow({ deck }: PresenterWindowProps) {
           <span
             data-testid="presenter-elapsed"
             data-paused={paused ? "true" : "false"}
+            data-pacing={pacing}
             className={`font-mono text-lg tabular-nums tracking-tight transition-colors ${
-              paused ? "text-cf-text-subtle" : "text-cf-orange"
+              paused ? "text-cf-text-subtle" : pacingTextClass(pacing)
             }`}
           >
             {formatElapsed(elapsedMs)}
@@ -297,17 +386,6 @@ export function PresenterWindow({ deck }: PresenterWindowProps) {
             {paused ? <PlayIcon size={12} /> : <PauseIcon size={12} />}
           </button>
         </div>
-        <span
-          data-testid="presenter-pacing"
-          data-pacing={pacing}
-          className={`flex items-center gap-2 font-mono text-xs tabular-nums ${PACING_TEXT_CLASSES[pacing]}`}
-        >
-          <span
-            aria-hidden
-            className={`inline-block h-2 w-2 rounded-full ${PACING_DOT_CLASSES[pacing]}`}
-          />
-          {formatDelta(deltaMs)}
-        </span>
         <span aria-hidden className="h-5 w-px bg-cf-border" />
         <span className="font-mono text-[11px] uppercase tracking-[0.2em] text-cf-text-subtle">
           {String(cursor.slide + 1).padStart(2, "0")} /{" "}
@@ -331,13 +409,24 @@ export function PresenterWindow({ deck }: PresenterWindowProps) {
         {/* Slides column — current preview + bottom row */}
         <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3 p-4">
           {/* Current slide — large, ~60% of vertical space.
-              The `aspect-video` element is sized with both `w-full` and
-              `max-h-full`; the browser shrinks the width when max-height
-              clamps the natural aspect-ratio height, keeping 16:9 either
-              way. Centered horizontally so wide columns don't left-align
-              a tall column's narrower preview. */}
-          <div className="flex min-h-0 flex-[5] items-center justify-center">
-            <div className="relative aspect-video max-h-full w-full max-w-full">
+              16:9 enforcement (item C / #111): the wrapper uses
+              container-query units to compute the largest 16:9 box that
+              fits in both axes. Same trick as the next preview below. */}
+          <div
+            data-testid="presenter-current-preview-container"
+            className="flex min-h-0 min-w-0 flex-[5] items-center justify-center"
+            style={{ containerType: "size" }}
+          >
+            <div
+              ref={currentPreviewRef}
+              data-testid="presenter-current-preview"
+              data-presenter-tools-scope="true"
+              className="relative"
+              style={{
+                width: "min(100cqw, calc(100cqh * 16 / 9))",
+                height: "min(100cqh, calc(100cqw * 9 / 16))",
+              }}
+            >
               <SlideThumbnail
                 deck={deck}
                 slideIndex={cursor.slide}
@@ -357,8 +446,30 @@ export function PresenterWindow({ deck }: PresenterWindowProps) {
 
           {/* Bottom row — next preview + nav controls */}
           <div className="flex min-h-0 flex-[2] gap-3">
-            <div className="flex min-h-0 flex-1 items-center justify-center">
-              <div className="aspect-video max-h-full w-full max-w-full">
+            {/* 16:9 enforcement (item C / #111). The previous markup used
+                `w-full max-h-full aspect-video` which squashes whenever the
+                container's aspect ratio differs from 16:9 — `w-full` pins
+                width = parent.width, `aspect-video` resolves height to
+                width × 9/16, but `max-h-full` then clips visual height
+                while layout width stays full → squash.
+                The fix uses container query units to compute the largest
+                16:9 box that fits in BOTH axes:
+                  width  = min(100% of container width, container height × 16/9)
+                  height = min(100% of container height, container width × 9/16)
+                The resulting rectangle always has aspect 16:9 and
+                always fits, regardless of container shape. */}
+            <div
+              data-testid="presenter-next-preview-container"
+              className="relative flex min-h-0 min-w-0 flex-1 items-center justify-center"
+              style={{ containerType: "size" }}
+            >
+              <div
+                className="relative"
+                style={{
+                  width: "min(100cqw, calc(100cqh * 16 / 9))",
+                  height: "min(100cqh, calc(100cqw * 9 / 16))",
+                }}
+              >
                 {nextSlide ? (
                   <SlideThumbnail
                     deck={deck}
@@ -434,6 +545,8 @@ export function PresenterWindow({ deck }: PresenterWindowProps) {
               slideTitle={currentSlide?.title}
               slideNumber={cursor.slide + 1}
               totalSlides={visibleSlides.length}
+              deckSlug={deck.meta.slug}
+              slideIndex={cursor.slide}
             />
           </div>
           <div className="flex-shrink-0 border-t border-cf-border pt-3">

@@ -94,12 +94,40 @@ export function PresenterTools() {
     };
   }, [enabled, activeTool, markerActive]);
 
-  // Resolve slug for the Laser broadcast (best-effort).
-  const slug = useMemo(() => {
+  // Resolve slug for tool broadcasts (Laser / Magnifier / Marker).
+  // The slug source is the `[data-deck-slug]` attribute on the host's deck
+  // root (or PresenterWindow). When this PresenterTools instance was
+  // mounted via the URL-override auto-mount, the React main tree may not
+  // have committed yet, so the attribute can be temporarily missing. Poll
+  // for up to ~1s and store in state so children re-render with the slug
+  // once it's available.
+  const [slug, setSlug] = useState<string | undefined>(() => {
     if (typeof document === "undefined") return undefined;
     const root = document.querySelector<HTMLElement>("[data-deck-slug]");
     return root?.getAttribute("data-deck-slug") ?? undefined;
-  }, [enabled]); // re-resolve when the gate flips on
+  });
+  useEffect(() => {
+    if (slug) return;
+    if (typeof document === "undefined") return;
+    let cancelled = false;
+    let attempts = 0;
+    const tick = () => {
+      if (cancelled) return;
+      const root = document.querySelector<HTMLElement>("[data-deck-slug]");
+      const found = root?.getAttribute("data-deck-slug") ?? undefined;
+      if (found) {
+        setSlug(found);
+        return;
+      }
+      attempts++;
+      if (attempts >= 30) return; // give up after ~1s
+      window.setTimeout(tick, 33);
+    };
+    tick();
+    return () => {
+      cancelled = true;
+    };
+  }, [slug, enabled]);
 
   if (!enabled) return null;
 
@@ -107,8 +135,8 @@ export function PresenterTools() {
     <>
       <AutoHideChrome />
       <Laser slug={slug} onActiveChange={setLaserActive} />
-      <Magnifier onActiveChange={setMagnifierActive} />
-      <Marker onActiveChange={setMarkerActive} />
+      <Magnifier slug={slug} onActiveChange={setMagnifierActive} />
+      <Marker slug={slug} onActiveChange={setMarkerActive} />
       <ToolActivePill tool={activeTool} />
     </>
   );
