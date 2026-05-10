@@ -86,6 +86,7 @@ describe("<SettingsProvider> + useSettings()", () => {
     expect(JSON.parse(persisted!)).toEqual({
       showSlideIndicators: false,
       presenterNextSlideShowsFinalPhase: false,
+      notesDefaultMode: "rich",
     });
   });
 
@@ -151,7 +152,7 @@ describe("<SettingsProvider> + useSettings()", () => {
   it("accepts an initialSettings override (bypasses storage read)", () => {
     writeSettings({ showSlideIndicators: false });
     render(
-      <SettingsProvider initialSettings={{ showSlideIndicators: true, presenterNextSlideShowsFinalPhase: false }}>
+      <SettingsProvider initialSettings={{ showSlideIndicators: true, presenterNextSlideShowsFinalPhase: false, notesDefaultMode: "rich" }}>
         <Probe />
       </SettingsProvider>,
     );

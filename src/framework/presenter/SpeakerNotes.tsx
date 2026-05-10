@@ -13,9 +13,44 @@
  *     `slide-of-hand-presenter-notes-fontsize` in localStorage. Steps in
  *     2 px increments to match a small set of sensible sizes.
  */
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import {
+  Suspense,
+  lazy,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react";
 import { MinusIcon, PlusIcon } from "./NavControls";
-import { NotesEditor } from "./NotesEditor";
+
+// Issue #126: the speaker-notes editor pulls in TipTap + ProseMirror
+// (~165 KB gzipped). Lazy-load it so the audience-side deck route
+// doesn't pay the bundle cost — only ?presenter=1 routes mount this
+// component, and even within the presenter route this lets the rest
+// of the UI paint before the editor loads.
+const NotesEditor = lazy(() =>
+  import("./NotesEditor").then((m) => ({ default: m.NotesEditor })),
+);
+
+/**
+ * Tiny loading splash for the lazy-loaded editor. Matches the design
+ * tokens so the swap-in is visually quiet — a presenter mid-deck
+ * shouldn't see a flashy loading state when they hit the speaker
+ * notes panel for the first time.
+ */
+function NotesEditorFallback({ fontSizeClass }: { fontSizeClass: string }) {
+  return (
+    <div
+      data-testid="notes-editor-loading"
+      className={`flex h-full min-h-0 flex-1 items-center justify-center rounded-md border border-dashed border-cf-border bg-cf-bg-100 text-cf-text-subtle ${fontSizeClass}`}
+    >
+      <p className="font-mono text-[10px] uppercase tracking-[0.25em]">
+        Loading editor…
+      </p>
+    </div>
+  );
+}
 
 const MIN_FONT_SIZE = 12;
 const MAX_FONT_SIZE = 22;
@@ -173,12 +208,16 @@ export function SpeakerNotes({
         className={`flex min-h-0 flex-1 flex-col text-cf-text-muted ${fontSizeClass}`}
       >
         {deckSlug && typeof slideIndex === "number" ? (
-          <NotesEditor
-            slug={deckSlug}
-            slideIndex={slideIndex}
-            defaultNotes={notes}
-            fontSizeClass={fontSizeClass}
-          />
+          <Suspense
+            fallback={<NotesEditorFallback fontSizeClass={fontSizeClass} />}
+          >
+            <NotesEditor
+              slug={deckSlug}
+              slideIndex={slideIndex}
+              defaultNotes={notes}
+              fontSizeClass={fontSizeClass}
+            />
+          </Suspense>
         ) : (
           <div className="presenter-notes space-y-3 overflow-y-auto pr-1">
             {notes ?? (
