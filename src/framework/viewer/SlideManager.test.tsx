@@ -22,6 +22,7 @@ import {
 } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 import { SlideManager } from "./SlideManager";
+import { richtextProseClasses } from "@/templates/richtext-prose";
 import type { SlideDef } from "./types";
 import type { UseDeckManifestResult } from "./useDeckManifest";
 import type { Manifest } from "@/lib/manifest";
@@ -152,6 +153,47 @@ describe("<SlideManager>", () => {
     fireEvent.change(textarea, { target: { value: "**bold**" } });
     const last = applyDraft.mock.calls.at(-1)?.[0] as Manifest;
     expect(last.overrides.intro?.notes).toBe("**bold**");
+  });
+
+  it("renders notes preview with the canonical richtextProseClasses helper", () => {
+    // The notes preview pane and the public viewer share the same prose
+    // styling contract via `richtextProseClasses` (#90). Inert
+    // `prose prose-sm` strings would silently no-op without
+    // `@tailwindcss/typography` installed, so we assert the helper's
+    // tokens are present on the rendered preview container — guarding
+    // against future regressions back to the inert classes.
+    render(
+      <SlideManager
+        open={true}
+        slug="hello"
+        sourceSlides={sourceSlides}
+        manifest={makeManifestHook({
+          manifest: {
+            version: 1,
+            order: ["title", "intro", "end"],
+            overrides: { intro: { notes: "- one\n- two" } },
+            updatedAt: "2026-05-06T00:00:00.000Z",
+          },
+        })}
+        onClose={() => {}}
+      />,
+    );
+    // Open the notes editor for the intro row, then switch to preview.
+    fireEvent.click(screen.getAllByTestId("slide-manager-toggle-notes")[1]);
+    fireEvent.click(screen.getByTestId("slide-manager-notes-tab-preview"));
+    const preview = screen.getByTestId("slide-manager-notes-preview");
+    const className = preview.className;
+    // Spot-check several distinctive tokens from the helper.
+    expect(className).toContain("[&_ul]:list-disc");
+    expect(className).toContain("[&_li]:marker:text-cf-orange");
+    expect(className).toContain("[&_strong]:font-medium");
+    expect(className).toContain("[&_code]:font-mono");
+    // Belt-and-braces: the full helper string should be a substring.
+    expect(className).toContain(richtextProseClasses);
+    // The inert Tailwind-typography classes must be gone — they silently
+    // no-op without the plugin installed.
+    expect(className).not.toMatch(/(^|\s)prose(\s|$)/);
+    expect(className).not.toMatch(/(^|\s)prose-sm(\s|$)/);
   });
 
   it("Save POSTs to the admin API and refetches", async () => {
