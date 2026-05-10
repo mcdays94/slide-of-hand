@@ -25,11 +25,12 @@
  *     is what the spawned popup tab loads when the author presses `P`.
  *     Works for both build-time decks and KV-backed (`<DataDeck>`) decks
  *     — the latter via the `dataDeckToDeck()` adapter (#61 follow-up).
- *   - `?presenter-mode=1` — turns on `<PresenterModeProvider enabled>` so
- *     presenter affordances (the P-key listener; future tools) mount on
- *     the public viewer. **Dev-only override** — slice #7 will replace it
- *     by activating the provider on the admin route only. Remove this
- *     branch once #7 lands.
+ *
+ * Presenter affordances (laser, magnifier, marker, P-key window trigger)
+ * are now ALWAYS on for public deck routes. Earlier this was gated behind
+ * `?presenter-mode=1` per the original Slice #5 cautionary scope, but the
+ * decision (2026-05-10) is to expose these tools globally so anyone
+ * presenting a deck doesn't need to know about a magic URL flag.
  */
 
 import { Suspense, useMemo } from "react";
@@ -61,18 +62,13 @@ function DeckLoadingFallback() {
 interface BuildTimeDeckProps {
   slug: string;
   presenter: boolean;
-  presenterModeOverride: boolean;
 }
 
 /**
  * Reads the lazy-loaded `Deck` resource and renders the appropriate viewer.
  * Suspends (throws the load promise) until the deck's chunk is fetched.
  */
-function BuildTimeDeck({
-  slug,
-  presenter,
-  presenterModeOverride,
-}: BuildTimeDeckProps) {
+function BuildTimeDeck({ slug, presenter }: BuildTimeDeckProps) {
   const resource = useMemo(() => getDeckResource(slug), [slug]);
   const deck = resource.read();
   if (!deck) {
@@ -85,7 +81,7 @@ function BuildTimeDeck({
     return <PresenterWindow deck={deck} />;
   }
   return (
-    <PresenterModeProvider enabled={presenterModeOverride}>
+    <PresenterModeProvider enabled={true}>
       <Deck slug={deck.meta.slug} title={deck.meta.title} slides={deck.slides} />
     </PresenterModeProvider>
   );
@@ -115,18 +111,13 @@ export default function DeckRoute() {
   const kvSlug = !isBuildTime && slug ? slug : "";
   const kvResult = useDataDeck(kvSlug);
 
-  const presenterModeOverride = search.get("presenter-mode") === "1";
   const presenter = search.get("presenter") === "1";
 
   // ── 1. Build-time hit ─────────────────────────────────────────────────
   if (isBuildTime && slug) {
     return (
       <Suspense fallback={<DeckLoadingFallback />}>
-        <BuildTimeDeck
-          slug={slug}
-          presenter={presenter}
-          presenterModeOverride={presenterModeOverride}
-        />
+        <BuildTimeDeck slug={slug} presenter={presenter} />
       </Suspense>
     );
   }
@@ -141,7 +132,7 @@ export default function DeckRoute() {
       return <PresenterWindow deck={dataDeckToDeck(kvResult.deck)} />;
     }
     return (
-      <PresenterModeProvider enabled={presenterModeOverride}>
+      <PresenterModeProvider enabled={true}>
         <DataDeck deck={kvResult.deck} />
       </PresenterModeProvider>
     );

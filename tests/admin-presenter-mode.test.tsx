@@ -88,7 +88,10 @@ describe("PresenterMode wiring across viewer routes", () => {
     expect(lastObserved).toBe(true);
   });
 
-  it("public viewer at /decks/<slug> leaves presenter mode disabled", () => {
+  it("public viewer at /decks/<slug> activates presenter mode (tools globally available)", () => {
+    // 2026-05-10: presenter mode is now always-on for public deck routes
+    // so laser/magnifier/marker/P-key trigger work without a magic
+    // `?presenter-mode=1` flag. See `src/routes/deck.$slug.tsx` header.
     render(
       <MemoryRouter initialEntries={["/decks/stub"]}>
         <Routes>
@@ -96,6 +99,6 @@ describe("PresenterMode wiring across viewer routes", () => {
         </Routes>
       </MemoryRouter>,
     );
-    expect(lastObserved).toBe(false);
+    expect(lastObserved).toBe(true);
   });
 });
