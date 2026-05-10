@@ -36,6 +36,46 @@ describe("requireAccessAuth", () => {
     expect(res).not.toBeNull();
     expect(res!.status).toBe(403);
   });
+
+  // ── Service-token authentication (#131 phase 1 follow-up) ──────────────
+  // Service tokens authenticate to Access non-interactively. They don't
+  // have a user email, so `requireAccessAuth` accepts the presence of
+  // `cf-access-client-id` as an alternative signal.
+
+  it("returns null when only cf-access-client-id is set (service token)", () => {
+    const req = new Request("https://example.com/api/admin/themes/hello", {
+      headers: { "cf-access-client-id": "abc123.access" },
+    });
+    expect(requireAccessAuth(req)).toBeNull();
+  });
+
+  it("returns null when both email AND client-id are set", () => {
+    const req = new Request("https://example.com/api/admin/themes/hello", {
+      headers: {
+        "cf-access-authenticated-user-email": "user@example.com",
+        "cf-access-client-id": "abc123.access",
+      },
+    });
+    expect(requireAccessAuth(req)).toBeNull();
+  });
+
+  it("returns 403 when cf-access-client-id is empty string", () => {
+    const req = new Request("https://example.com/api/admin/themes/hello", {
+      headers: { "cf-access-client-id": "" },
+    });
+    const res = requireAccessAuth(req);
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(403);
+  });
+
+  it("returns 403 when cf-access-client-id is whitespace only", () => {
+    const req = new Request("https://example.com/api/admin/themes/hello", {
+      headers: { "cf-access-client-id": "   " },
+    });
+    const res = requireAccessAuth(req);
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(403);
+  });
 });
 
 describe("getAccessUserEmail", () => {

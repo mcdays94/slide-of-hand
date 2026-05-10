@@ -52,6 +52,27 @@
 
 const ACCESS_EMAIL_HEADER = "cf-access-authenticated-user-email";
 
+/**
+ * Service-token client ID header (#131 phase 1). Set by Cloudflare
+ * Access when a request authenticates with a service token (the
+ * `CF-Access-Client-Id` / `CF-Access-Client-Secret` pair) rather than
+ * an interactive user login. Service tokens are how scripts, CI, and
+ * agents (including this Worker's own admin API consumers) hit Access-
+ * protected endpoints without a browser session.
+ *
+ * Service tokens do NOT set the email header — they have no user
+ * identity. So `requireAccessAuth` must accept either signal: the
+ * presence of EITHER `cf-access-authenticated-user-email` OR
+ * `cf-access-client-id` is sufficient evidence that Access vetted
+ * the request.
+ *
+ * Trust model: same as the email header — Cloudflare strips client-set
+ * `cf-access-*` headers at the edge and only re-adds them after a
+ * successful Access challenge. JWT signature verification is a future
+ * hardening, deferred per the existing header comment block.
+ */
+const ACCESS_CLIENT_ID_HEADER = "cf-access-client-id";
+
 const FORBIDDEN_HEADERS = {
   "content-type": "application/json",
   "cache-control": "no-store",
@@ -59,12 +80,20 @@ const FORBIDDEN_HEADERS = {
 
 /**
  * Validates that the request was authenticated by Cloudflare Access.
- * Returns a 403 `Response` if not, or `null` if the request should
- * proceed. Pattern: `const denied = requireAccessAuth(req); if (denied) return denied;`
+ * Accepts either:
+ *   - `cf-access-authenticated-user-email` — interactive user login
+ *   - `cf-access-client-id` — service-token authentication
+ *
+ * Returns a 403 `Response` if neither header is present, or `null`
+ * if the request should proceed. Pattern:
+ * `const denied = requireAccessAuth(req); if (denied) return denied;`
  */
 export function requireAccessAuth(request: Request): Response | null {
   const email = request.headers.get(ACCESS_EMAIL_HEADER);
-  if (!email || email.trim() === "") {
+  const clientId = request.headers.get(ACCESS_CLIENT_ID_HEADER);
+  const hasEmail = !!email && email.trim() !== "";
+  const hasClientId = !!clientId && clientId.trim() !== "";
+  if (!hasEmail && !hasClientId) {
     return new Response(
       JSON.stringify({
         error:

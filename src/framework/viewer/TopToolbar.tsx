@@ -30,6 +30,7 @@ import { useCallback, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { usePresenterMode } from "@/framework/presenter/mode";
 import { useNearViewportTop } from "./useNearViewportEdge";
+import { StudioAgentToggle } from "@/components/StudioAgentToggle";
 
 export interface TopToolbarProps {
   slug: string;
@@ -37,6 +38,13 @@ export interface TopToolbarProps {
   currentSlide: number;
   /** Current phase index (0-based). Drives the Open-in-Studio deep link. */
   currentPhase: number;
+  /**
+   * In-Studio AI agent panel state (#131 phase 1). Optional so the
+   * public deck route (no agent affordance) can omit it. When provided,
+   * a sparkle toggle appears in the presenter-mode right cluster.
+   */
+  agentOpen?: boolean;
+  onAgentToggle?: () => void;
 }
 
 /**
@@ -303,6 +311,8 @@ export function TopToolbar({
   slug,
   currentSlide,
   currentPhase,
+  agentOpen,
+  onAgentToggle,
 }: TopToolbarProps) {
   const presenterMode = usePresenterMode();
   const isNear = useNearViewportTop();
@@ -390,6 +400,16 @@ export function TopToolbar({
               <ChartIcon />
               <span>Analytics</span>
             </BarButton>
+            {/* AI assistant (#131 phase 1). Rendered as the rightmost
+                affordance because it's the newest member of the toolbar
+                and admin users have already wired their muscle memory to
+                the existing positions. */}
+            {onAgentToggle && (
+              <StudioAgentToggle
+                open={agentOpen ?? false}
+                onToggle={onAgentToggle}
+              />
+            )}
           </>
         ) : (
           <BarButton

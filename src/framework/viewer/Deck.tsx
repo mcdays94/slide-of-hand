@@ -15,6 +15,8 @@
  */
 
 import {
+  lazy,
+  Suspense,
   useCallback,
   useEffect,
   useMemo,
@@ -54,6 +56,20 @@ import { usePresenterMode } from "@/framework/presenter/mode";
 import { PresenterAffordances } from "@/framework/presenter/PresenterAffordances";
 import { AudienceToolMirror } from "@/framework/tools/AudienceToolMirror";
 import { slideTransition } from "@/lib/motion";
+
+/**
+ * Lazy-loaded in-Studio AI chat panel (issue #131 phase 1).
+ *
+ * Same pattern as `EditMode`'s lazy mount in `src/framework/editor/EditMode.tsx`:
+ * the audience-side / public deck route never opens this panel and shouldn't
+ * pay for the ~300 KB of chat / streaming SDK deps. Admin presenter-mode
+ * routes can open it via the `<StudioAgentToggle>` in `<TopToolbar>`.
+ */
+const StudioAgentPanel = lazy(() =>
+  import("@/components/StudioAgentPanel").then((m) => ({
+    default: m.StudioAgentPanel,
+  })),
+);
 
 const THEME_STORAGE_KEY = "slide-of-hand-theme";
 
@@ -269,6 +285,13 @@ export function Deck({ slug, title, slides }: DeckProps) {
   const [themeSidebarOpen, setThemeSidebarOpen] = useState(false);
   const [slideManagerOpen, setSlideManagerOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+
+  // ── In-Studio AI agent (#131 phase 1) ──────────────────────────────────
+  // Toggled from `<TopToolbar>`'s right cluster (visible only in
+  // presenter / admin mode). State lives here so the lazy
+  // `<StudioAgentPanel>` mount sits adjacent to the toolbar, sharing
+  // the deck's `slug` for the agent instance name.
+  const [agentOpen, setAgentOpen] = useState(false);
 
   // ── Element inspector (#45) ─────────────────────────────────────────────
   // `inspectMode` true = clicks select instead of advancing; cursor is
@@ -998,7 +1021,22 @@ export function Deck({ slug, title, slides }: DeckProps) {
         slug={slug}
         currentSlide={cursor.slide}
         currentPhase={cursor.phase}
+        agentOpen={agentOpen}
+        onAgentToggle={() => setAgentOpen((o) => !o)}
       />
+      {/* In-Studio AI chat panel (#131 phase 1). Mounted lazily — only
+          pays the chat-SDK bundle cost on first open. Always gated by
+          `agentOpen`. TopToolbar already hides its agent toggle when
+          `presenterMode` is false, so on the public deck route the
+          panel is unreachable. */}
+      {agentOpen && (
+        <Suspense fallback={null}>
+          <StudioAgentPanel
+            deckSlug={slug}
+            onClose={() => setAgentOpen(false)}
+          />
+        </Suspense>
+      )}
     </div>
     </SettingsProvider>
   );
