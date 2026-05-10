@@ -150,7 +150,6 @@ function NextPreview({
         deck={deck}
         slideIndex={nextIndex}
         phase={phaseCount - 1}
-        scale={0.32}
         cornerLabel={cornerLabel}
         onClick={() => onJump(nextIndex)}
       />
@@ -164,7 +163,6 @@ function NextPreview({
         deck={deck}
         slideIndex={nextIndex}
         phase={0}
-        scale={0.32}
         cornerLabel={cornerLabel}
         onClick={() => onJump(nextIndex)}
       />
@@ -199,7 +197,6 @@ function NextPreview({
               deck={deck}
               slideIndex={nextIndex}
               phase={p}
-              scale={0.32}
               cornerLabel={p === 0 ? cornerLabel : `Phase ${p}`}
               onClick={() => onJump(nextIndex, p)}
             />
@@ -267,7 +264,6 @@ function CurrentSlideFilmstrip({
               deck={deck}
               slideIndex={currentIndex}
               phase={p}
-              scale={0.32}
               emphasized={p === currentPhase}
               cornerLabel={`Now · Phase ${p + 1}/${phaseCount}`}
               onClick={() => onJump(currentIndex, p)}
@@ -314,11 +310,27 @@ function pacingTextClass(p: "green" | "amber" | "red"): string {
  * size, and absolutely-position it inside a 16:9 frame. Fast and
  * dependency-free.
  */
+/**
+ * Canonical design viewport for slide thumbnails. Build-time thumbnails
+ * (scripts/build-thumbnails.mjs) snap each slide at 1920×1080, then
+ * resize to 320×180. Slide JSX uses absolute Tailwind sizes (text-7xl,
+ * max-w-5xl, gap-10, px-12, …) tuned to that viewport. Rendering into
+ * any other inner-div size makes those absolute sizes land in the
+ * wrong proportions — and rendering into a SHORTER viewport (the bug
+ * fixed by issue #124) clips the top + bottom of slides whose natural
+ * content height is taller than the inner div.
+ *
+ * The fix: render at a FIXED 1920×1080 design viewport, regardless of
+ * the SlideThumbnail's actual rendered tile size, and let CSS
+ * container queries drive the dynamic scale-down.
+ */
+const SLIDE_DESIGN_WIDTH = 1920;
+const SLIDE_DESIGN_HEIGHT = 1080;
+
 function SlideThumbnail({
   deck,
   slideIndex,
   phase,
-  scale,
   emphasized,
   onClick,
   cornerLabel,
@@ -326,7 +338,6 @@ function SlideThumbnail({
   deck: Deck;
   slideIndex: number;
   phase: number;
-  scale: number;
   emphasized?: boolean;
   onClick?: () => void;
   /** Optional pill text rendered in the top-left of the frame. */
@@ -339,14 +350,17 @@ function SlideThumbnail({
     layout === "full"
       ? "h-full w-full"
       : "flex h-full w-full items-center justify-center px-12 py-16";
-  // Reciprocal sizing so a 100%-of-thumbnail container, when scaled by
-  // `scale`, lays out at 1280×720 internally.
-  const reciprocal = `${(100 / scale).toFixed(2)}%`;
   return (
     <Tag
       type={onClick ? "button" : undefined}
       onClick={onClick}
       data-testid={`thumbnail-${slideIndex}`}
+      // `container-type: size` makes this <Tag> the size context for
+      // the `100cqw` unit used in the transform below, so the scale
+      // computes against the tile's actual rendered width regardless
+      // of where this thumbnail is mounted in the tree (filmstrip
+      // tile, single-thumb 16:9 wrapper, or the BIG current preview).
+      style={{ containerType: "size" }}
       className={`group relative flex h-full w-full flex-col overflow-hidden rounded-md border bg-cf-bg-100 text-left transition-colors ${
         emphasized
           ? "border-cf-orange ring-2 ring-cf-orange/40"
@@ -363,9 +377,11 @@ function SlideThumbnail({
           aria-hidden
           className="pointer-events-none absolute left-0 top-0 origin-top-left transform-gpu"
           style={{
-            width: reciprocal,
-            height: reciprocal,
-            transform: `scale(${scale})`,
+            width: `${SLIDE_DESIGN_WIDTH}px`,
+            height: `${SLIDE_DESIGN_HEIGHT}px`,
+            // (length / length) → unitless number, which is what
+            // transform: scale() requires. CSS Values 4 spec.
+            transform: `scale(calc(100cqw / ${SLIDE_DESIGN_WIDTH}px))`,
           }}
         >
           {/* `key={slideIndex}` forces a fresh React mount whenever the
@@ -716,7 +732,6 @@ function PresenterWindowInner({ deck }: PresenterWindowProps) {
                 deck={deck}
                 slideIndex={cursor.slide}
                 phase={cursor.phase}
-                scale={0.55}
                 emphasized
                 cornerLabel={`Current · Slide ${cursor.slide + 1}`}
               />

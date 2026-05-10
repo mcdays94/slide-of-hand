@@ -516,6 +516,70 @@ describe("<PresenterWindow> — upcoming preview lookahead (#115)", () => {
       expect(tiles).toHaveLength(3);
     });
   });
+
+  // Regression for issue #124 — when the SlideThumbnail's inner div was
+  // sized as `100/scale% × 100/scale%` of the tile, slides whose
+  // natural content height exceeded the inner-div height got clipped
+  // (top + bottom of the slide cropped because the design content was
+  // centered within a too-short viewport). The fix is to render at a
+  // FIXED 1920×1080 design viewport and let CSS container queries
+  // drive the dynamic scale.
+  describe("SlideThumbnail design-viewport invariant (#124)", () => {
+    it("renders the slide JSX into a fixed 1920×1080 inner div, scaled via 100cqw", () => {
+      withFakeBC(() => {
+        render(<PresenterWindow deck={richDeck} />);
+        const tile0 = screen.getByTestId(
+          "presenter-upcoming-current-phase-0",
+        );
+        const scaled = tile0.querySelector("div[style*='transform']");
+        expect(scaled).toBeTruthy();
+        const style = scaled?.getAttribute("style") ?? "";
+        // Width and height must be the canonical design viewport in
+        // ABSOLUTE PIXELS — never a percentage. A percentage would
+        // make absolute Tailwind sizes (text-7xl, max-w-5xl, px-12)
+        // land in wrong proportions, AND would clip content for
+        // slides whose natural height exceeds the percentage-derived
+        // inner height — the #124 bug.
+        expect(style).toMatch(/width:\s*1920px/);
+        expect(style).toMatch(/height:\s*1080px/);
+        // Scale must come from a container query, not a hard-coded
+        // number, so it self-corrects at any rendered tile size.
+        expect(style).toMatch(/transform:\s*scale\(calc\(100cqw/);
+      });
+    });
+
+    it("the SlideThumbnail's outer element is a CQ size context (so 100cqw resolves to its own width)", () => {
+      withFakeBC(() => {
+        render(<PresenterWindow deck={richDeck} />);
+        const tile0 = screen.getByTestId(
+          "presenter-upcoming-current-phase-0",
+        );
+        const btn = tile0.querySelector("[data-testid^='thumbnail-']");
+        expect(btn).toBeTruthy();
+        const style = (btn as HTMLElement | null)?.getAttribute("style") ?? "";
+        // Without `container-type: size` on the SlideThumbnail's
+        // outer element, `100cqw` inside would resolve to an
+        // unrelated ancestor's width and the scale would be wrong by
+        // an unpredictable factor.
+        expect(style).toMatch(/container-type:\s*size/);
+      });
+    });
+
+    it("the BIG current-slide preview uses the same fixed-viewport invariant", () => {
+      withFakeBC(() => {
+        render(<PresenterWindow deck={richDeck} />);
+        const bigPreview = screen.getByTestId("presenter-current-preview");
+        const btn = bigPreview.querySelector("[data-testid^='thumbnail-']");
+        const style = (btn as HTMLElement | null)?.getAttribute("style") ?? "";
+        expect(style).toMatch(/container-type:\s*size/);
+        const scaled = btn?.querySelector("div[style*='transform']");
+        const scaledStyle = scaled?.getAttribute("style") ?? "";
+        expect(scaledStyle).toMatch(/width:\s*1920px/);
+        expect(scaledStyle).toMatch(/height:\s*1080px/);
+        expect(scaledStyle).toMatch(/transform:\s*scale\(calc\(100cqw/);
+      });
+    });
+  });
 });
 
 /**
