@@ -1,0 +1,25 @@
+worker/access-auth.ts
+  cffec469c55b2ea3 56-68,70-74,76-82,84,93,95-98,100-101,107,110-111
+worker/access-auth.test.ts
+  cffec469c55b2ea3 79-121
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "15d07d1c150944204cfa655433adc2727174d706",
+  "prompts": {
+    "cffec469c55b2ea3": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_1ecbcb427ffeCpoSFySZNrLWSF",
+        "model": "anthropic/claude-opus-4-7"
+      },
+      "human_author": "mcdays94",
+      "messages": [],
+      "total_additions": 80,
+      "total_deletions": 21,
+      "accepted_lines": 80,
+      "overriden_lines": 0
+    }
+  }
+}
