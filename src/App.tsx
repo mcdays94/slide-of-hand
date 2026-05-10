@@ -24,6 +24,7 @@ import DeckRoute from "./routes/deck.$slug";
 import AdminLayout from "./routes/admin/_layout";
 import AdminIndex from "./routes/admin/index";
 import AdminDeckRoute from "./routes/admin/decks.$slug";
+import { SettingsProvider } from "./framework/viewer/useSettings";
 
 const AdminDeckAnalyticsRoute = lazy(
   () => import("./routes/admin/decks.$slug.analytics"),
@@ -53,27 +54,38 @@ function AnalyticsFallback() {
 }
 
 export default function App() {
+  // App-level <SettingsProvider> so non-viewer surfaces (homepage, admin
+  // index) can also read viewer settings (issue #128 — the deck-card
+  // hover-preview animation needs to read the same global setting on
+  // both surfaces). The viewer's own <Deck> previously had its own
+  // SettingsProvider; now that the provider is here at the top, the
+  // ones inside <Deck> become inner providers. They're still useful in
+  // isolation (tests, presenter window) but on the live app the
+  // outer one wins. React's context lookup walks up the tree and finds
+  // the nearest provider — both work, just from different mount points.
   return (
-    <Routes>
-      <Route path="/" element={<Root />} />
-      <Route path="/decks/:slug" element={<DeckRoute />} />
-      <Route path="/admin" element={<AdminLayout />}>
-        <Route index element={<AdminIndex />} />
-        <Route
-          path="decks/:slug/analytics"
-          element={
-            <Suspense fallback={<AnalyticsFallback />}>
-              <AdminDeckAnalyticsRoute />
-            </Suspense>
-          }
-        />
-      </Route>
-      {/* Deck viewer is intentionally NOT nested under <AdminLayout> — the
-          viewer fills the full viewport (h-screen w-screen) and any chrome
-          strip above it would break the 16:9 letterbox. The deck's own
-          chrome (overview, help, presenter affordances) is sufficient. */}
-      <Route path="/admin/decks/:slug" element={<AdminDeckRoute />} />
-      <Route path="*" element={<NotFound />} />
-    </Routes>
+    <SettingsProvider>
+      <Routes>
+        <Route path="/" element={<Root />} />
+        <Route path="/decks/:slug" element={<DeckRoute />} />
+        <Route path="/admin" element={<AdminLayout />}>
+          <Route index element={<AdminIndex />} />
+          <Route
+            path="decks/:slug/analytics"
+            element={
+              <Suspense fallback={<AnalyticsFallback />}>
+                <AdminDeckAnalyticsRoute />
+              </Suspense>
+            }
+          />
+        </Route>
+        {/* Deck viewer is intentionally NOT nested under <AdminLayout> — the
+            viewer fills the full viewport (h-screen w-screen) and any chrome
+            strip above it would break the 16:9 letterbox. The deck's own
+            chrome (overview, help, presenter affordances) is sufficient. */}
+        <Route path="/admin/decks/:slug" element={<AdminDeckRoute />} />
+        <Route path="*" element={<NotFound />} />
+      </Routes>
+    </SettingsProvider>
   );
 }

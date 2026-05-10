@@ -24,7 +24,14 @@ import {
   type HTMLMotionProps,
 } from "framer-motion";
 import { useEffect, useId, type MouseEvent, type ReactNode } from "react";
-import type { NotesDefaultMode } from "@/lib/settings";
+import type {
+  DeckCardHoverAnimationSettings,
+  NotesDefaultMode,
+} from "@/lib/settings";
+import {
+  DECK_CARD_HOVER_SLIDE_COUNT_MAX,
+  DECK_CARD_HOVER_SLIDE_COUNT_MIN,
+} from "@/lib/settings";
 import { easeStandard } from "@/lib/motion";
 import { useSettings } from "./useSettings";
 
@@ -164,11 +171,83 @@ function SettingsSegmentedRow<T extends string>({
   );
 }
 
+interface SettingsNumericRowProps {
+  label: string;
+  description: string;
+  value: number;
+  /** Inclusive minimum; rendered as the first option. */
+  min: number;
+  /** Inclusive maximum; rendered as the last option. */
+  max: number;
+  onChange: (next: number) => void;
+  /** Test-id prefix; each option gets `${testIdPrefix}-${n}`. */
+  testIdPrefix?: string;
+}
+
+/**
+ * Numeric segmented-row (issue #128). Renders one button per integer in
+ * `[min, max]` and highlights the active value. We chose a segmented
+ * control over a stepper so the user can pick any value in one click —
+ * the range (1-8) is small enough to fit comfortably and avoids the
+ * extra plus/minus chrome.
+ */
+function SettingsNumericRow({
+  label,
+  description,
+  value,
+  min,
+  max,
+  onChange,
+  testIdPrefix,
+}: SettingsNumericRowProps) {
+  const options: number[] = [];
+  for (let n = min; n <= max; n++) options.push(n);
+  return (
+    <div className="flex items-start justify-between gap-6 py-4">
+      <div className="flex-1">
+        <p className="block text-sm font-medium text-cf-text">{label}</p>
+        <p className="mt-1 text-xs text-cf-text-muted">{description}</p>
+      </div>
+      <div
+        role="group"
+        aria-label={label}
+        data-testid={testIdPrefix}
+        className="flex shrink-0 items-center gap-1 rounded-md border border-cf-border bg-cf-bg-200 p-0.5"
+      >
+        {options.map((n) => {
+          const isActive = n === value;
+          return (
+            <button
+              key={n}
+              type="button"
+              role="radio"
+              aria-checked={isActive}
+              data-interactive
+              data-testid={
+                testIdPrefix ? `${testIdPrefix}-${n}` : undefined
+              }
+              onClick={() => onChange(n)}
+              className={`rounded px-2 py-1 font-mono text-[10px] uppercase tracking-[0.2em] transition-colors ${
+                isActive
+                  ? "bg-cf-orange text-cf-bg-100"
+                  : "text-cf-text-muted hover:text-cf-text"
+              }`}
+            >
+              {n}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const { settings, setSetting } = useSettings();
   const showIndicatorsId = useId();
   const presenterFinalPhaseId = useId();
   const notesDefaultModeId = useId();
+  const deckCardHoverId = useId();
 
   // Click-on-backdrop closes; clicks on the inner panel must NOT bubble
   // to the backdrop. We compare currentTarget vs target so a click that
@@ -218,6 +297,11 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
           onChangeNotesDefaultMode={(next) =>
             setSetting("notesDefaultMode", next)
           }
+          deckCardHoverAnimation={settings.deckCardHoverAnimation}
+          deckCardHoverId={deckCardHoverId}
+          onChangeDeckCardHoverAnimation={(next) =>
+            setSetting("deckCardHoverAnimation", next)
+          }
           onBackdropClick={onBackdropClick}
           onClose={onClose}
         />
@@ -236,6 +320,11 @@ interface SettingsModalContentProps {
   notesDefaultMode: NotesDefaultMode;
   notesDefaultModeId: string;
   onChangeNotesDefaultMode: (next: NotesDefaultMode) => void;
+  deckCardHoverAnimation: DeckCardHoverAnimationSettings;
+  deckCardHoverId: string;
+  onChangeDeckCardHoverAnimation: (
+    next: DeckCardHoverAnimationSettings,
+  ) => void;
   onBackdropClick: (e: MouseEvent<HTMLDivElement>) => void;
   onClose: () => void;
 }
@@ -249,6 +338,9 @@ function SettingsModalContent({
   onTogglePresenterFinalPhase,
   notesDefaultMode,
   onChangeNotesDefaultMode,
+  deckCardHoverAnimation,
+  deckCardHoverId,
+  onChangeDeckCardHoverAnimation,
   onBackdropClick,
   onClose,
 }: SettingsModalContentProps): ReactNode {
@@ -318,6 +410,35 @@ function SettingsModalContent({
             onChange={onChangeNotesDefaultMode}
             testIdPrefix="settings-modal-notes-default-mode"
           />
+          <SettingsRow
+            inputId={deckCardHoverId}
+            label="Deck card hover preview"
+            description="On the homepage and admin grid, hovering a deck card cycles through the first few slide thumbnails so you can preview a deck without opening it. List view never animates."
+            checked={deckCardHoverAnimation.enabled}
+            onChange={(next) =>
+              onChangeDeckCardHoverAnimation({
+                ...deckCardHoverAnimation,
+                enabled: next,
+              })
+            }
+            testId="settings-modal-toggle-deck-card-hover"
+          />
+          {deckCardHoverAnimation.enabled && (
+            <SettingsNumericRow
+              label="Slides shown on hover"
+              description="How many slide thumbnails to cycle through while hovering. The first slide is always shown when not hovering."
+              value={deckCardHoverAnimation.slideCount}
+              min={DECK_CARD_HOVER_SLIDE_COUNT_MIN}
+              max={DECK_CARD_HOVER_SLIDE_COUNT_MAX}
+              onChange={(next) =>
+                onChangeDeckCardHoverAnimation({
+                  ...deckCardHoverAnimation,
+                  slideCount: next,
+                })
+              }
+              testIdPrefix="settings-modal-deck-card-hover-slide-count"
+            />
+          )}
         </div>
       </motion.div>
     </motion.div>

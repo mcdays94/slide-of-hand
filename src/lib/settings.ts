@@ -27,6 +27,41 @@ export const STORAGE_KEY = "slide-of-hand-settings";
  */
 export type NotesDefaultMode = "rich" | "markdown";
 
+/**
+ * Hover-preview animation settings (issue #128). When `enabled` is true
+ * and the homepage / admin grid renders a `<DeckCard>` in `view="grid"`
+ * mode, hovering the card cycles through the first `slideCount` slide
+ * thumbnails (`01.png` … `0N.png`) at a fixed interval, giving the
+ * viewer a quick preview of what's inside without having to open the
+ * deck.
+ *
+ * `slideCount` is clamped to the inclusive range `[1, 8]` — 8 matches
+ * the maximum number of thumbnails the build script generates per deck
+ * (`scripts/build-thumbnails.mjs`). Values outside the range are
+ * coerced to the nearest endpoint; non-integer values are rounded.
+ */
+export interface DeckCardHoverAnimationSettings {
+  enabled: boolean;
+  /** Inclusive 1-8. */
+  slideCount: number;
+}
+
+/** Lower bound for `deckCardHoverAnimation.slideCount`. */
+export const DECK_CARD_HOVER_SLIDE_COUNT_MIN = 1;
+/** Upper bound for `deckCardHoverAnimation.slideCount`. Matches the build-script cap. */
+export const DECK_CARD_HOVER_SLIDE_COUNT_MAX = 8;
+
+function clampSlideCount(n: number): number {
+  const rounded = Math.round(n);
+  if (rounded < DECK_CARD_HOVER_SLIDE_COUNT_MIN) {
+    return DECK_CARD_HOVER_SLIDE_COUNT_MIN;
+  }
+  if (rounded > DECK_CARD_HOVER_SLIDE_COUNT_MAX) {
+    return DECK_CARD_HOVER_SLIDE_COUNT_MAX;
+  }
+  return rounded;
+}
+
 export interface Settings {
   /**
    * When `true`, `<ProgressBar>` is always visible at the bottom of the
@@ -56,13 +91,44 @@ export interface Settings {
    * loads first.
    */
   notesDefaultMode: NotesDefaultMode;
+  /**
+   * Hover-preview animation on deck cards (issue #128). When enabled,
+   * hovering a grid-mode `<DeckCard>` cycles through the first
+   * `slideCount` slide thumbnails on a 600ms interval. Animation is
+   * grid-only — list-mode cards never animate. Default: enabled with
+   * `slideCount = 3`.
+   */
+  deckCardHoverAnimation: DeckCardHoverAnimationSettings;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
   showSlideIndicators: true,
   presenterNextSlideShowsFinalPhase: false,
   notesDefaultMode: "rich",
+  deckCardHoverAnimation: { enabled: true, slideCount: 3 },
 };
+
+/**
+ * Coerce a possibly-malformed `deckCardHoverAnimation` blob from
+ * persisted storage into a valid `DeckCardHoverAnimationSettings`.
+ * Missing fields fall back to defaults, type mismatches fall back to
+ * defaults, and `slideCount` is clamped to the supported range. Older
+ * bundles that pre-date this setting will write nothing → defaults.
+ */
+function parseDeckCardHoverAnimation(
+  raw: unknown,
+): DeckCardHoverAnimationSettings {
+  const fallback = DEFAULT_SETTINGS.deckCardHoverAnimation;
+  if (raw == null || typeof raw !== "object") return { ...fallback };
+  const partial = raw as Partial<DeckCardHoverAnimationSettings>;
+  const enabled =
+    typeof partial.enabled === "boolean" ? partial.enabled : fallback.enabled;
+  const slideCount =
+    typeof partial.slideCount === "number" && Number.isFinite(partial.slideCount)
+      ? clampSlideCount(partial.slideCount)
+      : fallback.slideCount;
+  return { enabled, slideCount };
+}
 
 function getStorage(): Storage | null {
   if (typeof window === "undefined") return null;
@@ -107,6 +173,9 @@ export function readSettings(): Settings {
         partial.notesDefaultMode === "markdown"
           ? partial.notesDefaultMode
           : DEFAULT_SETTINGS.notesDefaultMode,
+      deckCardHoverAnimation: parseDeckCardHoverAnimation(
+        partial.deckCardHoverAnimation,
+      ),
     };
   } catch {
     return { ...DEFAULT_SETTINGS };

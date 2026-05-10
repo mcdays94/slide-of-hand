@@ -169,6 +169,7 @@ describe("<SettingsModal>", () => {
       showSlideIndicators: false,
       presenterNextSlideShowsFinalPhase: false,
       notesDefaultMode: "rich",
+      deckCardHoverAnimation: { enabled: true, slideCount: 3 },
     });
 
     // Toggling again flips it back ON.
@@ -180,6 +181,114 @@ describe("<SettingsModal>", () => {
       showSlideIndicators: true,
       presenterNextSlideShowsFinalPhase: false,
       notesDefaultMode: "rich",
+      deckCardHoverAnimation: { enabled: true, slideCount: 3 },
+    });
+  });
+
+  describe("deckCardHoverAnimation rows (issue #128)", () => {
+    it("renders the hover-animation toggle row", () => {
+      render(
+        <SettingsProvider>
+          <SettingsModal open={true} onClose={() => {}} />
+        </SettingsProvider>,
+      );
+      expect(
+        screen.getByTestId("settings-modal-toggle-deck-card-hover"),
+      ).toBeTruthy();
+    });
+
+    it("the hover-animation toggle defaults to ON", () => {
+      render(
+        <SettingsProvider>
+          <SettingsModal open={true} onClose={() => {}} />
+        </SettingsProvider>,
+      );
+      expect(
+        screen
+          .getByTestId("settings-modal-toggle-deck-card-hover")
+          .getAttribute("aria-checked"),
+      ).toBe("true");
+    });
+
+    it("renders a slideCount control when enabled is true", () => {
+      render(
+        <SettingsProvider>
+          <SettingsModal open={true} onClose={() => {}} />
+        </SettingsProvider>,
+      );
+      // Default state: enabled=true → numeric/segmented row visible.
+      expect(
+        screen.getByTestId("settings-modal-deck-card-hover-slide-count"),
+      ).toBeTruthy();
+    });
+
+    it("hides the slideCount control when enabled is toggled off", () => {
+      render(
+        <SettingsProvider>
+          <SettingsModal open={true} onClose={() => {}} />
+        </SettingsProvider>,
+      );
+      const toggle = screen.getByTestId(
+        "settings-modal-toggle-deck-card-hover",
+      );
+      act(() => {
+        toggle.click();
+      });
+      expect(toggle.getAttribute("aria-checked")).toBe("false");
+      expect(
+        screen.queryByTestId("settings-modal-deck-card-hover-slide-count"),
+      ).toBeNull();
+    });
+
+    it("clicking a slideCount option persists the choice", () => {
+      render(
+        <SettingsProvider>
+          <SettingsModal open={true} onClose={() => {}} />
+        </SettingsProvider>,
+      );
+      const opt5 = screen.getByTestId(
+        "settings-modal-deck-card-hover-slide-count-5",
+      );
+      act(() => {
+        opt5.click();
+      });
+      const persisted = JSON.parse(
+        window.localStorage.getItem(STORAGE_KEY)!,
+      ) as { deckCardHoverAnimation: { enabled: boolean; slideCount: number } };
+      expect(persisted.deckCardHoverAnimation.slideCount).toBe(5);
+    });
+
+    it("toggling the hover toggle persists enabled=false", () => {
+      render(
+        <SettingsProvider>
+          <SettingsModal open={true} onClose={() => {}} />
+        </SettingsProvider>,
+      );
+      const toggle = screen.getByTestId(
+        "settings-modal-toggle-deck-card-hover",
+      );
+      act(() => {
+        toggle.click();
+      });
+      const persisted = JSON.parse(
+        window.localStorage.getItem(STORAGE_KEY)!,
+      ) as { deckCardHoverAnimation: { enabled: boolean; slideCount: number } };
+      expect(persisted.deckCardHoverAnimation.enabled).toBe(false);
+    });
+
+    it("renders all 8 slideCount options", () => {
+      render(
+        <SettingsProvider>
+          <SettingsModal open={true} onClose={() => {}} />
+        </SettingsProvider>,
+      );
+      for (let n = 1; n <= 8; n++) {
+        expect(
+          screen.getByTestId(
+            `settings-modal-deck-card-hover-slide-count-${n}`,
+          ),
+        ).toBeTruthy();
+      }
     });
   });
 });
