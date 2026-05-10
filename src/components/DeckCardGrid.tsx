@@ -1,0 +1,171 @@
+/**
+ * `<DeckCardGrid>` — unified deck list renderer (issue #127).
+ *
+ * Used by BOTH the public homepage (`/`) and the Studio admin index
+ * (`/admin`). The grid:
+ *
+ *   - Reads / writes view mode (`grid` | `list`) from
+ *     `useViewPreference(surface)`. Each surface gets its own
+ *     localStorage slot so the homepage and Studio remember
+ *     independently.
+ *   - Renders a Grid / List segmented control above the list. The
+ *     active option is highlighted with the orange-accent fill, same
+ *     visual language as `<SettingsSegmentedRow>` in the viewer.
+ *   - Composes `<DeckCard>` for each item. The card receives the
+ *     current view mode (so it adapts its layout) plus any optional
+ *     admin slots (visibility badge, IDE link, delete callback) the
+ *     parent wired in.
+ *   - Renders a parent-supplied `emptyState` when `items` is empty.
+ *
+ * Surface contract:
+ *   - `public` surface never passes `onDelete`. Cards never carry a
+ *     visibility badge (the public list never sees private decks).
+ *   - `admin` surface MAY pass `onDelete`, in which case items
+ *     declared `canDelete: true` get a hover-revealed trashcan. Source
+ *     decks (with `canDelete: false`) silently render no trashcan —
+ *     they live in code and cannot be deleted via the runtime UI.
+ */
+
+import type { ReactNode } from "react";
+import type { DeckMeta } from "@/framework/viewer/types";
+import {
+  useViewPreference,
+  type Surface,
+} from "@/lib/use-view-preference";
+import { DeckCard, type DeckCardVisibility } from "./DeckCard";
+
+export interface DeckCardGridItem {
+  meta: DeckMeta;
+  /** Link target for the card's main click area. */
+  to: string;
+  /** Optional visibility — admin renders a `private` badge, public omits the chip. */
+  visibility?: DeckCardVisibility;
+  /**
+   * Whether THIS item is deletable from the runtime UI. Source decks
+   * are NOT deletable (their on-disk file is the source of truth).
+   * KV-backed decks ARE. The grid only renders a trashcan when both
+   * `canDelete` is true AND the parent wired up `onDelete`.
+   */
+  canDelete?: boolean;
+  /** Optional "Open in IDE" link target for source decks (admin / dev only). */
+  ideHref?: string;
+}
+
+export interface DeckCardGridProps {
+  /** Which surface this grid lives on. Drives the view-preference key. */
+  surface: Surface;
+  items: DeckCardGridItem[];
+  /** Rendered when `items` is empty. */
+  emptyState?: ReactNode;
+  /**
+   * Admin-only delete callback. When provided, items with
+   * `canDelete: true` render a trashcan that, on confirm, invokes
+   * this callback with the deck slug. The callback owns the side
+   * effect (DELETE + reload) and may throw to surface an inline
+   * error in the dialog.
+   */
+  onDelete?: (slug: string) => Promise<void> | void;
+}
+
+export function DeckCardGrid({
+  surface,
+  items,
+  emptyState,
+  onDelete,
+}: DeckCardGridProps) {
+  const { mode, setMode } = useViewPreference(surface);
+
+  // Empty state: render the parent-supplied slot (or nothing) instead
+  // of a card list. The toolbar is hidden too — without items, the
+  // view-mode toggle has nothing to act on.
+  if (items.length === 0) {
+    return <>{emptyState ?? null}</>;
+  }
+
+  const isList = mode === "list";
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="flex justify-end">
+        <div
+          role="group"
+          aria-label="View mode"
+          data-testid="view-mode-toggle"
+          className="flex items-center gap-1 rounded-md border border-cf-border bg-cf-bg-200 p-0.5"
+        >
+          <ViewModeOption
+            value="grid"
+            label="Grid"
+            active={mode === "grid"}
+            onClick={() => setMode("grid")}
+          />
+          <ViewModeOption
+            value="list"
+            label="List"
+            active={mode === "list"}
+            onClick={() => setMode("list")}
+          />
+        </div>
+      </div>
+
+      <ul
+        data-testid="deck-card-list"
+        data-view={mode}
+        className={
+          isList
+            ? "flex flex-col gap-3"
+            : "grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3"
+        }
+      >
+        {items.map((it) => {
+          const showDelete = Boolean(onDelete && it.canDelete);
+          return (
+            <li key={it.meta.slug} className="contents">
+              <DeckCard
+                meta={it.meta}
+                to={it.to}
+                view={mode}
+                visibility={it.visibility}
+                ideHref={it.ideHref}
+                onDelete={showDelete ? onDelete : undefined}
+              />
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
+interface ViewModeOptionProps {
+  value: "grid" | "list";
+  label: string;
+  active: boolean;
+  onClick: () => void;
+}
+
+/**
+ * Single segmented-control option. Same visual language as
+ * `<SettingsSegmentedRow>` in `SettingsModal.tsx` — active option is
+ * orange-filled, inactive is muted. The whole control doubles as a
+ * radio group via `role="radio"` + `aria-checked`.
+ */
+function ViewModeOption({ value, label, active, onClick }: ViewModeOptionProps) {
+  return (
+    <button
+      type="button"
+      role="radio"
+      aria-checked={active}
+      data-interactive
+      data-testid={`view-mode-${value}`}
+      onClick={onClick}
+      className={`rounded px-3 py-1 font-mono text-[10px] uppercase tracking-[0.2em] transition-colors ${
+        active
+          ? "bg-cf-orange text-cf-bg-100"
+          : "text-cf-text-muted hover:text-cf-text"
+      }`}
+    >
+      {label}
+    </button>
+  );
+}
