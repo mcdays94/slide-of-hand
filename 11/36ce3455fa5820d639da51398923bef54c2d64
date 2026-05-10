@@ -1,0 +1,29 @@
+worker/decks.ts
+  e9a5f388b23cec71 136-154,182-184,187-194,199-201,331
+worker/decks.test.ts
+  e9a5f388b23cec71 582-644
+src/framework/editor/EditMode.test.tsx
+  e9a5f388b23cec71 324-403
+src/framework/editor/useDeckEditor.ts
+  e9a5f388b23cec71 49-55,434-438,440,442-445,447-452,458-460
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "1136ce3455fa5820d639da51398923bef54c2d64",
+  "prompts": {
+    "e9a5f388b23cec71": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_1eed9d644ffelwsECbgJcRJ0pf",
+        "model": "anthropic/claude-opus-4-7"
+      },
+      "human_author": "mcd_git",
+      "messages": [],
+      "total_additions": 203,
+      "total_deletions": 11,
+      "accepted_lines": 203,
+      "overriden_lines": 0
+    }
+  }
+}
