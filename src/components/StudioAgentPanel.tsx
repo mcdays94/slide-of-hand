@@ -248,7 +248,14 @@ function PanelInner({ deckSlug, onRequestClose }: PanelInnerProps) {
           {messages.length === 0 ? (
             <EmptyState />
           ) : (
-            messages.map((m) => <MessageBubble key={m.id} message={m} />)
+            // Cast through `UiMessageLike` because the SDK's full
+            // `UIMessage` part union includes reasoning / source /
+            // file parts we don't render. `MessageBubble` narrows by
+            // `type` at runtime, so structurally we only read fields
+            // that exist on the parts we care about.
+            messages.map((m) => (
+              <MessageBubble key={m.id} message={m as unknown as UiMessageLike} />
+            ))
           )}
         </div>
 
@@ -326,44 +333,322 @@ function EmptyState() {
 }
 
 /**
- * Renders a single UI message bubble. We pull the text out of the
- * AI SDK's `parts` array — phase 1 only handles plain `text` parts.
- * Other part kinds (tool calls, reasoning) get filtered out for
- * now; they show up in later phases when tools land.
+ * Renders a single UI message bubble.
+ *
+ * The AI SDK's `UIMessage.parts` is a heterogeneous array of text,
+ * reasoning, tool calls, tool results, etc. Phase 2 renders three
+ * kinds inline:
+ *
+ *   - `type === "text"` — plain text concatenated into one bubble.
+ *   - `type === "tool-<name>"` (`ToolUIPart`) — tool call + result,
+ *     rendered as a structured pill with the input/output collapsible.
+ *   - `type === "dynamic-tool"` — same as above for runtime-defined
+ *     tools (we don't ship any in phase 2, but render defensively so
+ *     a future MCP-style addition doesn't crash the UI).
+ *
+ * Everything else (reasoning, sources, files) is filtered out for
+ * now — those parts land when the matching SDK feature is exercised.
  */
+
+/** Local typings — narrow enough to render without pulling the SDK's full UIMessage type into the JSX layer. */
+interface BasePart {
+  type: string;
+}
+interface TextPart extends BasePart {
+  type: "text";
+  text?: string;
+}
+interface ToolPart extends BasePart {
+  /** `tool-<name>` for static tools, `dynamic-tool` for runtime tools. */
+  type: string;
+  /** Tool name, only populated on dynamic-tool parts. */
+  toolName?: string;
+  toolCallId?: string;
+  state?:
+    | "input-streaming"
+    | "input-available"
+    | "approval-requested"
+    | "approval-responded"
+    | "output-available"
+    | "output-error"
+    | "output-denied";
+  input?: unknown;
+  output?: unknown;
+  errorText?: string;
+}
+type AnyPart = TextPart | ToolPart;
+
 interface UiMessageLike {
   id: string;
   role: "user" | "assistant" | "system";
-  parts: Array<{ type: string; text?: string }>;
+  parts: Array<AnyPart>;
+}
+
+/**
+ * `tool-<name>` is the canonical type prefix for static tools. We
+ * detect both that and the `dynamic-tool` shape so future MCP-style
+ * additions render without code changes.
+ */
+function isToolPart(p: AnyPart): p is ToolPart {
+  return (
+    typeof p.type === "string" &&
+    (p.type === "dynamic-tool" || p.type.startsWith("tool-"))
+  );
+}
+
+function getToolNameFromPart(p: ToolPart): string {
+  if (p.type === "dynamic-tool") return p.toolName ?? "tool";
+  // `tool-readDeck` → `readDeck`
+  return p.type.startsWith("tool-") ? p.type.slice(5) : p.type;
 }
 
 function MessageBubble({ message }: { message: UiMessageLike }) {
   const isUser = message.role === "user";
+
+  // Group consecutive text parts together so the bubble doesn't
+  // render with awkward gaps; tool parts get their own row.
   const text = message.parts
-    .filter((p) => p.type === "text")
+    .filter((p): p is TextPart => p.type === "text")
     .map((p) => p.text ?? "")
     .join("");
+  const toolParts = message.parts.filter(isToolPart);
+
+  // A message can be:
+  //   - pure text (most user messages, most assistant text responses)
+  //   - text + tool calls (assistant explaining what it's about to do
+  //     or summarising results)
+  //   - tool calls only (assistant mid-turn between text deltas)
+  // Render text bubble first if present, then each tool part, so the
+  // visual order matches the assistant's narrative.
 
   return (
     <div
       data-testid="studio-agent-message"
       data-role={message.role}
-      className={`flex flex-col gap-1 ${isUser ? "items-end" : "items-start"}`}
+      className={`flex flex-col gap-2 ${isUser ? "items-end" : "items-start"}`}
     >
       <p className="font-mono text-[9px] uppercase tracking-[0.25em] text-cf-text-subtle">
         {isUser ? "You" : "Assistant"}
       </p>
-      <div
-        className={`max-w-[90%] whitespace-pre-wrap rounded-md border px-3 py-2 text-sm leading-relaxed ${
-          isUser
-            ? "border-cf-orange/30 bg-cf-orange/5 text-cf-text"
-            : "border-cf-border bg-cf-bg-200 text-cf-text"
-        }`}
-      >
-        {text || (
+      {text && (
+        <div
+          data-testid="studio-agent-text"
+          className={`max-w-[90%] whitespace-pre-wrap rounded-md border px-3 py-2 text-sm leading-relaxed ${
+            isUser
+              ? "border-cf-orange/30 bg-cf-orange/5 text-cf-text"
+              : "border-cf-border bg-cf-bg-200 text-cf-text"
+          }`}
+        >
+          {text}
+        </div>
+      )}
+      {toolParts.length > 0 && (
+        <div className="flex w-full max-w-[90%] flex-col gap-2">
+          {toolParts.map((part, idx) => (
+            <ToolPartCard
+              key={part.toolCallId ?? `${part.type}-${idx}`}
+              part={part}
+            />
+          ))}
+        </div>
+      )}
+      {!text && toolParts.length === 0 && (
+        <div className="max-w-[90%] rounded-md border border-cf-border bg-cf-bg-200 px-3 py-2 text-sm">
           <span className="text-cf-text-subtle italic">…</span>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
+}
+
+/**
+ * Renders a single tool-call part. Visual states:
+ *
+ *   - `input-streaming` / `input-available` — "🛠 Calling <name>…"
+ *     pill with a soft pulse so the user knows the agent is mid-tool.
+ *   - `output-available` — collapsed summary line plus an expandable
+ *     `<details>` showing the raw input + output JSON. Specialised
+ *     summaries for `readDeck` and `proposePatch` give a friendlier
+ *     first read than raw JSON.
+ *   - `output-error` / `output-denied` — red-bordered card with the
+ *     error text.
+ *
+ * The expander is `<details>` (native browser disclosure) rather than
+ * a custom toggle — cheap, accessible, keyboard-navigable, and a
+ * future polish pass can replace it with a designed component without
+ * changing the semantics.
+ */
+function ToolPartCard({ part }: { part: ToolPart }) {
+  const toolName = getToolNameFromPart(part);
+  const state = part.state ?? "input-streaming";
+
+  if (state === "output-error" || state === "output-denied") {
+    return (
+      <div
+        data-testid="studio-agent-tool-part"
+        data-tool={toolName}
+        data-state={state}
+        className="rounded-md border border-red-500/40 bg-red-500/5 px-3 py-2 text-sm text-cf-text"
+      >
+        <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-red-500">
+          {state === "output-denied" ? "Denied" : "Tool error"} · {toolName}
+        </p>
+        <p className="mt-1 text-cf-text">
+          {part.errorText ?? "Tool call failed."}
+        </p>
+        {part.input !== undefined && (
+          <details className="mt-2">
+            <summary className="cursor-pointer font-mono text-[10px] uppercase tracking-[0.2em] text-cf-text-subtle">
+              Input
+            </summary>
+            <pre className="mt-1 max-h-48 overflow-auto rounded border border-cf-border bg-cf-bg-100 px-2 py-1 text-[11px] leading-snug">
+              {safeStringify(part.input)}
+            </pre>
+          </details>
+        )}
+      </div>
+    );
+  }
+
+  if (state === "input-streaming" || state === "input-available") {
+    return (
+      <div
+        data-testid="studio-agent-tool-part"
+        data-tool={toolName}
+        data-state={state}
+        className="flex items-center gap-2 rounded-md border border-cf-border bg-cf-bg-200 px-3 py-2 text-sm text-cf-text-muted"
+      >
+        <span aria-hidden="true">🛠</span>
+        <span className="font-mono text-[11px] tracking-[0.05em]">
+          Calling <span className="text-cf-text">{toolName}</span>…
+        </span>
+        <span className="ml-auto inline-flex h-1.5 w-1.5 animate-pulse rounded-full bg-cf-orange" />
+      </div>
+    );
+  }
+
+  // state === "output-available" (or any approval state, which we
+  // render as if input is staged).
+  const summary = summariseToolOutput(toolName, part.output);
+  return (
+    <div
+      data-testid="studio-agent-tool-part"
+      data-tool={toolName}
+      data-state={state}
+      className="rounded-md border border-cf-border bg-cf-bg-200 px-3 py-2 text-sm text-cf-text"
+    >
+      <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-cf-orange">
+        {summary.icon} {summary.label} · {toolName}
+      </p>
+      {summary.detail && (
+        <p className="mt-1 text-cf-text">{summary.detail}</p>
+      )}
+      <details className="mt-2">
+        <summary className="cursor-pointer font-mono text-[10px] uppercase tracking-[0.2em] text-cf-text-subtle">
+          Show JSON
+        </summary>
+        <div className="mt-1 flex flex-col gap-2">
+          {part.input !== undefined && (
+            <div>
+              <p className="font-mono text-[9px] uppercase tracking-[0.2em] text-cf-text-subtle">
+                Input
+              </p>
+              <pre className="max-h-48 overflow-auto rounded border border-cf-border bg-cf-bg-100 px-2 py-1 text-[11px] leading-snug">
+                {safeStringify(part.input)}
+              </pre>
+            </div>
+          )}
+          <div>
+            <p className="font-mono text-[9px] uppercase tracking-[0.2em] text-cf-text-subtle">
+              Output
+            </p>
+            <pre
+              data-testid="studio-agent-tool-output-json"
+              className="max-h-64 overflow-auto rounded border border-cf-border bg-cf-bg-100 px-2 py-1 text-[11px] leading-snug"
+            >
+              {safeStringify(part.output)}
+            </pre>
+          </div>
+        </div>
+      </details>
+    </div>
+  );
+}
+
+/**
+ * Friendly one-line summary for each known tool's result. Falls back
+ * to a generic "Result" pill for unknown tools (so a future MCP tool
+ * renders sensibly without code changes here).
+ */
+function summariseToolOutput(
+  toolName: string,
+  output: unknown,
+): { icon: string; label: string; detail?: string } {
+  if (toolName === "readDeck" && output && typeof output === "object") {
+    const o = output as {
+      found?: boolean;
+      reason?: string;
+      error?: string;
+      deck?: { meta?: { title?: string }; slides?: unknown[] };
+    };
+    if (o.found === true && o.deck) {
+      const slideCount = Array.isArray(o.deck.slides)
+        ? o.deck.slides.length
+        : 0;
+      const title = o.deck.meta?.title ?? "(untitled)";
+      return {
+        icon: "📖",
+        label: "Read deck",
+        detail: `“${title}” · ${slideCount} slide${slideCount === 1 ? "" : "s"}`,
+      };
+    }
+    if (o.found === false) {
+      return {
+        icon: "📖",
+        label: "Read deck",
+        detail: o.reason ?? o.error ?? "Deck not available.",
+      };
+    }
+  }
+  if (toolName === "proposePatch" && output && typeof output === "object") {
+    const o = output as {
+      ok?: boolean;
+      errors?: string[];
+      error?: string;
+      dryRun?: { meta?: { title?: string }; slides?: unknown[] };
+    };
+    if (o.ok === true && o.dryRun) {
+      const slideCount = Array.isArray(o.dryRun.slides)
+        ? o.dryRun.slides.length
+        : 0;
+      const title = o.dryRun.meta?.title ?? "(untitled)";
+      return {
+        icon: "📝",
+        label: "Proposed change (dry-run)",
+        detail: `“${title}” · ${slideCount} slide${slideCount === 1 ? "" : "s"} · not saved yet`,
+      };
+    }
+    if (o.ok === false) {
+      const msg = o.errors?.join("; ") ?? o.error ?? "Validation failed.";
+      return {
+        icon: "⚠️",
+        label: "Proposed change rejected",
+        detail: msg,
+      };
+    }
+  }
+  return { icon: "🔧", label: "Tool result" };
+}
+
+/**
+ * Stringify with a depth-limited fallback. JSON.stringify can throw
+ * on circular structures or BigInt; we'd rather render "<unprintable>"
+ * than crash the message list.
+ */
+function safeStringify(value: unknown): string {
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return "<unprintable value>";
+  }
 }

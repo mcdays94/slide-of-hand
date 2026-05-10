@@ -35,6 +35,9 @@ vi.mock("@cloudflare/ai-chat/react", () => ({
 
 import { StudioAgentPanel } from "./StudioAgentPanel";
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type TestMessagePart = any;
+
 function setupHooks({
   messages = [],
   status = "ready",
@@ -42,7 +45,7 @@ function setupHooks({
   messages?: Array<{
     id: string;
     role: "user" | "assistant";
-    parts: Array<{ type: string; text?: string }>;
+    parts: TestMessagePart[];
   }>;
   status?: "ready" | "submitted" | "streaming" | "error";
 } = {}) {
@@ -196,5 +199,228 @@ describe("<StudioAgentPanel>", () => {
     const panel = screen.getByTestId("studio-agent-panel");
     expect(panel.getAttribute("role")).toBe("dialog");
     expect(panel.getAttribute("aria-label")).toMatch(/AI assistant/i);
+  });
+});
+
+describe("<StudioAgentPanel> — tool-call rendering (phase 2)", () => {
+  it("renders a 'Calling <name>…' pill while a tool call is in progress", () => {
+    setupHooks({
+      messages: [
+        {
+          id: "a1",
+          role: "assistant",
+          parts: [
+            {
+              type: "tool-readDeck",
+              toolCallId: "call-1",
+              state: "input-available",
+              input: {},
+            },
+          ],
+        },
+      ],
+    });
+    render(<StudioAgentPanel deckSlug="hello" onClose={vi.fn()} />);
+    const pill = screen.getByTestId("studio-agent-tool-part");
+    expect(pill.dataset.tool).toBe("readDeck");
+    expect(pill.dataset.state).toBe("input-available");
+    expect(pill.textContent).toMatch(/calling.*readDeck/i);
+  });
+
+  it("renders the readDeck output with a friendly summary line", () => {
+    setupHooks({
+      messages: [
+        {
+          id: "a1",
+          role: "assistant",
+          parts: [
+            {
+              type: "tool-readDeck",
+              toolCallId: "call-1",
+              state: "output-available",
+              input: {},
+              output: {
+                found: true,
+                deck: {
+                  meta: { title: "My Talk", slug: "my-talk" },
+                  slides: [{ id: "a" }, { id: "b" }, { id: "c" }],
+                },
+              },
+            },
+          ],
+        },
+      ],
+    });
+    render(<StudioAgentPanel deckSlug="hello" onClose={vi.fn()} />);
+    const pill = screen.getByTestId("studio-agent-tool-part");
+    expect(pill.textContent).toMatch(/read deck/i);
+    expect(pill.textContent).toMatch(/My Talk/);
+    expect(pill.textContent).toMatch(/3 slides/);
+    // Output JSON should also be present, expandable via <details>.
+    const json = screen.getByTestId("studio-agent-tool-output-json");
+    expect(json.textContent).toMatch(/found.*true/);
+  });
+
+  it("renders a readDeck result indicating a build-time deck (found:false)", () => {
+    setupHooks({
+      messages: [
+        {
+          id: "a1",
+          role: "assistant",
+          parts: [
+            {
+              type: "tool-readDeck",
+              toolCallId: "call-1",
+              state: "output-available",
+              input: {},
+              output: {
+                found: false,
+                reason: "Not a data deck — likely a build-time JSX deck",
+              },
+            },
+          ],
+        },
+      ],
+    });
+    render(<StudioAgentPanel deckSlug="hello" onClose={vi.fn()} />);
+    const pill = screen.getByTestId("studio-agent-tool-part");
+    expect(pill.textContent).toMatch(/build-time/i);
+  });
+
+  it("renders the proposePatch dry-run summary", () => {
+    setupHooks({
+      messages: [
+        {
+          id: "a1",
+          role: "assistant",
+          parts: [
+            {
+              type: "tool-proposePatch",
+              toolCallId: "call-1",
+              state: "output-available",
+              input: { patch: { meta: { title: "Renamed" } } },
+              output: {
+                ok: true,
+                dryRun: {
+                  meta: { title: "Renamed", slug: "my-talk" },
+                  slides: [{ id: "a" }],
+                },
+              },
+            },
+          ],
+        },
+      ],
+    });
+    render(<StudioAgentPanel deckSlug="hello" onClose={vi.fn()} />);
+    const pill = screen.getByTestId("studio-agent-tool-part");
+    expect(pill.textContent).toMatch(/proposed change.*dry-run/i);
+    expect(pill.textContent).toMatch(/not saved/i);
+    expect(pill.textContent).toMatch(/Renamed/);
+  });
+
+  it("renders the proposePatch failure case with errors visible", () => {
+    setupHooks({
+      messages: [
+        {
+          id: "a1",
+          role: "assistant",
+          parts: [
+            {
+              type: "tool-proposePatch",
+              toolCallId: "call-1",
+              state: "output-available",
+              input: { patch: { meta: { visibility: "weird" } } },
+              output: {
+                ok: false,
+                errors: ['meta.visibility must be "public" or "private"'],
+              },
+            },
+          ],
+        },
+      ],
+    });
+    render(<StudioAgentPanel deckSlug="hello" onClose={vi.fn()} />);
+    const pill = screen.getByTestId("studio-agent-tool-part");
+    expect(pill.textContent).toMatch(/rejected/i);
+    expect(pill.textContent).toMatch(/visibility/);
+  });
+
+  it("renders an output-error tool part with the SDK-supplied errorText", () => {
+    setupHooks({
+      messages: [
+        {
+          id: "a1",
+          role: "assistant",
+          parts: [
+            {
+              type: "tool-readDeck",
+              toolCallId: "call-1",
+              state: "output-error",
+              input: {},
+              errorText: "KV unreachable",
+            },
+          ],
+        },
+      ],
+    });
+    render(<StudioAgentPanel deckSlug="hello" onClose={vi.fn()} />);
+    const pill = screen.getByTestId("studio-agent-tool-part");
+    expect(pill.dataset.state).toBe("output-error");
+    expect(pill.textContent).toMatch(/KV unreachable/);
+  });
+
+  it("renders both a text part and the tool calls that follow in the same assistant turn", () => {
+    setupHooks({
+      messages: [
+        {
+          id: "a1",
+          role: "assistant",
+          parts: [
+            { type: "text", text: "Let me check the deck first." },
+            {
+              type: "tool-readDeck",
+              toolCallId: "call-1",
+              state: "output-available",
+              input: {},
+              output: {
+                found: true,
+                deck: { meta: { title: "X" }, slides: [] },
+              },
+            },
+          ],
+        },
+      ],
+    });
+    render(<StudioAgentPanel deckSlug="hello" onClose={vi.fn()} />);
+    expect(screen.getByTestId("studio-agent-text").textContent).toMatch(
+      /check the deck first/,
+    );
+    expect(screen.getByTestId("studio-agent-tool-part")).toBeDefined();
+  });
+
+  it("renders a dynamic-tool part (defensive fallback for future MCP tools)", () => {
+    setupHooks({
+      messages: [
+        {
+          id: "a1",
+          role: "assistant",
+          parts: [
+            {
+              type: "dynamic-tool",
+              toolName: "futureMcpTool",
+              toolCallId: "call-1",
+              state: "output-available",
+              input: { foo: "bar" },
+              output: { ok: true },
+            },
+          ],
+        },
+      ],
+    });
+    render(<StudioAgentPanel deckSlug="hello" onClose={vi.fn()} />);
+    const pill = screen.getByTestId("studio-agent-tool-part");
+    expect(pill.dataset.tool).toBe("futureMcpTool");
+    // Falls back to the generic "Tool result" label.
+    expect(pill.textContent).toMatch(/tool result/i);
   });
 });

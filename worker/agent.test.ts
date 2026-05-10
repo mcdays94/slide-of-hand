@@ -66,6 +66,10 @@ function makeEnv(): AgentEnv {
   return {
     AI: stubAi,
     DeckAuthorAgent: {} as DurableObjectNamespace,
+    // Phase 2: agent tools read from this KV namespace. The routing
+    // tests never invoke the tools (the SDK delegation point is
+    // mocked), so a stub is enough.
+    DECKS: {} as KVNamespace,
   };
 }
 

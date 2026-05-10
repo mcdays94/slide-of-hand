@@ -61,8 +61,9 @@
 import { AIChatAgent } from "@cloudflare/ai-chat";
 import { routeAgentRequest } from "agents";
 import { createWorkersAI } from "workers-ai-provider";
-import { streamText, convertToModelMessages } from "ai";
+import { streamText, convertToModelMessages, stepCountIs } from "ai";
 import { requireAccessAuth, getAccessUserEmail } from "./access-auth";
+import { buildTools } from "./agent-tools";
 
 /**
  * Env subset the agent needs. Composed into the main `Env` interface
@@ -71,6 +72,7 @@ import { requireAccessAuth, getAccessUserEmail } from "./access-auth";
 export interface AgentEnv {
   AI: Ai;
   DeckAuthorAgent: DurableObjectNamespace;
+  DECKS: KVNamespace;
 }
 
 /**
@@ -86,20 +88,42 @@ export interface AgentEnv {
 const MODEL_ID = "@cf/moonshotai/kimi-k2.6";
 
 /**
- * System prompt. Kept deliberately scope-honest — the agent really
- * cannot see the deck in phase 1, so we tell it that and ask it to be
- * pragmatic about what it can help with (copy suggestions, structural
- * advice, sketching outlines). The "I can't edit the deck yet" line
- * mirrors the empty-state message in the chat UI so the model and the
- * UI agree on the scope.
+ * System prompt. Updated for phase 2 (issue #131) — the agent now
+ * has read + propose-patch tools for KV-backed data decks, but
+ * cannot yet commit changes (that's phase 3) and cannot touch
+ * build-time JSX decks (that's phase 5+ with the Sandbox).
+ *
+ * Phrasing is deliberately scope-honest in both directions: the
+ * model knows when to USE the tools (so it doesn't try to reason
+ * about a deck it could just read), AND when NOT to claim to have
+ * applied a change (the dry-run never persists).
  */
-const SYSTEM_PROMPT = `You are an AI assistant embedded in Slide of Hand, a
-JSX-first deck platform. Help the author plan, refine, and iterate on their
-deck content. Keep responses concise and pragmatic.
+const SYSTEM_PROMPT = `You are an AI assistant embedded in Slide of Hand,
+a JSX-first deck platform. Help the author plan, refine, and iterate on
+their deck content. Keep responses concise and pragmatic.
 
-Currently you have NO direct access to the deck — you can discuss approach,
-suggest copy, sketch slide structures, but cannot read or modify the deck
-itself. That capability is coming in a future phase.`;
+You have two tools available:
+
+- \`readDeck()\` — fetches the current deck JSON, if it's a data
+  (KV-backed) deck. Returns \`{ found: false }\` for build-time JSX
+  decks; in that case explain to the user that you can only read
+  data decks for now.
+
+- \`proposePatch({ patch })\` — applies a partial-deck patch as a
+  DRY-RUN and returns the resulting deck without persisting it. The
+  user must separately confirm to actually apply changes (that's
+  the next phase — for now, just describe the proposed change and
+  ask if it looks right). \`patch.meta\` is shallow-merged into the
+  current deck's meta; \`patch.slides\`, if provided, REPLACES the
+  slides array wholesale.
+
+Use \`readDeck\` proactively when the user asks about the deck or
+wants to make a change — you'll need to see the current state. Use
+\`proposePatch\` to suggest concrete changes; the user reviews the
+dry-run output before anything ships.
+
+Never claim a change has been saved — every proposal is dry-run
+until the user confirms.`;
 
 /**
  * `DeckAuthorAgent` — Durable Object that owns the chat round-trip
@@ -119,6 +143,12 @@ export class DeckAuthorAgent extends AIChatAgent<AgentEnv> {
     options: Parameters<AIChatAgent<AgentEnv>["onChatMessage"]>[1],
   ) {
     const workersai = createWorkersAI({ binding: this.env.AI });
+    // `this.name` is the agent instance name — for phase 1/2 we key
+    // the instance by deck slug (see header for why per-deck, not
+    // per-(user, deck), is fine for phase 2). The tools close over
+    // it so `readDeck`/`proposePatch` always operate on the deck the
+    // user is actually editing.
+    const tools = buildTools(this.env, this.name);
     const result = streamText({
       // `workersai(MODEL_ID)` returns the AI-SDK provider for the
       // chosen Workers AI model. Cast through `any` because the SDK's
@@ -128,11 +158,30 @@ export class DeckAuthorAgent extends AIChatAgent<AgentEnv> {
       model: workersai(MODEL_ID as any),
       system: SYSTEM_PROMPT,
       messages: await convertToModelMessages(this.messages),
+      tools,
+      // Multi-step: the default `stepCountIs(1)` would stop after the
+      // very first model response, which means the model would call a
+      // tool but never see the result. Bump to 5 so the model can:
+      //   1. emit `tool-call` for `readDeck`
+      //   2. receive the tool result
+      //   3. emit `tool-call` for `proposePatch`
+      //   4. receive the tool result
+      //   5. emit the final text response describing the dry-run
+      // 5 steps comfortably covers the read → propose → respond loop
+      // while bounding the cost on a misbehaving model that loops.
+      stopWhen: stepCountIs(5),
       // Forward the abort signal so cancellation from the client
       // (stop button) actually severs the upstream Workers AI call
       // instead of running it to completion in the background.
       abortSignal: options?.abortSignal,
-      onFinish,
+      // `onFinish` arrives typed against the base `ToolSet`, but
+      // `streamText` infers its narrower variant from `tools` and
+      // expects a callback parameterised by that variant. The two
+      // are structurally compatible (the callback only reads the
+      // event), so cast through `any` rather than re-typing every
+      // tool-set boundary in the call stack.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      onFinish: onFinish as any,
     });
     return result.toUIMessageStreamResponse();
   }
