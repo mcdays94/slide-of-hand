@@ -135,12 +135,21 @@ function validateMeta(
     errors.push("meta.date must be an ISO date string (YYYY-MM-DD)");
   }
 
-  const visibility = meta.visibility;
-  if (
-    typeof visibility !== "string" ||
-    !(VISIBILITIES as readonly string[]).includes(visibility)
+  // Back-compat (#129): pre-#129 deck records were written without a
+  // `visibility` field. Treat missing/undefined as "public" so legacy
+  // KV records validate cleanly. Reject any other shape (non-string,
+  // unknown string).
+  const rawVisibility = meta.visibility;
+  let visibility: Visibility = "public";
+  if (rawVisibility === undefined) {
+    visibility = "public";
+  } else if (
+    typeof rawVisibility !== "string" ||
+    !(VISIBILITIES as readonly string[]).includes(rawVisibility)
   ) {
     errors.push('meta.visibility must be "public" or "private"');
+  } else {
+    visibility = rawVisibility as Visibility;
   }
 
   if (
@@ -179,7 +188,7 @@ function validateMeta(
     slug: slug as string,
     title: title as string,
     date: date as string,
-    visibility: visibility as Visibility,
+    visibility,
   };
   if (typeof meta.description === "string") out.description = meta.description;
   if (typeof meta.author === "string") out.author = meta.author;

@@ -169,10 +169,57 @@ describe("<NewDeckModal>", () => {
     const body = JSON.parse((init as RequestInit).body as string);
     expect(body.meta.title).toBe("My Deck");
     expect(body.meta.slug).toBe("my-deck");
-    expect(body.meta.visibility).toBe("private");
+    // Issue #129: visibility defaults to "public" — most authored decks
+    // are intended for the public index. Authors who want private
+    // explicitly flip the segmented control.
+    expect(body.meta.visibility).toBe("public");
     expect(Array.isArray(body.slides)).toBe(true);
     expect(body.slides).toHaveLength(0);
     expect(onClose).toHaveBeenCalled();
+  });
+
+  it("defaults the visibility segmented control to Public", () => {
+    renderModal(true);
+    fireEvent.click(screen.getByTestId("advanced-toggle"));
+    const publicBtn = screen.getByTestId("new-deck-visibility-public");
+    const privateBtn = screen.getByTestId("new-deck-visibility-private");
+    expect(publicBtn.getAttribute("aria-checked")).toBe("true");
+    expect(privateBtn.getAttribute("aria-checked")).toBe("false");
+  });
+
+  it("flipping visibility to Private submits visibility=private", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ meta: { slug: "secret-deck" }, slides: [] }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    renderModal(true);
+
+    fireEvent.change(screen.getByTestId("new-deck-title"), {
+      target: { value: "Secret Deck" },
+    });
+    fireEvent.click(screen.getByTestId("advanced-toggle"));
+    fireEvent.click(screen.getByTestId("new-deck-visibility-private"));
+
+    // Selection should flip visually.
+    expect(
+      screen.getByTestId("new-deck-visibility-private").getAttribute(
+        "aria-checked",
+      ),
+    ).toBe("true");
+    expect(
+      screen.getByTestId("new-deck-visibility-public").getAttribute(
+        "aria-checked",
+      ),
+    ).toBe("false");
+
+    fireEvent.submit(screen.getByTestId("new-deck-submit").closest("form")!);
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    const [, init] = fetchMock.mock.calls[0];
+    const body = JSON.parse((init as RequestInit).body as string);
+    expect(body.meta.visibility).toBe("private");
   });
 
   it("surfaces a server error message inline without closing the modal", async () => {
