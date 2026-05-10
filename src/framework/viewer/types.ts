@@ -38,8 +38,8 @@ export interface DeckMeta {
   slug: string;
   /** Public-facing title — shown on the index page + page <title>. */
   title: string;
-  /** One-sentence description. Shown on the index card. */
-  description: string;
+  /** Optional one-sentence description. When present, shown on the index card. */
+  description?: string;
   /** ISO date string (YYYY-MM-DD). Used for sort + display on index. */
   date: string;
   /** Author name(s). */

@@ -73,9 +73,11 @@ export function DeckCard({ meta }: DeckCardProps) {
           {meta.title}
         </h2>
 
-        <p className="text-sm text-cf-text-muted sm:text-[15px]">
-          {meta.description}
-        </p>
+        {meta.description && (
+          <p className="text-sm text-cf-text-muted sm:text-[15px]">
+            {meta.description}
+          </p>
+        )}
 
         {hasTags && (
           <ul className="mt-1 flex flex-wrap gap-1.5">
