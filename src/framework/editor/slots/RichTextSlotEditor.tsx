@@ -13,6 +13,7 @@
  */
 
 import { RichTextRender } from "@/framework/templates/RichTextRender";
+import { richtextProseClasses } from "@/templates/richtext-prose";
 import type { SlotSpec } from "@/lib/template-types";
 import type { SlotValue } from "@/lib/slot-types";
 
@@ -64,7 +65,7 @@ export function RichTextSlotEditor({
         />
         <div
           data-testid={`slot-preview-${name}`}
-          className="prose prose-sm max-w-none rounded border border-dashed border-cf-border bg-cf-bg-200 px-3 py-2 text-sm text-cf-text"
+          className={`rounded border border-dashed border-cf-border bg-cf-bg-200 px-3 py-2 text-sm text-cf-text ${richtextProseClasses}`}
         >
           {value.value.length > 0 ? (
             <RichTextRender source={value.value} />

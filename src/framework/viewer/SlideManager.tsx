@@ -58,6 +58,7 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import ReactMarkdown from "react-markdown";
 import { easeEntrance } from "@/lib/motion";
+import { richtextProseClasses } from "@/templates/richtext-prose";
 import {
   MANIFEST_VERSION,
   MAX_NOTES_LENGTH,
@@ -354,7 +355,7 @@ function NotesEditor({ slideId, value, onChange }: NotesEditorProps) {
       ) : (
         <div
           data-testid="slide-manager-notes-preview"
-          className="prose prose-sm max-w-none rounded border border-dashed border-cf-border bg-cf-bg-100 px-3 py-2 text-sm text-cf-text [&_p]:my-2 [&_strong]:font-medium"
+          className={`rounded border border-dashed border-cf-border bg-cf-bg-100 px-3 py-2 text-sm text-cf-text ${richtextProseClasses}`}
         >
           {value ? (
             <ReactMarkdown>{value}</ReactMarkdown>
