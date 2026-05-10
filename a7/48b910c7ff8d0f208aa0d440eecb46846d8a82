@@ -1,0 +1,29 @@
+worker/cache-control.ts
+  cffec469c55b2ea3 4-5,7-13,15-32,34-53,61,68-83,86-91,93,99-111
+worker/index.test.ts
+  cffec469c55b2ea3 2,4-5,10-15,113-271
+wrangler.jsonc
+  cffec469c55b2ea3 54-85
+worker/index.ts
+  cffec469c55b2ea3 39,87-98
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "a748b910c7ff8d0f208aa0d440eecb46846d8a82",
+  "prompts": {
+    "cffec469c55b2ea3": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_1ecbcb427ffeCpoSFySZNrLWSF",
+        "model": "anthropic/claude-opus-4-7"
+      },
+      "human_author": "mcdays94",
+      "messages": [],
+      "total_additions": 314,
+      "total_deletions": 28,
+      "accepted_lines": 314,
+      "overriden_lines": 0
+    }
+  }
+}
