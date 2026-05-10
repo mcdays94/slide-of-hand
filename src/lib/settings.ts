@@ -28,10 +28,20 @@ export interface Settings {
    * out 800ms after the cursor leaves.
    */
   showSlideIndicators: boolean;
+  /**
+   * When `true`, the presenter window's next-slide preview is rendered
+   * at the LAST phase (fully revealed) as a single thumbnail. When
+   * `false` (default), the next-slide area shows a horizontal filmstrip
+   * of every phase for multi-phase next slides — the presenter can see
+   * each reveal before pressing Next. Single-phase next slides render
+   * as a single thumbnail in either mode.
+   */
+  presenterNextSlideShowsFinalPhase: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
   showSlideIndicators: true,
+  presenterNextSlideShowsFinalPhase: false,
 };
 
 function getStorage(): Storage | null {
@@ -68,6 +78,10 @@ export function readSettings(): Settings {
         typeof partial.showSlideIndicators === "boolean"
           ? partial.showSlideIndicators
           : DEFAULT_SETTINGS.showSlideIndicators,
+      presenterNextSlideShowsFinalPhase:
+        typeof partial.presenterNextSlideShowsFinalPhase === "boolean"
+          ? partial.presenterNextSlideShowsFinalPhase
+          : DEFAULT_SETTINGS.presenterNextSlideShowsFinalPhase,
     };
   } catch {
     return { ...DEFAULT_SETTINGS };

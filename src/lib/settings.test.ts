@@ -78,7 +78,10 @@ describe("writeSettings()", () => {
     expect(merged.showSlideIndicators).toBe(false);
     const raw = window.localStorage.getItem(STORAGE_KEY);
     expect(raw).not.toBeNull();
-    expect(JSON.parse(raw!)).toEqual({ showSlideIndicators: false });
+    expect(JSON.parse(raw!)).toEqual({
+      showSlideIndicators: false,
+      presenterNextSlideShowsFinalPhase: false,
+    });
   });
 
   it("merges with existing persisted settings (does not clobber other keys)", () => {

@@ -30,6 +30,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Deck } from "@/framework/viewer/types";
 import { PhaseProvider } from "@/framework/viewer/PhaseContext";
+import { SettingsModal } from "@/framework/viewer/SettingsModal";
+import { SettingsProvider, useSettings } from "@/framework/viewer/useSettings";
 import { useDeckBroadcast } from "./broadcast";
 import { SpeakerNotes } from "./SpeakerNotes";
 import { PhaseDots } from "./PhaseDots";
@@ -51,6 +53,160 @@ import {
 
 export interface PresenterWindowProps {
   deck: Deck;
+}
+
+/**
+ * Public entry — wraps `<PresenterWindowInner>` in a `<SettingsProvider>`.
+ *
+ * The presenter window route mounts `<PresenterWindow>` directly (not via
+ * `<Deck>`), so it doesn't inherit a settings context from the viewer.
+ * Wrapping here lets the inner component (and its `<SettingsModal>`)
+ * read + persist `Settings` exactly the way the public viewer does.
+ */
+export function PresenterWindow(props: PresenterWindowProps) {
+  return (
+    <SettingsProvider>
+      <PresenterWindowInner {...props} />
+    </SettingsProvider>
+  );
+}
+
+/**
+ * Lightweight gear icon (4 spokes) used as the settings trigger in the
+ * presenter header. Inline SVG to avoid pulling lucide-react into the
+ * presenter chunk for one icon.
+ */
+function GearIcon({ size = 14 }: { size?: number }) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <circle cx="12" cy="12" r="3" />
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
+    </svg>
+  );
+}
+
+/**
+ * Render the next-slide preview area: either a single thumbnail or a
+ * horizontal filmstrip of every phase, depending on the user's
+ * `presenterNextSlideShowsFinalPhase` setting and how many phases the
+ * next slide has.
+ *
+ * Three render branches:
+ *
+ *   1. Setting ON → single thumbnail at the LAST phase (fully revealed).
+ *   2. Setting OFF + multi-phase next slide → filmstrip of N thumbnails,
+ *      one per phase, in order.
+ *   3. Setting OFF + single-phase next slide → single thumbnail at
+ *      phase 0 (current behaviour, no change).
+ *
+ * End-of-deck (no next slide) renders a placeholder. The container that
+ * houses this component owns the 16:9 sizing so each branch can fill the
+ * frame without re-deriving aspect ratios.
+ */
+function NextPreview({
+  deck,
+  nextIndex,
+  showsFinalPhase,
+  onJump,
+}: {
+  deck: Deck;
+  nextIndex: number;
+  showsFinalPhase: boolean;
+  onJump: (slideIndex: number, phase?: number) => void;
+}) {
+  const next = deck.slides[nextIndex];
+  if (!next) {
+    return (
+      <div
+        data-testid="presenter-next-preview-end"
+        className="flex h-full w-full items-center justify-center rounded-md border border-dashed border-cf-border bg-cf-bg-100 text-cf-text-subtle"
+      >
+        <span className="font-mono text-sm uppercase tracking-[0.25em]">
+          End of deck
+        </span>
+      </div>
+    );
+  }
+
+  const phaseCount = (next.phases ?? 0) + 1;
+  const cornerLabel = `Next · ${next.title || next.id}`;
+
+  // Branch 1: setting ON → always show the last phase, single thumb.
+  if (showsFinalPhase) {
+    return (
+      <SlideThumbnail
+        deck={deck}
+        slideIndex={nextIndex}
+        phase={phaseCount - 1}
+        scale={0.32}
+        cornerLabel={cornerLabel}
+        onClick={() => onJump(nextIndex)}
+      />
+    );
+  }
+
+  // Branch 3: single-phase → unchanged single thumb (filmstrip is moot).
+  if (phaseCount <= 1) {
+    return (
+      <SlideThumbnail
+        deck={deck}
+        slideIndex={nextIndex}
+        phase={0}
+        scale={0.32}
+        cornerLabel={cornerLabel}
+        onClick={() => onJump(nextIndex)}
+      />
+    );
+  }
+
+  // Branch 2: multi-phase + setting OFF → filmstrip.
+  // Each phase tile is a SlideThumbnail at progressively higher phase.
+  // Tiles share the available horizontal space; the smallest practical
+  // size is when phaseCount is large (e.g. 6). At that point each tile
+  // is roughly 1/6 of the full next-preview width but still 16:9.
+  return (
+    <div
+      data-testid="presenter-next-preview-filmstrip"
+      className="flex h-full w-full items-center justify-center gap-1.5"
+    >
+      {Array.from({ length: phaseCount }).map((_, p) => (
+        <div
+          key={p}
+          data-testid={`presenter-next-preview-phase-${p}`}
+          className="relative flex h-full min-w-0 flex-1 items-center justify-center"
+          style={{ containerType: "size" }}
+        >
+          <div
+            className="relative"
+            style={{
+              width: "min(100cqw, calc(100cqh * 16 / 9))",
+              height: "min(100cqh, calc(100cqw * 9 / 16))",
+            }}
+          >
+            <SlideThumbnail
+              deck={deck}
+              slideIndex={nextIndex}
+              phase={p}
+              scale={0.32}
+              cornerLabel={p === 0 ? cornerLabel : `Phase ${p}`}
+              onClick={() => onJump(nextIndex, p)}
+            />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
 }
 
 interface Cursor {
@@ -174,7 +330,10 @@ function SlideThumbnail({
   );
 }
 
-export function PresenterWindow({ deck }: PresenterWindowProps) {
+function PresenterWindowInner({ deck }: PresenterWindowProps) {
+  const { settings } = useSettings();
+  const [settingsOpen, setSettingsOpen] = useState(false);
+
   const visibleSlides = useMemo(
     () => deck.slides.filter((s) => !s.hidden),
     [deck.slides],
@@ -231,7 +390,6 @@ export function PresenterWindow({ deck }: PresenterWindowProps) {
   const pacing = classifyPacing(deltaMs, expectedMs);
 
   const currentSlide = visibleSlides[cursor.slide];
-  const nextSlide = visibleSlides[cursor.slide + 1];
   const totalPhases = (currentSlide?.phases ?? 0) + 1;
 
   // Notes panel resize.
@@ -393,6 +551,17 @@ export function PresenterWindow({ deck }: PresenterWindowProps) {
         </span>
         <button
           type="button"
+          onClick={() => setSettingsOpen(true)}
+          data-testid="presenter-settings-toggle"
+          data-interactive
+          aria-label="Open presenter settings"
+          title="Open settings"
+          className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-cf-border text-cf-text-muted transition-colors hover:border-dashed hover:text-cf-text"
+        >
+          <GearIcon size={13} />
+        </button>
+        <button
+          type="button"
           onClick={endShow}
           data-testid="presenter-end-show"
           aria-label="End show"
@@ -444,49 +613,63 @@ export function PresenterWindow({ deck }: PresenterWindowProps) {
             </div>
           </div>
 
-          {/* Bottom row — next preview + nav controls */}
+          {/* Bottom row — next preview + nav controls.
+              16:9 enforcement (item C / #111): the wrapper uses container-
+              query units so the next preview always fits cleanly regardless
+              of container shape — see the matching comment on the current-
+              slide preview above for the math.
+              When the next slide is multi-phase AND the user's
+              `presenterNextSlideShowsFinalPhase` setting is OFF, this area
+              renders as a horizontal phase filmstrip instead of a single
+              thumb (issue #113). */}
           <div className="flex min-h-0 flex-[2] gap-3">
-            {/* 16:9 enforcement (item C / #111). The previous markup used
-                `w-full max-h-full aspect-video` which squashes whenever the
-                container's aspect ratio differs from 16:9 — `w-full` pins
-                width = parent.width, `aspect-video` resolves height to
-                width × 9/16, but `max-h-full` then clips visual height
-                while layout width stays full → squash.
-                The fix uses container query units to compute the largest
-                16:9 box that fits in BOTH axes:
-                  width  = min(100% of container width, container height × 16/9)
-                  height = min(100% of container height, container width × 9/16)
-                The resulting rectangle always has aspect 16:9 and
-                always fits, regardless of container shape. */}
             <div
               data-testid="presenter-next-preview-container"
               className="relative flex min-h-0 min-w-0 flex-1 items-center justify-center"
               style={{ containerType: "size" }}
             >
-              <div
-                className="relative"
-                style={{
-                  width: "min(100cqw, calc(100cqh * 16 / 9))",
-                  height: "min(100cqh, calc(100cqw * 9 / 16))",
-                }}
-              >
-                {nextSlide ? (
-                  <SlideThumbnail
-                    deck={deck}
-                    slideIndex={cursor.slide + 1}
-                    phase={0}
-                    scale={0.32}
-                    cornerLabel={`Next · ${nextSlide.title || nextSlide.id}`}
-                    onClick={() => onJump(cursor.slide + 1)}
-                  />
-                ) : (
-                  <div className="flex h-full w-full items-center justify-center rounded-md border border-dashed border-cf-border bg-cf-bg-100 text-cf-text-subtle">
-                    <span className="font-mono text-sm uppercase tracking-[0.25em]">
-                      End of deck
-                    </span>
+              {/* For the FILMSTRIP branch we want each tile to size itself
+                  via container queries against this outer 1-row band, so
+                  we hand the band straight to <NextPreview>. The single-
+                  thumb branches still render in a 16:9 frame; that frame
+                  is computed inside <NextPreview> for the single-thumb
+                  branches OR per-tile in the filmstrip branch. */}
+              {(() => {
+                const showsFinal = settings.presenterNextSlideShowsFinalPhase;
+                const next = visibleSlides[cursor.slide + 1];
+                const phaseCount = (next?.phases ?? 0) + 1;
+                const isFilmstripBranch =
+                  !!next && !showsFinal && phaseCount > 1;
+                if (isFilmstripBranch) {
+                  // Filmstrip fills the full band; each tile is its own
+                  // 16:9 frame.
+                  return (
+                    <NextPreview
+                      deck={deck}
+                      nextIndex={cursor.slide + 1}
+                      showsFinalPhase={showsFinal}
+                      onJump={onJump}
+                    />
+                  );
+                }
+                // Single-thumb branches keep the existing 16:9 frame.
+                return (
+                  <div
+                    className="relative"
+                    style={{
+                      width: "min(100cqw, calc(100cqh * 16 / 9))",
+                      height: "min(100cqh, calc(100cqw * 9 / 16))",
+                    }}
+                  >
+                    <NextPreview
+                      deck={deck}
+                      nextIndex={cursor.slide + 1}
+                      showsFinalPhase={showsFinal}
+                      onJump={onJump}
+                    />
                   </div>
-                )}
-              </div>
+                );
+              })()}
             </div>
 
             <div className="flex flex-shrink-0 flex-col items-center justify-center gap-3 px-4">
@@ -558,6 +741,13 @@ export function PresenterWindow({ deck }: PresenterWindowProps) {
           </div>
         </aside>
       </div>
+      {/* Settings modal — opened by the gear button in the header. The
+          modal lives inside <main> so it inherits the same SettingsProvider
+          context and renders on top of the presenter UI when open. */}
+      <SettingsModal
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+      />
     </main>
   );
 }
