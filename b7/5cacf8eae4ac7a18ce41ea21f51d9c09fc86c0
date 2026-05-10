@@ -1,0 +1,35 @@
+src/lib/settings.test.ts
+  3eb81fc02539892e 81-84
+src/framework/viewer/useSettings.test.tsx
+  3eb81fc02539892e 86-89,154
+src/lib/settings.ts
+  3eb81fc02539892e 31-39,44,81-84
+src/framework/viewer/ProgressBar.test.tsx
+  3eb81fc02539892e 32,58,70,89,125,136,146
+src/framework/viewer/SettingsModal.tsx
+  3eb81fc02539892e 105,145-149,162-164,173-175,226-232
+src/framework/viewer/SettingsModal.test.tsx
+  3eb81fc02539892e 168-171,180
+src/framework/presenter/PresenterWindow.tsx
+  3eb81fc02539892e 33-34,58-211,333-336,552-562,616-624,631-669,671-672,744-750
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "b75cacf8eae4ac7a18ce41ea21f51d9c09fc86c0",
+  "prompts": {
+    "3eb81fc02539892e": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_1f3fb49b0ffefhNWfERW9KHAMz",
+        "model": "anthropic/claude-opus-4-7"
+      },
+      "human_author": "mcdays94",
+      "messages": [],
+      "total_additions": 283,
+      "total_deletions": 49,
+      "accepted_lines": 283,
+      "overriden_lines": 0
+    }
+  }
+}
