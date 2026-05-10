@@ -36,7 +36,7 @@ import { handleDecks, type DecksEnv } from "./decks";
 import { handleImages, type ImagesEnv } from "./images";
 import { handleAuthStatus, type AuthStatusEnv } from "./auth-status";
 import { handleAgent, type AgentEnv } from "./agent";
-import { enforceHtmlNoCache } from "./cache-control";
+import { applyCacheControl } from "./cache-control";
 
 // Re-export the agent DO class so wrangler can find it from the same
 // module as the default handler. Cloudflare requires the Durable
@@ -84,9 +84,17 @@ export default {
     // The binding's `not_found_handling: single-page-application`
     // (see wrangler.jsonc) makes 404s fall back to `index.html` so
     // React Router's path-based URLs survive a hard refresh.
-    // `enforceHtmlNoCache` ensures the HTML shell revalidates on
-    // every load so privacy browsers don't pin stale bundle hashes
-    // across deploys. See `worker/cache-control.ts` for rationale.
-    return enforceHtmlNoCache(await env.ASSETS.fetch(request));
+    //
+    // `applyCacheControl` rewrites Cache-Control on the response:
+    // HTML shell → `no-cache, must-revalidate` so privacy browsers
+    // don't pin stale bundle hashes; hashed-asset chunks →
+    // `public, max-age=31536000, immutable` so browsers + CDN
+    // caches keep them forever (the URL hash changes per deploy).
+    // See `worker/cache-control.ts` for full rationale.
+    //
+    // With `run_worker_first: true` in `wrangler.jsonc`, this code
+    // path fires for every request — including `/` and
+    // `/assets/<hash>.<ext>` — not just SPA fallbacks.
+    return applyCacheControl(request, await env.ASSETS.fetch(request));
   },
 } satisfies ExportedHandler<Env>;

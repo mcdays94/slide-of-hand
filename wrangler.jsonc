@@ -51,7 +51,38 @@
   "assets": {
     "directory": "./dist",
     "binding": "ASSETS",
-    "not_found_handling": "single-page-application"
+    "not_found_handling": "single-page-application",
+    /**
+     * `run_worker_first: true` invokes the Worker script for every
+     * request, including ones that would otherwise match a static
+     * asset directly. The Worker then calls `env.ASSETS.fetch()` to
+     * pull the asset and applies its response pipeline before
+     * returning it.
+     *
+     * Why we need it (PR #144 follow-up):
+     *   - With the default `false`, Cloudflare's edge serves
+     *     `dist/index.html` for `/` directly without invoking the
+     *     Worker. So `enforceHtmlNoCache` (in `worker/cache-control.ts`)
+     *     never sees those responses and can't rewrite the
+     *     Cache-Control header.
+     *   - Same problem for `/assets/<hash>.js` — we want to set
+     *     `Cache-Control: public, max-age=31536000, immutable` on
+     *     hashed-asset responses, but the rewriter only runs when
+     *     the Worker runs.
+     *
+     * Latency cost: a single extra Worker invocation per asset
+     * request. CF tier-caches Worker results so a warm CDN node
+     * adds <1 ms. For a low-traffic admin-focused app like
+     * Slide of Hand, immeasurable.
+     *
+     * Note: the SPA fallback (`/decks/<slug>`, `/admin/*`) was
+     * ALREADY going through the Worker because those paths don't
+     * match real assets — `not_found_handling: single-page-application`
+     * routes them to the Worker's fetch handler, which then calls
+     * `env.ASSETS.fetch(request)` and gets `index.html` back. This
+     * change just makes the same flow apply to `/` and `/assets/*`.
+     */
+    "run_worker_first": true
   },
   /**
    * Per-deck theme overrides (issue #12 / Bucket B1).
