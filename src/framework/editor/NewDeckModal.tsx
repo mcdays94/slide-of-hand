@@ -89,7 +89,7 @@ export function NewDeckModal({ open, onClose }: NewDeckModalProps) {
   const [slug, setSlug] = useState("");
   const [slugDirty, setSlugDirty] = useState(false); // user has overridden
   const [description, setDescription] = useState("");
-  const [visibility, setVisibility] = useState<Visibility>("private");
+  const [visibility, setVisibility] = useState<Visibility>("public");
   const [date, setDate] = useState(today);
   const [runtimeMinutes, setRuntimeMinutes] = useState(20);
 
@@ -105,7 +105,7 @@ export function NewDeckModal({ open, onClose }: NewDeckModalProps) {
       setSlug("");
       setSlugDirty(false);
       setDescription("");
-      setVisibility("private");
+      setVisibility("public");
       setDate(today());
       setRuntimeMinutes(20);
       setAdvancedOpen(false);
@@ -330,27 +330,54 @@ export function NewDeckModal({ open, onClose }: NewDeckModalProps) {
                       />
                     </div>
 
-                    {/* Visibility */}
+                    {/* Visibility — segmented control (issue #129).
+                        Public is the default; flip to Private for
+                        customer / under-NDA decks that should NOT be
+                        listed on the public index. */}
                     <div className="flex flex-col gap-1.5">
-                      <label
-                        htmlFor={visibilityFieldId}
+                      <span
+                        id={visibilityFieldId}
                         className="text-xs font-medium uppercase tracking-[0.15em] text-cf-text-muted"
                       >
                         Visibility
-                      </label>
-                      <select
-                        id={visibilityFieldId}
-                        data-interactive
-                        data-testid="new-deck-visibility"
-                        value={visibility}
-                        onChange={(e) =>
-                          setVisibility(e.target.value as Visibility)
-                        }
-                        className="rounded border border-cf-border bg-cf-bg-100 px-3 py-2 text-sm text-cf-text outline-none focus:border-cf-orange"
+                      </span>
+                      <div
+                        role="radiogroup"
+                        aria-labelledby={visibilityFieldId}
+                        className="flex shrink-0 items-center gap-1 self-start rounded-md border border-cf-border bg-cf-bg-200 p-0.5"
                       >
-                        <option value="private">Private (default)</option>
-                        <option value="public">Public</option>
-                      </select>
+                        {(
+                          [
+                            { value: "public", label: "Public" },
+                            { value: "private", label: "Private" },
+                          ] as const
+                        ).map((opt) => {
+                          const isActive = opt.value === visibility;
+                          return (
+                            <button
+                              key={opt.value}
+                              type="button"
+                              role="radio"
+                              aria-checked={isActive}
+                              data-interactive
+                              data-testid={`new-deck-visibility-${opt.value}`}
+                              onClick={() => setVisibility(opt.value)}
+                              className={`rounded px-3 py-1 font-mono text-[10px] uppercase tracking-[0.2em] transition-colors ${
+                                isActive
+                                  ? "bg-cf-orange text-cf-bg-100"
+                                  : "text-cf-text-muted hover:text-cf-text"
+                              }`}
+                            >
+                              {opt.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <p className="text-xs text-cf-text-muted">
+                        Public decks appear on the landing page.
+                        Private decks are hidden from the public index
+                        but still accessible via direct link.
+                      </p>
                     </div>
 
                     {/* Date + runtime side by side */}

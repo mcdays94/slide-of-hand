@@ -90,6 +90,31 @@ describe("validateDataDeck — happy paths", () => {
     });
     expect(out.ok).toBe(true);
   });
+
+  it("defaults missing visibility to public (back-compat for pre-#129 records)", () => {
+    // Pre-#129 KV records were written without a visibility field. The
+    // type makes visibility required on the validated output, but the
+    // validator must accept missing/undefined on input and default to
+    // "public" — never silently drop the deck.
+    const { visibility: _v, ...metaWithoutVisibility } = validDeck.meta;
+    const out = validateDataDeck({
+      ...validDeck,
+      meta: metaWithoutVisibility,
+    });
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    expect(out.value.meta.visibility).toBe("public");
+  });
+
+  it("defaults explicit undefined visibility to public", () => {
+    const out = validateDataDeck({
+      ...validDeck,
+      meta: { ...validDeck.meta, visibility: undefined },
+    });
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    expect(out.value.meta.visibility).toBe("public");
+  });
 });
 
 describe("validateDataDeck — meta validation", () => {
@@ -121,8 +146,14 @@ describe("validateDataDeck — meta validation", () => {
     ["empty title", { ...validDeck.meta, title: "" }],
     ["missing date", { ...validDeck.meta, date: undefined }],
     ["malformed date", { ...validDeck.meta, date: "5/1/2026" }],
-    ["missing visibility", { ...validDeck.meta, visibility: undefined }],
-    ["invalid visibility", { ...validDeck.meta, visibility: "secret" }],
+    ["invalid visibility (non-string)", {
+      ...validDeck.meta,
+      visibility: 42,
+    }],
+    ["invalid visibility (unknown string)", {
+      ...validDeck.meta,
+      visibility: "secret",
+    }],
     ["non-number runtimeMinutes", {
       ...validDeck.meta,
       runtimeMinutes: "20",
