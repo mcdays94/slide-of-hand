@@ -53,25 +53,35 @@
 const ACCESS_EMAIL_HEADER = "cf-access-authenticated-user-email";
 
 /**
- * Service-token client ID header (#131 phase 1). Set by Cloudflare
- * Access when a request authenticates with a service token (the
- * `CF-Access-Client-Id` / `CF-Access-Client-Secret` pair) rather than
- * an interactive user login. Service tokens are how scripts, CI, and
- * agents (including this Worker's own admin API consumers) hit Access-
- * protected endpoints without a browser session.
- *
- * Service tokens do NOT set the email header — they have no user
- * identity. So `requireAccessAuth` must accept either signal: the
- * presence of EITHER `cf-access-authenticated-user-email` OR
- * `cf-access-client-id` is sufficient evidence that Access vetted
- * the request.
- *
- * Trust model: same as the email header — Cloudflare strips client-set
- * `cf-access-*` headers at the edge and only re-adds them after a
- * successful Access challenge. JWT signature verification is a future
- * hardening, deferred per the existing header comment block.
+ * Service-token client ID header. Set by callers, MAY be forwarded by
+ * Cloudflare Access to the origin (the behaviour is undocumented and
+ * has been observed to vary). Kept as an accepted signal here for
+ * defence in depth — Access strips client-set `cf-access-*` headers,
+ * so if the header is present at all it was added by Access.
  */
 const ACCESS_CLIENT_ID_HEADER = "cf-access-client-id";
+
+/**
+ * Cloudflare Access JWT assertion. Set by Access on EVERY validated
+ * request — interactive user logins AND service tokens. This is the
+ * canonical signal that a request passed Access; the user-email and
+ * client-id headers are only set for specific auth flows.
+ *
+ * Trust model: same as the other `cf-access-*` headers. Access strips
+ * any client-set `cf-access-*` headers at the edge and only re-adds
+ * them after a successful auth challenge. Verifying the JWT signature
+ * against the team's Access JWKS would be a future hardening; for v1
+ * we trust the edge to gate header presence correctly.
+ *
+ * Why service tokens land here, not on `cf-access-client-id`: empirical
+ * testing on 2026-05-10 showed Access does NOT forward
+ * `cf-access-client-id` to the origin for service-token requests
+ * (verified via `wrangler tail`). The only `cf-access-*` headers the
+ * Worker actually receives for a service-token request are
+ * `cf-access-jwt-assertion` and the `CF_Authorization` cookie. So this
+ * is the load-bearing signal for service-token auth.
+ */
+const ACCESS_JWT_HEADER = "cf-access-jwt-assertion";
 
 const FORBIDDEN_HEADERS = {
   "content-type": "application/json",
@@ -80,20 +90,25 @@ const FORBIDDEN_HEADERS = {
 
 /**
  * Validates that the request was authenticated by Cloudflare Access.
- * Accepts either:
+ * Accepts any of three signals (any one is sufficient):
  *   - `cf-access-authenticated-user-email` — interactive user login
- *   - `cf-access-client-id` — service-token authentication
+ *   - `cf-access-jwt-assertion` — set on every Access-validated request
+ *     (works for both interactive logins and service tokens)
+ *   - `cf-access-client-id` — service-token request (rarely forwarded
+ *     by Access, kept for defence in depth)
  *
- * Returns a 403 `Response` if neither header is present, or `null`
- * if the request should proceed. Pattern:
+ * Returns a 403 `Response` if none of the three signals are present,
+ * or `null` if the request should proceed. Pattern:
  * `const denied = requireAccessAuth(req); if (denied) return denied;`
  */
 export function requireAccessAuth(request: Request): Response | null {
   const email = request.headers.get(ACCESS_EMAIL_HEADER);
   const clientId = request.headers.get(ACCESS_CLIENT_ID_HEADER);
+  const jwt = request.headers.get(ACCESS_JWT_HEADER);
   const hasEmail = !!email && email.trim() !== "";
   const hasClientId = !!clientId && clientId.trim() !== "";
-  if (!hasEmail && !hasClientId) {
+  const hasJwt = !!jwt && jwt.trim() !== "";
+  if (!hasEmail && !hasClientId && !hasJwt) {
     return new Response(
       JSON.stringify({
         error:
