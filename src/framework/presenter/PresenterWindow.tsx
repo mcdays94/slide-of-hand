@@ -142,7 +142,24 @@ function SlideThumbnail({
             transform: `scale(${scale})`,
           }}
         >
-          <div className={`${inner} h-full w-full bg-cf-bg-100 text-cf-text`}>
+          {/* `key={slideIndex}` forces a fresh React mount whenever the
+              cursor moves to a different slide. Without it, React
+              reconciles the inner subtree across slide changes, which:
+                - leaves framer-motion variants in their last "animate"
+                  state instead of re-running the entrance, and
+                - leaves WebGL / R3F canvases mid-frame, sometimes black.
+              The cf-code-mode cover slide hits both: its motion.div
+              wrappers freeze at opacity 0 (initial state, never animated
+              because parent reconciled instead of mounted), and the
+              <Globe3D> canvas occasionally fails to redraw. Mounting
+              fresh is cheap (these are thumbnails) and gives the
+              "every visit looks like the first" semantics the deck
+              authors wrote their entrance animations against. (Issue
+              #111 item D.) */}
+          <div
+            key={slideIndex}
+            className={`${inner} h-full w-full bg-cf-bg-100 text-cf-text`}
+          >
             <PhaseProvider phase={phase}>
               {slide.render({ phase })}
             </PhaseProvider>
