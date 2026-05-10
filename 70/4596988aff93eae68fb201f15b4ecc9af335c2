@@ -1,0 +1,25 @@
+src/routes/deck.$slug.tsx
+  3eb81fc02539892e 28-33,71,84,120,135
+tests/admin-presenter-mode.test.tsx
+  3eb81fc02539892e 91-94,102
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "704596988aff93eae68fb201f15b4ecc9af335c2",
+  "prompts": {
+    "3eb81fc02539892e": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_1f3fb49b0ffefhNWfERW9KHAMz",
+        "model": "anthropic/claude-opus-4-7"
+      },
+      "human_author": "mcd_git",
+      "messages": [],
+      "total_additions": 15,
+      "total_deletions": 21,
+      "accepted_lines": 15,
+      "overriden_lines": 0
+    }
+  }
+}
