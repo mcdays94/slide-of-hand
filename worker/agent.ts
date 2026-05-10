@@ -76,8 +76,14 @@ export interface AgentEnv {
 /**
  * Workers AI model used for chat completions in phase 1. Hardcoded —
  * the model picker / settings entry lands with the AI Gateway phase.
+ *
+ * Using `kimi-k2.6` (current Moonshot frontier model on Workers AI:
+ * 1T params, 262.1k context, function calling, reasoning, vision).
+ * The catalog also lists `kimi-k2.5` (deprecating). Earlier drafts of
+ * this PR used `kimi-k2-instruct` — that ID is from an older catalog
+ * snapshot and returns error 5018 on current Workers AI.
  */
-const MODEL_ID = "@cf/moonshotai/kimi-k2-instruct";
+const MODEL_ID = "@cf/moonshotai/kimi-k2.6";
 
 /**
  * System prompt. Kept deliberately scope-honest — the agent really

@@ -145,8 +145,9 @@
    * intentionally deferred to a later phase so we can validate the
    * end-to-end shape before adding cache/budget controls.
    *
-   * Default model in phase 1: `@cf/moonshotai/kimi-k2-instruct`. No
-   * model picker yet — that comes with the AI Gateway phase.
+   * Default model in phase 1: `@cf/moonshotai/kimi-k2.6` (current
+   * Moonshot frontier model on Workers AI). No model picker yet —
+   * that comes with the AI Gateway phase.
    */
   "ai": { "binding": "AI" },
   /**
