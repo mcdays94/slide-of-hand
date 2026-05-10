@@ -24,6 +24,7 @@ import {
   type HTMLMotionProps,
 } from "framer-motion";
 import { useEffect, useId, type MouseEvent, type ReactNode } from "react";
+import type { NotesDefaultMode } from "@/lib/settings";
 import { easeStandard } from "@/lib/motion";
 import { useSettings } from "./useSettings";
 
@@ -99,10 +100,75 @@ function SettingsRow({
   );
 }
 
+interface SettingsSegmentedRowProps<T extends string> {
+  label: string;
+  description: string;
+  value: T;
+  options: { value: T; label: string }[];
+  onChange: (next: T) => void;
+  /** Test-id prefix; each option gets `${testIdPrefix}-${option.value}`. */
+  testIdPrefix?: string;
+}
+
+/**
+ * Segmented-control row for enum settings (issue #126). Two-or-more
+ * mutually-exclusive buttons; the active option carries the orange
+ * border + filled style used for similar toggles in the presenter
+ * window. Visually distinct from `<SettingsRow>` so the user reads
+ * "this is one of N choices, not on/off".
+ */
+function SettingsSegmentedRow<T extends string>({
+  label,
+  description,
+  value,
+  options,
+  onChange,
+  testIdPrefix,
+}: SettingsSegmentedRowProps<T>) {
+  return (
+    <div className="flex items-start justify-between gap-6 py-4">
+      <div className="flex-1">
+        <p className="block text-sm font-medium text-cf-text">{label}</p>
+        <p className="mt-1 text-xs text-cf-text-muted">{description}</p>
+      </div>
+      <div
+        role="group"
+        aria-label={label}
+        className="flex shrink-0 items-center gap-1 rounded-md border border-cf-border bg-cf-bg-200 p-0.5"
+      >
+        {options.map((opt) => {
+          const isActive = opt.value === value;
+          return (
+            <button
+              key={opt.value}
+              type="button"
+              role="radio"
+              aria-checked={isActive}
+              data-interactive
+              data-testid={
+                testIdPrefix ? `${testIdPrefix}-${opt.value}` : undefined
+              }
+              onClick={() => onChange(opt.value)}
+              className={`rounded px-3 py-1 font-mono text-[10px] uppercase tracking-[0.2em] transition-colors ${
+                isActive
+                  ? "bg-cf-orange text-cf-bg-100"
+                  : "text-cf-text-muted hover:text-cf-text"
+              }`}
+            >
+              {opt.label}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const { settings, setSetting } = useSettings();
   const showIndicatorsId = useId();
   const presenterFinalPhaseId = useId();
+  const notesDefaultModeId = useId();
 
   // Click-on-backdrop closes; clicks on the inner panel must NOT bubble
   // to the backdrop. We compare currentTarget vs target so a click that
@@ -147,6 +213,11 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
           onTogglePresenterFinalPhase={(next) =>
             setSetting("presenterNextSlideShowsFinalPhase", next)
           }
+          notesDefaultMode={settings.notesDefaultMode}
+          notesDefaultModeId={notesDefaultModeId}
+          onChangeNotesDefaultMode={(next) =>
+            setSetting("notesDefaultMode", next)
+          }
           onBackdropClick={onBackdropClick}
           onClose={onClose}
         />
@@ -162,6 +233,9 @@ interface SettingsModalContentProps {
   presenterFinalPhase: boolean;
   presenterFinalPhaseId: string;
   onTogglePresenterFinalPhase: (next: boolean) => void;
+  notesDefaultMode: NotesDefaultMode;
+  notesDefaultModeId: string;
+  onChangeNotesDefaultMode: (next: NotesDefaultMode) => void;
   onBackdropClick: (e: MouseEvent<HTMLDivElement>) => void;
   onClose: () => void;
 }
@@ -173,6 +247,8 @@ function SettingsModalContent({
   presenterFinalPhase,
   presenterFinalPhaseId,
   onTogglePresenterFinalPhase,
+  notesDefaultMode,
+  onChangeNotesDefaultMode,
   onBackdropClick,
   onClose,
 }: SettingsModalContentProps): ReactNode {
@@ -230,6 +306,17 @@ function SettingsModalContent({
             checked={presenterFinalPhase}
             onChange={onTogglePresenterFinalPhase}
             testId="settings-modal-toggle-presenter-final-phase"
+          />
+          <SettingsSegmentedRow
+            label="Default speaker-notes mode"
+            description="Which view the speaker-notes editor opens in. Rich is a WYSIWYG editor with a PowerPoint-style toolbar. Markdown opens directly to the source view — pick this if you prefer to write or paste markdown directly. You can still toggle modes per-slide via the toolbar."
+            value={notesDefaultMode}
+            options={[
+              { value: "rich", label: "Rich" },
+              { value: "markdown", label: "Markdown" },
+            ]}
+            onChange={onChangeNotesDefaultMode}
+            testIdPrefix="settings-modal-notes-default-mode"
           />
         </div>
       </motion.div>

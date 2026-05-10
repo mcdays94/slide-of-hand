@@ -81,6 +81,7 @@ describe("writeSettings()", () => {
     expect(JSON.parse(raw!)).toEqual({
       showSlideIndicators: false,
       presenterNextSlideShowsFinalPhase: false,
+      notesDefaultMode: "rich",
     });
   });
 

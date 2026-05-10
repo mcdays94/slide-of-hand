@@ -168,6 +168,7 @@ describe("<SettingsModal>", () => {
     expect(JSON.parse(persisted!)).toEqual({
       showSlideIndicators: false,
       presenterNextSlideShowsFinalPhase: false,
+      notesDefaultMode: "rich",
     });
 
     // Toggling again flips it back ON.
@@ -178,6 +179,7 @@ describe("<SettingsModal>", () => {
     expect(JSON.parse(window.localStorage.getItem(STORAGE_KEY)!)).toEqual({
       showSlideIndicators: true,
       presenterNextSlideShowsFinalPhase: false,
+      notesDefaultMode: "rich",
     });
   });
 });

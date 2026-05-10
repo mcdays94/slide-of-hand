@@ -19,6 +19,14 @@
 /** Storage key under which the settings JSON blob is persisted. */
 export const STORAGE_KEY = "slide-of-hand-settings";
 
+/**
+ * The default mode for the speaker-notes editor (issue #126). Rich-text
+ * is the default for new users — it matches the PowerPoint-style notes
+ * pane. Authors who prefer writing in markdown directly can flip the
+ * setting and have markdown mode open automatically.
+ */
+export type NotesDefaultMode = "rich" | "markdown";
+
 export interface Settings {
   /**
    * When `true`, `<ProgressBar>` is always visible at the bottom of the
@@ -37,11 +45,23 @@ export interface Settings {
    * as a single thumbnail in either mode.
    */
   presenterNextSlideShowsFinalPhase: boolean;
+  /**
+   * The default mode the speaker-notes editor opens in. Issue #126.
+   * "rich" is the default — a TipTap-based WYSIWYG view with a
+   * PowerPoint-style toolbar (Bold/Italic/Underline/Strike/H2/lists/
+   * link/HR). "markdown" opens directly to a textarea showing the
+   * markdown source — useful for authors who prefer to write or paste
+   * markdown directly. The user can still toggle between modes via
+   * the toolbar at any time; this setting only controls which view
+   * loads first.
+   */
+  notesDefaultMode: NotesDefaultMode;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
   showSlideIndicators: true,
   presenterNextSlideShowsFinalPhase: false,
+  notesDefaultMode: "rich",
 };
 
 function getStorage(): Storage | null {
@@ -82,6 +102,11 @@ export function readSettings(): Settings {
         typeof partial.presenterNextSlideShowsFinalPhase === "boolean"
           ? partial.presenterNextSlideShowsFinalPhase
           : DEFAULT_SETTINGS.presenterNextSlideShowsFinalPhase,
+      notesDefaultMode:
+        partial.notesDefaultMode === "rich" ||
+        partial.notesDefaultMode === "markdown"
+          ? partial.notesDefaultMode
+          : DEFAULT_SETTINGS.notesDefaultMode,
     };
   } catch {
     return { ...DEFAULT_SETTINGS };
