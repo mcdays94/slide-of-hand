@@ -83,7 +83,10 @@ describe("<SettingsProvider> + useSettings()", () => {
     expect(screen.getByTestId("show-indicators").textContent).toBe("false");
     const persisted = window.localStorage.getItem(STORAGE_KEY);
     expect(persisted).not.toBeNull();
-    expect(JSON.parse(persisted!)).toEqual({ showSlideIndicators: false });
+    expect(JSON.parse(persisted!)).toEqual({
+      showSlideIndicators: false,
+      presenterNextSlideShowsFinalPhase: false,
+    });
   });
 
   it("reset returns to defaults and clears storage", () => {
@@ -148,7 +151,7 @@ describe("<SettingsProvider> + useSettings()", () => {
   it("accepts an initialSettings override (bypasses storage read)", () => {
     writeSettings({ showSlideIndicators: false });
     render(
-      <SettingsProvider initialSettings={{ showSlideIndicators: true }}>
+      <SettingsProvider initialSettings={{ showSlideIndicators: true, presenterNextSlideShowsFinalPhase: false }}>
         <Probe />
       </SettingsProvider>,
     );

@@ -165,7 +165,10 @@ describe("<SettingsModal>", () => {
 
     const persisted = window.localStorage.getItem(STORAGE_KEY);
     expect(persisted).not.toBeNull();
-    expect(JSON.parse(persisted!)).toEqual({ showSlideIndicators: false });
+    expect(JSON.parse(persisted!)).toEqual({
+      showSlideIndicators: false,
+      presenterNextSlideShowsFinalPhase: false,
+    });
 
     // Toggling again flips it back ON.
     act(() => {
@@ -174,6 +177,7 @@ describe("<SettingsModal>", () => {
     expect(toggle.getAttribute("aria-checked")).toBe("true");
     expect(JSON.parse(window.localStorage.getItem(STORAGE_KEY)!)).toEqual({
       showSlideIndicators: true,
+      presenterNextSlideShowsFinalPhase: false,
     });
   });
 });

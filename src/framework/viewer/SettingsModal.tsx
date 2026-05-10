@@ -102,6 +102,7 @@ function SettingsRow({
 export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const { settings, setSetting } = useSettings();
   const showIndicatorsId = useId();
+  const presenterFinalPhaseId = useId();
 
   // Click-on-backdrop closes; clicks on the inner panel must NOT bubble
   // to the backdrop. We compare currentTarget vs target so a click that
@@ -141,6 +142,11 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
           onToggleShowIndicators={(next) =>
             setSetting("showSlideIndicators", next)
           }
+          presenterFinalPhase={settings.presenterNextSlideShowsFinalPhase}
+          presenterFinalPhaseId={presenterFinalPhaseId}
+          onTogglePresenterFinalPhase={(next) =>
+            setSetting("presenterNextSlideShowsFinalPhase", next)
+          }
           onBackdropClick={onBackdropClick}
           onClose={onClose}
         />
@@ -153,6 +159,9 @@ interface SettingsModalContentProps {
   showIndicators: boolean;
   showIndicatorsId: string;
   onToggleShowIndicators: (next: boolean) => void;
+  presenterFinalPhase: boolean;
+  presenterFinalPhaseId: string;
+  onTogglePresenterFinalPhase: (next: boolean) => void;
   onBackdropClick: (e: MouseEvent<HTMLDivElement>) => void;
   onClose: () => void;
 }
@@ -161,6 +170,9 @@ function SettingsModalContent({
   showIndicators,
   showIndicatorsId,
   onToggleShowIndicators,
+  presenterFinalPhase,
+  presenterFinalPhaseId,
+  onTogglePresenterFinalPhase,
   onBackdropClick,
   onClose,
 }: SettingsModalContentProps): ReactNode {
@@ -210,6 +222,14 @@ function SettingsModalContent({
             checked={showIndicators}
             onChange={onToggleShowIndicators}
             testId="settings-modal-toggle-show-indicators"
+          />
+          <SettingsRow
+            inputId={presenterFinalPhaseId}
+            label="Next slide preview shows final state"
+            description="In the presenter window, render the next-slide preview as a single thumbnail at its last phase (fully revealed). When off, multi-phase next slides show a horizontal filmstrip — one mini thumbnail per phase, in order — so you can see each reveal before pressing Next."
+            checked={presenterFinalPhase}
+            onChange={onTogglePresenterFinalPhase}
+            testId="settings-modal-toggle-presenter-final-phase"
           />
         </div>
       </motion.div>
