@@ -351,6 +351,7 @@ export function PresenterWindow({ deck }: PresenterWindowProps) {
   return (
     <main
       data-testid="presenter-window"
+      data-deck-slug={deck.meta.slug}
       className="flex h-screen min-h-screen w-screen flex-col overflow-hidden bg-cf-bg-200 text-cf-text"
     >
       {/* ── HEADER ─────────────────────────────────────────────────────── */}
@@ -419,6 +420,7 @@ export function PresenterWindow({ deck }: PresenterWindowProps) {
             <div
               ref={currentPreviewRef}
               data-testid="presenter-current-preview"
+              data-presenter-tools-scope="true"
               className="relative"
               style={{
                 width: "min(100cqw, calc(100cqh * 16 / 9))",

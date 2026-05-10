@@ -70,4 +70,20 @@ export type BroadcastMessage =
   | { type: "state"; slide: number; phase: number; deckSlug: string }
   | { type: "request-state" }
   | { type: "navigate"; slide: number; phase: number }
-  | { type: "tool"; tool: "laser" | "magnifier" | "marker" | null };
+  | { type: "tool"; tool: "laser" | "magnifier" | "marker" | null }
+  /**
+   * Item F (#111): real-time cursor sync from the presenter window's
+   * scoped tool panel to the audience deck. Coordinates are normalized
+   * to the active tool-scope's bounding rect (0..1 in both axes); the
+   * audience window maps them back to its own slide rect (which may be
+   * a different size). Sent at ~30Hz when a tool is active.
+   *
+   * Legacy `tool-cursor` messages with raw viewport pixels are still
+   * emitted for back-compat; consumers prefer this normalized variant.
+   */
+  | {
+      type: "cursor";
+      tool: "laser" | "magnifier" | "marker";
+      x: number;
+      y: number;
+    };

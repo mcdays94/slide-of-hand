@@ -21,6 +21,12 @@
 
 import { useEffect, useRef, useState } from "react";
 import { getCursorPosition, useCursorPosition } from "./useCursorPosition";
+import {
+  getToolScope,
+  hasExplicitToolScope,
+  isCursorInScope,
+  normalizeCursorToScope,
+} from "./useToolScope";
 
 const LASER_KEY = "q";
 const LASER_SIZE = 12;
@@ -108,21 +114,50 @@ export function Laser({ slug, onActiveChange }: LaserProps) {
   }, []);
 
   // Best-effort cursor broadcast for the presenter window.
+  // Item F (#111): when an explicit scope is present, broadcast the cursor
+  // as a normalized coordinate inside that scope. The audience window
+  // (which is a different size than the presenter) maps it back to its
+  // own slide rect.
   useEffect(() => {
     if (!active || !livePos) return;
+    const scope = getToolScope();
+    const explicit = hasExplicitToolScope();
+    if (explicit && !isCursorInScope(livePos, scope)) return;
     try {
+      // Legacy raw-coordinates ping (kept for backward compatibility).
       channelRef.current?.postMessage({
         type: "tool-cursor",
         tool: "laser",
         x: livePos.x,
         y: livePos.y,
       });
+      // New normalized broadcast (item F): only when an explicit scope
+      // exists, so audience-mode tools render at the equivalent location.
+      if (explicit) {
+        const norm = normalizeCursorToScope(livePos, scope);
+        if (norm) {
+          channelRef.current?.postMessage({
+            type: "cursor",
+            tool: "laser",
+            x: norm.x,
+            y: norm.y,
+          });
+        }
+      }
     } catch {
       /* no listener / closed */
     }
   }, [active, livePos]);
 
   if (!active) return null;
+
+  // Item E (#111): when an explicit scope is set (e.g. inside
+  // <PresenterWindow>'s current-slide preview), hide the laser when the
+  // cursor leaves the scope. The keyboard hold-state stays armed so re-
+  // entering the scope re-shows it.
+  if (hasExplicitToolScope() && !isCursorInScope(livePos, getToolScope())) {
+    return null;
+  }
 
   // Resolve render position. Prefer the live tracked cursor; if the tracker
   // has never observed an event, fall back to a viewport-centre guess so the
