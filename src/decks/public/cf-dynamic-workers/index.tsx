@@ -21,6 +21,7 @@
  * Source repo: gitlab.cfdata.org/mdias/cf-dynamic-workers-slides
  */
 import type { Deck } from "@/framework/viewer/types";
+import { meta } from "./meta";
 
 import { titleSlide } from "./slides/01-title";
 import { hookSlide } from "./slides/02-hook";
@@ -39,16 +40,7 @@ import { recapSlide } from "./slides/11-recap";
 import { thanksSlide } from "./slides/12-thanks";
 
 const deck: Deck = {
-  meta: {
-    slug: "cf-dynamic-workers",
-    title: "Cloudflare Dynamic Workers",
-    description:
-      "An animated, live-interactive walk-through of Cloudflare Dynamic Workers — spawning V8 isolates on demand from a parent Worker.",
-    date: "2026-05-07",
-    author: "Miguel Caetano Dias",
-    tags: ["dynamic-workers", "live-demo"],
-    runtimeMinutes: 12,
-  },
+  meta,
   slides: [
     titleSlide,
     hookSlide,

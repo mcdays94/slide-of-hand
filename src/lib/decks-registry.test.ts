@@ -14,6 +14,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderHook, waitFor } from "@testing-library/react";
 import {
   buildRegistry,
+  loadDeckBySlug,
   mergeAdminDeckLists,
   mergeDeckLists,
   useAdminDataDeck,
@@ -22,27 +23,21 @@ import {
   useDataDeckList,
   type RegistryEntry,
 } from "./decks-registry";
-import type { Deck, DeckMeta } from "@/framework/viewer/types";
+import type { DeckMeta } from "@/framework/viewer/types";
 import type { DataDeck } from "./deck-record";
 
-const stubSlide = {
-  id: "stub",
-  render: () => null,
-};
-
-const makeDeck = (slug: string, date: string): Deck => ({
-  meta: { slug, title: slug, description: "x", date },
-  slides: [stubSlide],
+const makeMetaModule = (slug: string, date: string) => ({
+  meta: { slug, title: slug, description: "x", date } as DeckMeta,
 });
 
 describe("buildRegistry", () => {
   it("discovers decks from public + private paths", () => {
     const result = buildRegistry({
-      "/src/decks/public/alpha/index.tsx": { default: makeDeck("alpha", "2026-01-01") },
-      "/src/decks/private/secret/index.tsx": { default: makeDeck("secret", "2026-02-01") },
+      "/src/decks/public/alpha/meta.ts": makeMetaModule("alpha", "2026-01-01"),
+      "/src/decks/private/secret/meta.ts": makeMetaModule("secret", "2026-02-01"),
     });
     expect(result).toHaveLength(2);
-    expect(result.map((e) => e.deck.meta.slug).sort()).toEqual([
+    expect(result.map((e) => e.meta.slug).sort()).toEqual([
       "alpha",
       "secret",
     ]);
@@ -53,33 +48,54 @@ describe("buildRegistry", () => {
 
   it("sorts by date descending", () => {
     const result = buildRegistry({
-      "/src/decks/public/older/index.tsx": { default: makeDeck("older", "2025-06-01") },
-      "/src/decks/public/newer/index.tsx": { default: makeDeck("newer", "2026-06-01") },
+      "/src/decks/public/older/meta.ts": makeMetaModule("older", "2025-06-01"),
+      "/src/decks/public/newer/meta.ts": makeMetaModule("newer", "2026-06-01"),
     });
-    expect(result.map((e) => e.deck.meta.slug)).toEqual(["newer", "older"]);
+    expect(result.map((e) => e.meta.slug)).toEqual(["newer", "older"]);
   });
 
   it("throws when meta.slug does not match the folder name", () => {
     expect(() =>
       buildRegistry({
-        "/src/decks/public/foo/index.tsx": { default: makeDeck("bar", "2026-01-01") },
+        "/src/decks/public/foo/meta.ts": makeMetaModule("bar", "2026-01-01"),
       }),
     ).toThrow(/Slug mismatch/);
   });
 
-  it("throws when default export is not a Deck", () => {
+  it("throws when meta export is malformed", () => {
     expect(() =>
       buildRegistry({
-        "/src/decks/public/foo/index.tsx": { default: {} as Deck },
+        "/src/decks/public/foo/meta.ts": { meta: {} as DeckMeta },
       }),
-    ).toThrow(/does not default-export a Deck/);
+    ).toThrow(/does not export a valid `meta`/);
   });
 
-  it("ignores paths that don't match the registry pattern", () => {
+  it("ignores paths that don't match the meta pattern", () => {
     const result = buildRegistry({
-      "/src/decks/public/foo/helper.tsx": { default: makeDeck("foo", "2026-01-01") },
+      "/src/decks/public/foo/helper.tsx": makeMetaModule("foo", "2026-01-01"),
     });
     expect(result).toHaveLength(0);
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// Lazy build-time deck loading (issue #105). Verifies that the registry's
+// `loadDeckBySlug` resolves real build-time decks via the in-process
+// `import.meta.glob` map and that unknown slugs return `undefined`.
+// ──────────────────────────────────────────────────────────────────────────
+
+describe("loadDeckBySlug — lazy build-time decks (issue #105)", () => {
+  it("resolves a real build-time deck (the `hello` demo)", async () => {
+    const deck = await loadDeckBySlug("hello");
+    expect(deck).toBeDefined();
+    expect(deck?.meta.slug).toBe("hello");
+    expect(Array.isArray(deck?.slides)).toBe(true);
+    expect((deck?.slides ?? []).length).toBeGreaterThan(0);
+  });
+
+  it("resolves to undefined for unknown slugs", async () => {
+    const deck = await loadDeckBySlug("definitely-not-a-deck");
+    expect(deck).toBeUndefined();
   });
 });
 
@@ -428,15 +444,12 @@ const sourceEntry = (
 ): RegistryEntry => ({
   visibility,
   folder: slug,
-  deck: {
-    meta: {
-      slug,
-      title: `Source ${slug}`,
-      description: `${slug} src desc`,
-      date,
-      ...rest,
-    },
-    slides: [stubSlide],
+  meta: {
+    slug,
+    title: `Source ${slug}`,
+    description: `${slug} src desc`,
+    date,
+    ...rest,
   },
 });
 
@@ -446,7 +459,7 @@ describe("mergeAdminDeckLists", () => {
       [sourceEntry("source-a", "2026-04-01")],
       [summary("kv-a", "2026-03-01")],
     );
-    const slugs = merged.map((e) => e.deck.meta.slug).sort();
+    const slugs = merged.map((e) => e.meta.slug).sort();
     expect(slugs).toEqual(["kv-a", "source-a"]);
   });
 
@@ -458,7 +471,7 @@ describe("mergeAdminDeckLists", () => {
         summary("kv-private", "2026-04-01", { visibility: "private" }),
       ],
     );
-    const slugs = merged.map((e) => e.deck.meta.slug).sort();
+    const slugs = merged.map((e) => e.meta.slug).sort();
     expect(slugs).toEqual(["kv-private", "kv-public"]);
   });
 
@@ -483,8 +496,8 @@ describe("mergeAdminDeckLists", () => {
       [sourceEntry("source-a", "2026-04-01")],
       [summary("kv-a", "2026-04-01")],
     );
-    const sourceA = merged.find((e) => e.deck.meta.slug === "source-a");
-    const kvA = merged.find((e) => e.deck.meta.slug === "kv-a");
+    const sourceA = merged.find((e) => e.meta.slug === "source-a");
+    const kvA = merged.find((e) => e.meta.slug === "kv-a");
     expect(sourceA?.source).toBe("source");
     expect(kvA?.source).toBe("kv");
   });
@@ -500,7 +513,7 @@ describe("mergeAdminDeckLists", () => {
         summary("kv-new", "2026-12-01"),
       ],
     );
-    expect(merged.map((e) => e.deck.meta.slug)).toEqual([
+    expect(merged.map((e) => e.meta.slug)).toEqual([
       "kv-new",
       "source-new",
       "kv-mid",
@@ -524,9 +537,9 @@ describe("mergeAdminDeckLists", () => {
     );
     expect(merged).toHaveLength(1);
     const shared = merged[0];
-    expect(shared.deck.meta.slug).toBe("shared");
-    expect(shared.deck.meta.title).toBe("From source");
-    expect(shared.deck.meta.date).toBe("2026-01-01");
+    expect(shared.meta.slug).toBe("shared");
+    expect(shared.meta.title).toBe("From source");
+    expect(shared.meta.date).toBe("2026-01-01");
     expect(shared.source).toBe("source");
     // The build-time visibility wins too — KV's "private" is dropped.
     expect(shared.visibility).toBe("public");
@@ -542,8 +555,8 @@ describe("mergeAdminDeckLists", () => {
         }),
       ],
     );
-    expect(merged[0]?.deck.meta.cover).toBe("/cover.png");
-    expect(merged[0]?.deck.meta.runtimeMinutes).toBe(30);
+    expect(merged[0]?.meta.cover).toBe("/cover.png");
+    expect(merged[0]?.meta.runtimeMinutes).toBe(30);
   });
 });
 
@@ -595,11 +608,11 @@ describe("useAdminDataDeckList", () => {
     );
     const { result } = renderHook(() => useAdminDataDeckList());
     await waitFor(() => expect(result.current.isLoading).toBe(false));
-    const slugs = result.current.entries.map((e) => e.deck.meta.slug);
+    const slugs = result.current.entries.map((e) => e.meta.slug);
     expect(slugs).toContain("kv-public");
     expect(slugs).toContain("kv-private");
     const kvPriv = result.current.entries.find(
-      (e) => e.deck.meta.slug === "kv-private",
+      (e) => e.meta.slug === "kv-private",
     );
     expect(kvPriv?.visibility).toBe("private");
     expect(kvPriv?.source).toBe("kv");

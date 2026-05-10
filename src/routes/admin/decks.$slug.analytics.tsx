@@ -31,7 +31,7 @@ import {
   type AnalyticsResponse,
   type PerSlideStats,
 } from "@/lib/analytics-types";
-import { getDeckBySlug } from "@/lib/decks-registry";
+import { getDeckMetaBySlug } from "@/lib/decks-registry";
 
 interface FetchState {
   status: "idle" | "loading" | "ok" | "error";
@@ -72,7 +72,7 @@ function formatNumber(n: number): string {
 
 export default function AdminDeckAnalyticsRoute() {
   const { slug } = useParams<{ slug: string }>();
-  const deck = slug ? getDeckBySlug(slug) : undefined;
+  const deck = slug ? getDeckMetaBySlug(slug) : undefined;
 
   const [range, setRange] = useState<AnalyticsRange>("7d");
   const [state, setState] = useState<FetchState>(INITIAL);
@@ -152,7 +152,7 @@ export default function AdminDeckAnalyticsRoute() {
       <div className="flex flex-col gap-2">
         <p className="cf-tag">Analytics</p>
         <h1 className="text-3xl font-medium tracking-[-0.025em] text-cf-text">
-          {deck.meta.title}
+          {deck.title}
         </h1>
         <p className="text-sm text-cf-text-muted">
           Aggregated, anonymous view data. No cookies, no IPs, no per-user
