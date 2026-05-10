@@ -31,7 +31,12 @@
   "name": "reaction",
   "main": "worker/index.ts",
   "account_id": "1bcef46cbe9172d2569dcf7039048842",
-  "compatibility_date": "2025-04-01",
+  // Bumped from 2025-04-01 → 2025-09-01 for the Agents SDK (issue #131
+  // phase 1). The SDK depends on relatively recent runtime features
+  // (WebSocket hibernation behaviour and `nodejs_compat` updates) that
+  // are pinned by compat date. 2025-09-01 is safely ahead of what the
+  // SDK needs and ahead of all other bindings we use.
+  "compatibility_date": "2025-09-01",
   "compatibility_flags": ["nodejs_compat"],
   "routes": [
     {
@@ -130,6 +135,47 @@
       "binding": "IMAGES",
       "bucket_name": "slide-of-hand-images"
     }
+  ],
+  /**
+   * Workers AI binding (issue #131 / in-Studio AI agent phase 1).
+   *
+   * The `DeckAuthorAgent` (see below) calls Workers AI through this
+   * binding to power the chat round-trip. Phase 1 calls the model
+   * directly with no AI Gateway in front — the gateway wiring is
+   * intentionally deferred to a later phase so we can validate the
+   * end-to-end shape before adding cache/budget controls.
+   *
+   * Default model in phase 1: `@cf/moonshotai/kimi-k2.6` (current
+   * Moonshot frontier model on Workers AI). No model picker yet —
+   * that comes with the AI Gateway phase.
+   */
+  "ai": { "binding": "AI" },
+  /**
+   * Durable Object backing the in-Studio AI agent (issue #131 phase 1).
+   *
+   * One DO instance per deck slug (the SDK addresses instances by
+   * `name`, and we set `name = deck.meta.slug` from the client). All
+   * editors of the same deck share the conversation history because
+   * phase 1 doesn't yet have per-user instance naming. That's a
+   * deliberate trade-off — a future phase will switch to
+   * `<user-email>:<deck-slug>` once we wire the Access-issued email
+   * through to the client useAgent call.
+   */
+  "durable_objects": {
+    "bindings": [
+      { "name": "DeckAuthorAgent", "class_name": "DeckAuthorAgent" }
+    ]
+  },
+  /**
+   * SQLite-class migration for `DeckAuthorAgent`. The Agents SDK uses
+   * SQLite via DO for `AIChatAgent` message persistence — REQUIRED to
+   * be `new_sqlite_classes`, not `new_classes`.
+   *
+   * Tag `v1-agent` is unique (the project had no prior DO migrations).
+   * NEVER edit historical migration tags — only add new ones.
+   */
+  "migrations": [
+    { "tag": "v1-agent", "new_sqlite_classes": ["DeckAuthorAgent"] }
   ],
   /**
    * Per-deck analytics (issue #19 / Bucket C3).
