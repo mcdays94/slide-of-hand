@@ -1,0 +1,25 @@
+src/routes/admin/_layout.tsx
+  cffec469c55b2ea3 3-4,6-7,9-32,35-36,38-39,42-43,45-76
+src/routes/admin/_layout.test.tsx
+  cffec469c55b2ea3 1-147
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "d9996ce7bd34828a7ece2e1495fe3003acac2d37",
+  "prompts": {
+    "cffec469c55b2ea3": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_1ecbcb427ffeCpoSFySZNrLWSF",
+        "model": "anthropic/claude-opus-4-7"
+      },
+      "human_author": "mcdays94",
+      "messages": [],
+      "total_additions": 215,
+      "total_deletions": 22,
+      "accepted_lines": 215,
+      "overriden_lines": 0
+    }
+  }
+}
