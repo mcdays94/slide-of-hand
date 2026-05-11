@@ -35,6 +35,23 @@ vi.mock("agents", () => ({
   getCurrentAgent: getCurrentAgentMock,
 }));
 
+// `@cloudflare/sandbox` transitively pulls in `@cloudflare/containers`
+// which uses `cloudflare:workers` schemes + extensionless ESM imports
+// that don't resolve outside the Workers runtime. We never invoke the
+// real `getSandbox` here — tests pass a `getSandboxFn` override into
+// `runProposeSourceEdit` — so a stub export is enough.
+const { getSandboxStub } = vi.hoisted(() => ({
+  getSandboxStub: vi.fn(() => {
+    throw new Error(
+      "Real getSandbox should never be called from agent-tools tests — " +
+        "tests must pass the `getSandboxFn` override.",
+    );
+  }),
+}));
+vi.mock("@cloudflare/sandbox", () => ({
+  getSandbox: getSandboxStub,
+}));
+
 // Mock the `github-client` so test runs don't hit the real GitHub API.
 const githubClientMock = vi.hoisted(() => ({
   listContents: vi.fn(),
@@ -128,8 +145,13 @@ function makeEnv(initial: Record<string, unknown> = {}): {
   // never call it directly — they go through `getStoredGitHubToken`
   // (mocked at top). A bare stub is enough for the type system.
   const githubTokens = {} as unknown as KVNamespace;
+  // `Sandbox` DO namespace (issue #131 phase 3c) — used by
+  // `proposeSourceEdit`. The tests that exercise that runner pass a
+  // mock `getSandboxFn` override so this binding never gets touched;
+  // a bare stub satisfies the type.
+  const sandbox = {} as unknown as AgentToolsEnv["Sandbox"];
   return {
-    env: { DECKS: kv, GITHUB_TOKENS: githubTokens },
+    env: { DECKS: kv, GITHUB_TOKENS: githubTokens, Sandbox: sandbox },
     puts,
   };
 }
@@ -833,10 +855,10 @@ describe("readSource", () => {
   });
 });
 
-// ─── Tool exposure assertion — make sure all 5 tools are wired ────────
+// ─── Tool exposure assertion — make sure all 6 tools are wired ────────
 
 describe("buildTools — phase 3 surface", () => {
-  it("exposes commitPatch, listSourceTree, and readSource alongside the phase-2 tools", () => {
+  it("exposes commitPatch, listSourceTree, readSource, and proposeSourceEdit alongside the phase-2 tools", () => {
     const { env } = makeEnv();
     const tools = buildTools(env, "test-deck");
     expect(tools.readDeck).toBeDefined();
@@ -844,9 +866,417 @@ describe("buildTools — phase 3 surface", () => {
     expect(tools.commitPatch).toBeDefined();
     expect(tools.listSourceTree).toBeDefined();
     expect(tools.readSource).toBeDefined();
+    expect(tools.proposeSourceEdit).toBeDefined();
     // Sanity: each has a description string for the model.
     expect(typeof tools.commitPatch.description).toBe("string");
     expect(typeof tools.listSourceTree.description).toBe("string");
     expect(typeof tools.readSource.description).toBe("string");
+    expect(typeof tools.proposeSourceEdit.description).toBe("string");
+  });
+});
+
+// ─── runProposeSourceEdit — issue #131 phase 3c slice 6 ─────────────
+//
+// The orchestrator. Composes the five helpers (cloneRepoIntoSandbox,
+// applyFilesIntoSandbox, runSandboxTestGate, commitAndPushInSandbox,
+// openPullRequest) plus the existing auth + token-lookup logic. Tests
+// here don't re-exercise each helper's failure modes — those have
+// their own unit tests; here we verify the orchestration: did the
+// right step run after the right precondition, and did each failure
+// surface with the right `phase` discriminant on the result.
+//
+// We mock the helpers themselves (not the SandboxLike surface) so the
+// tests can drive each step's outcome directly without re-doing the
+// Sandbox-mock dance for each scenario.
+
+const { sandboxStub, getSandboxFn } = vi.hoisted(() => {
+  // The helpers type against the narrow SandboxLike (4 methods);
+  // `runProposeSourceEdit` types against the full Sandbox via
+  // `GetSandboxFn`. The stub satisfies the narrow surface — and we
+  // never invoke methods that aren't on it because the helpers are
+  // all mocked. The double-cast through unknown is the price of
+  // letting prod-code stay typed against the full SDK class.
+  const sandboxStub = {} as unknown as Parameters<
+    typeof import("./sandbox-source-edit").cloneRepoIntoSandbox
+  >[0];
+  return {
+    sandboxStub,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    getSandboxFn: vi.fn(() => sandboxStub) as any,
+  };
+});
+
+const sandboxSourceEditMock = vi.hoisted(() => ({
+  cloneRepoIntoSandbox: vi.fn(),
+  applyFilesIntoSandbox: vi.fn(),
+  runSandboxTestGate: vi.fn(),
+  commitAndPushInSandbox: vi.fn(),
+}));
+vi.mock("./sandbox-source-edit", async (importOriginal) => {
+  const actual = await importOriginal<
+    typeof import("./sandbox-source-edit")
+  >();
+  return {
+    ...actual,
+    cloneRepoIntoSandbox: sandboxSourceEditMock.cloneRepoIntoSandbox,
+    applyFilesIntoSandbox: sandboxSourceEditMock.applyFilesIntoSandbox,
+    runSandboxTestGate: sandboxSourceEditMock.runSandboxTestGate,
+    commitAndPushInSandbox: sandboxSourceEditMock.commitAndPushInSandbox,
+  };
+});
+
+// Extend githubClientMock from the existing fixture with openPullRequest.
+// `vi.mock` was registered for `./github-client` at the top of this
+// file — we re-mock to add the new entry without losing the existing
+// ones.
+vi.mock("./github-client", () => ({
+  ...githubClientMock,
+  openPullRequest: vi.fn(),
+}));
+
+import { runProposeSourceEdit } from "./agent-tools";
+import * as ghClientForProposeMock from "./github-client";
+
+const goodFiles = [
+  {
+    path: "src/decks/public/hello/01-title.tsx",
+    content: "// new content",
+  },
+];
+const goodInput = { files: goodFiles, summary: "tighten title slide copy" };
+const ghToken = {
+  token: "gho_abc",
+  username: "alice",
+  userId: 12345,
+  scopes: ["public_repo"],
+  connectedAt: 0,
+};
+const wrappedAgent = "alice@cloudflare.com";
+
+beforeEach(() => {
+  sandboxSourceEditMock.cloneRepoIntoSandbox.mockReset();
+  sandboxSourceEditMock.applyFilesIntoSandbox.mockReset();
+  sandboxSourceEditMock.runSandboxTestGate.mockReset();
+  sandboxSourceEditMock.commitAndPushInSandbox.mockReset();
+  vi.mocked(ghClientForProposeMock.openPullRequest).mockReset();
+  githubOauthMock.getStoredGitHubToken.mockReset();
+  getSandboxFn.mockClear();
+});
+
+/** Wire up the happy path for every step. Individual tests override pieces. */
+function setupHappyPath() {
+  githubOauthMock.getStoredGitHubToken.mockResolvedValue(ghToken);
+  sandboxSourceEditMock.cloneRepoIntoSandbox.mockResolvedValue({
+    ok: true,
+    workdir: "/workspace/repo",
+    ref: "main",
+  });
+  sandboxSourceEditMock.applyFilesIntoSandbox.mockResolvedValue({
+    ok: true,
+    paths: goodFiles.map((f) => f.path),
+  });
+  sandboxSourceEditMock.runSandboxTestGate.mockResolvedValue({
+    ok: true,
+    phases: [
+      {
+        phase: "install",
+        ok: true,
+        command: "npm ci",
+        stdout: "",
+        stderr: "",
+        exitCode: 0,
+      },
+      {
+        phase: "typecheck",
+        ok: true,
+        command: "npm run typecheck",
+        stdout: "",
+        stderr: "",
+        exitCode: 0,
+      },
+      {
+        phase: "test",
+        ok: true,
+        command: "npm test",
+        stdout: "",
+        stderr: "",
+        exitCode: 0,
+      },
+      {
+        phase: "build",
+        ok: true,
+        command: "npm run build",
+        stdout: "",
+        stderr: "",
+        exitCode: 0,
+      },
+    ],
+  });
+  sandboxSourceEditMock.commitAndPushInSandbox.mockResolvedValue({
+    ok: true,
+    sha: "abcdef0123456789abcdef0123456789abcdef01",
+    branch: "agent/test-deck-1715425200000",
+  });
+  vi.mocked(ghClientForProposeMock.openPullRequest).mockResolvedValue({
+    ok: true,
+    result: {
+      number: 999,
+      htmlUrl: "https://github.com/mcdays94/slide-of-hand/pull/999",
+      nodeId: "PR_x",
+      head: "agent/test-deck-1715425200000",
+      base: "main",
+    },
+  });
+}
+
+describe("runProposeSourceEdit — happy path", () => {
+  it("orchestrates the five helpers in order and returns the PR URL", async () => {
+    setupHappyPath();
+    const { env } = makeEnv();
+    const result = await runProposeSourceEdit(
+      env,
+      "test-deck",
+      goodInput,
+      getSandboxFn,
+      wrappedAgent,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.prNumber).toBe(999);
+    expect(result.prHtmlUrl).toMatch(/pull\/999/);
+    expect(result.branch).toMatch(/^agent\/test-deck-\d+$/);
+    expect(result.commitSha).toMatch(/^[0-9a-f]{40}$/);
+    expect(result.testGatePhases).toHaveLength(4);
+
+    // Sandbox lookup uses a deterministic per-deck ID so subsequent
+    // edits to the same deck reuse the warm container.
+    expect(getSandboxFn).toHaveBeenCalledWith(
+      env.Sandbox,
+      "source-edit:test-deck",
+    );
+
+    // Helpers fire in the right order with the right args.
+    expect(
+      sandboxSourceEditMock.cloneRepoIntoSandbox,
+    ).toHaveBeenCalledWith(sandboxStub, {
+      token: ghToken.token,
+      repo: { owner: "mcdays94", repo: "slide-of-hand" },
+    });
+    expect(
+      sandboxSourceEditMock.applyFilesIntoSandbox,
+    ).toHaveBeenCalledWith(sandboxStub, goodFiles, "/workspace/repo");
+    expect(sandboxSourceEditMock.runSandboxTestGate).toHaveBeenCalledWith(
+      sandboxStub,
+      "/workspace/repo",
+    );
+    expect(
+      sandboxSourceEditMock.commitAndPushInSandbox,
+    ).toHaveBeenCalledWith(
+      sandboxStub,
+      expect.objectContaining({
+        commitMessage: goodInput.summary,
+        authorName: "alice",
+        authorEmail: "12345+alice@users.noreply.github.com",
+      }),
+      "/workspace/repo",
+    );
+    expect(
+      ghClientForProposeMock.openPullRequest,
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({
+        token: ghToken.token,
+        title: goodInput.summary,
+        draft: true,
+      }),
+    );
+  });
+
+  it("includes the test-gate summary in the PR body", async () => {
+    setupHappyPath();
+    const { env } = makeEnv();
+    await runProposeSourceEdit(
+      env,
+      "test-deck",
+      { ...goodInput, prDescription: "Bumps the title copy." },
+      getSandboxFn,
+      wrappedAgent,
+    );
+    const call = vi.mocked(ghClientForProposeMock.openPullRequest).mock
+      .calls[0]?.[0];
+    expect(call).toBeDefined();
+    // PR body has the user-supplied prose AND a test-gate table.
+    expect(call!.body).toMatch(/Bumps the title copy\./);
+    expect(call!.body).toMatch(/## Test gate/);
+    expect(call!.body).toMatch(/\| `install` \| `npm ci` \| 0 \| ✅ \|/);
+    expect(call!.body).toMatch(/\| `build` \| `npm run build` \| 0 \| ✅ \|/);
+  });
+});
+
+describe("runProposeSourceEdit — failure surfaces", () => {
+  it("returns phase:'auth' when no email is resolvable (service-token context)", async () => {
+    // No need to set up other helpers — auth gate fails first.
+    const { env } = makeEnv();
+    const result = await runProposeSourceEdit(
+      env,
+      "test-deck",
+      goodInput,
+      getSandboxFn,
+      null,
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.phase).toBe("auth");
+    expect(
+      sandboxSourceEditMock.cloneRepoIntoSandbox,
+    ).not.toHaveBeenCalled();
+  });
+
+  it("returns phase:'github_token' when the user has no GitHub connection", async () => {
+    githubOauthMock.getStoredGitHubToken.mockResolvedValue(null);
+    const { env } = makeEnv();
+    const result = await runProposeSourceEdit(
+      env,
+      "test-deck",
+      goodInput,
+      getSandboxFn,
+      wrappedAgent,
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.phase).toBe("github_token");
+    expect(result.error).toMatch(/Settings/);
+    expect(getSandboxFn).not.toHaveBeenCalled();
+  });
+
+  it("returns phase:'clone' when cloneRepoIntoSandbox fails", async () => {
+    setupHappyPath();
+    sandboxSourceEditMock.cloneRepoIntoSandbox.mockResolvedValue({
+      ok: false,
+      error: "git clone failed (exit 128)",
+    });
+    const { env } = makeEnv();
+    const result = await runProposeSourceEdit(
+      env,
+      "test-deck",
+      goodInput,
+      getSandboxFn,
+      wrappedAgent,
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.phase).toBe("clone");
+    expect(result.error).toMatch(/exit 128/);
+    // No applyFiles attempted after clone failure.
+    expect(
+      sandboxSourceEditMock.applyFilesIntoSandbox,
+    ).not.toHaveBeenCalled();
+  });
+
+  it("returns phase:'apply' with failedPath when applyFiles rejects a bad path", async () => {
+    setupHappyPath();
+    sandboxSourceEditMock.applyFilesIntoSandbox.mockResolvedValue({
+      ok: false,
+      error: "Path must be relative (no leading '/')",
+      failedPath: "/etc/passwd",
+    });
+    const { env } = makeEnv();
+    const result = await runProposeSourceEdit(
+      env,
+      "test-deck",
+      goodInput,
+      getSandboxFn,
+      wrappedAgent,
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.phase).toBe("apply");
+    expect(result.failedPath).toBe("/etc/passwd");
+    expect(sandboxSourceEditMock.runSandboxTestGate).not.toHaveBeenCalled();
+  });
+
+  it("returns phase:'test_gate' with the failed phase + phases-so-far when the gate fails", async () => {
+    setupHappyPath();
+    sandboxSourceEditMock.runSandboxTestGate.mockResolvedValue({
+      ok: false,
+      failedPhase: "typecheck",
+      phases: [
+        {
+          phase: "install",
+          ok: true,
+          command: "npm ci",
+          stdout: "",
+          stderr: "",
+          exitCode: 0,
+        },
+        {
+          phase: "typecheck",
+          ok: false,
+          command: "npm run typecheck",
+          stdout: "",
+          stderr: "type error at src/foo.ts:42",
+          exitCode: 2,
+        },
+      ],
+    });
+    const { env } = makeEnv();
+    const result = await runProposeSourceEdit(
+      env,
+      "test-deck",
+      goodInput,
+      getSandboxFn,
+      wrappedAgent,
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.phase).toBe("test_gate");
+    expect(result.failedTestGatePhase).toBe("typecheck");
+    expect(result.testGatePhases).toHaveLength(2);
+    expect(
+      sandboxSourceEditMock.commitAndPushInSandbox,
+    ).not.toHaveBeenCalled();
+  });
+
+  it("returns phase:'commit_push' with noEffectiveChanges when the diff was empty", async () => {
+    setupHappyPath();
+    sandboxSourceEditMock.commitAndPushInSandbox.mockResolvedValue({
+      ok: false,
+      noEffectiveChanges: true,
+      error: "No effective changes to commit (working tree matches HEAD).",
+    });
+    const { env } = makeEnv();
+    const result = await runProposeSourceEdit(
+      env,
+      "test-deck",
+      goodInput,
+      getSandboxFn,
+      wrappedAgent,
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.phase).toBe("commit_push");
+    expect(result.noEffectiveChanges).toBe(true);
+    expect(ghClientForProposeMock.openPullRequest).not.toHaveBeenCalled();
+  });
+
+  it("returns phase:'open_pr' when GitHub rejects the PR (e.g. 422 duplicate)", async () => {
+    setupHappyPath();
+    vi.mocked(ghClientForProposeMock.openPullRequest).mockResolvedValue({
+      ok: false,
+      kind: "other",
+      message: "GitHub rejected the PR (422): already exists",
+      status: 422,
+    });
+    const { env } = makeEnv();
+    const result = await runProposeSourceEdit(
+      env,
+      "test-deck",
+      goodInput,
+      getSandboxFn,
+      wrappedAgent,
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.phase).toBe("open_pr");
+    expect(result.error).toMatch(/already exists/);
   });
 });

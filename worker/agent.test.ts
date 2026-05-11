@@ -55,6 +55,15 @@ vi.mock("ai", () => ({
   streamText: () => ({ toUIMessageStreamResponse: () => new Response() }),
   convertToModelMessages: async (m: unknown) => m,
 }));
+// `@cloudflare/sandbox` transitively pulls in `@cloudflare/containers`
+// which uses ESM imports that don't resolve outside the Workers
+// runtime. The routing tests never invoke `proposeSourceEdit`, so a
+// stub `getSandbox` is enough to keep the import graph happy. See
+// `worker/agent-tools.test.ts` for the same workaround in the tool
+// tests.
+vi.mock("@cloudflare/sandbox", () => ({
+  getSandbox: vi.fn(),
+}));
 
 // Import AFTER mocks are registered so the module wires up against
 // the stubs.
@@ -70,6 +79,10 @@ function makeEnv(): AgentEnv {
     // tests never invoke the tools (the SDK delegation point is
     // mocked), so a stub is enough.
     DECKS: {} as KVNamespace,
+    // Phase 3c: agent tools also need a Sandbox DO namespace for the
+    // `proposeSourceEdit` flow. The routing tests don't reach that
+    // code path; a bare stub satisfies the type.
+    Sandbox: {} as unknown as AgentEnv["Sandbox"],
     // Phase 3a/3b: agent tools also need GITHUB_TOKENS for the
     // per-user OAuth token lookup. Same routing-test reasoning —
     // unused at the SDK delegation point, but required by the type.

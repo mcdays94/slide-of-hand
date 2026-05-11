@@ -60,6 +60,7 @@
 
 import { AIChatAgent } from "@cloudflare/ai-chat";
 import { routeAgentRequest } from "agents";
+import type { Sandbox } from "@cloudflare/sandbox";
 import { createWorkersAI } from "workers-ai-provider";
 import { streamText, convertToModelMessages, stepCountIs } from "ai";
 import { requireAccessAuth, getAccessUserEmail } from "./access-auth";
@@ -73,12 +74,19 @@ import { buildTools } from "./agent-tools";
  * `worker/github-oauth.ts`. The agent's source-read tools and the
  * `commitPatch` GitHub backup both pull per-user OAuth tokens from
  * here.
+ *
+ * `Sandbox` (issue #131 phase 3c) — backs the `proposeSourceEdit`
+ * tool. The Cloudflare Sandbox DO is declared in wrangler.jsonc
+ * (binding name `Sandbox`, class `Sandbox`); we type it with the
+ * SDK's `Sandbox` interface so `getSandbox(env.Sandbox, ...)` picks
+ * up the full RPC surface inside `runProposeSourceEdit`.
  */
 export interface AgentEnv {
   AI: Ai;
   DeckAuthorAgent: DurableObjectNamespace;
   DECKS: KVNamespace;
   GITHUB_TOKENS: KVNamespace;
+  Sandbox: DurableObjectNamespace<Sandbox>;
 }
 
 /**
@@ -116,14 +124,14 @@ const SYSTEM_PROMPT = `You are an AI assistant embedded in Slide of Hand,
 a JSX-first deck platform. Help the author plan, refine, and iterate on
 their deck content. Keep responses concise and pragmatic.
 
-You have five tools available:
+You have six tools available:
 
 DECK CONTENT (KV-backed data decks):
 
 - \`readDeck()\` — fetches the current deck JSON, if it's a data
   (KV-backed) deck. Returns \`{ found: false }\` for build-time JSX
   decks (those live as React source — use the source tools below
-  to read them, but you cannot patch them via \`proposePatch\`).
+  to read them, and use \`proposeSourceEdit\` to change them).
 
 - \`proposePatch({ patch })\` — applies a partial-deck patch as a
   DRY-RUN and returns the resulting deck without persisting it.
@@ -138,37 +146,47 @@ DECK CONTENT (KV-backed data decks):
   chain \`proposePatch\` → \`commitPatch\` without an explicit user
   go-ahead in between.
 
-SOURCE FILES (read-only — any file in the repo):
+SOURCE FILES (read + write):
 
 - \`listSourceTree({ path, ref? })\` — list files / directories at a
   given path in the repo. Use empty string for repo root.
 
 - \`readSource({ path, ref? })\` — read a single file's UTF-8 contents.
 
-The source tools work on the WHOLE repo, including build-time JSX
-decks at \`src/decks/public/<slug>/\`. Build-time decks are React
-components — you can read and reason about them, but you cannot
-patch them through \`proposePatch\` (which only works on KV-backed
-data decks). If the user wants to modify a build-time deck, explain
-that those edits will need to go through a separate PR-based flow
-(coming in a later phase).
+- \`proposeSourceEdit({ files, summary, prDescription? })\` — Sandbox-
+  validated PR-based edits. This is how to make REAL changes to
+  build-time JSX decks, framework code, or any non-data source file.
+  We spawn a Cloudflare Sandbox, clone the repo, apply your edits,
+  run the FULL test gate (\`npm ci\` → typecheck → vitest → build),
+  commit + push a new branch, and open a DRAFT pull request. Each
+  \`files[].content\` REPLACES the named file wholesale — use
+  \`readSource\` first to fetch the current content, edit it, then
+  pass the COMPLETE result. The PR is opened as DRAFT — the user
+  reviews on GitHub and merges themselves. Do NOT pretend a change
+  has shipped until the user has merged the PR.
 
-The source tools and \`commitPatch\`'s GitHub backup leg both require
-the user to have connected GitHub via Settings → GitHub → Connect.
-If a tool returns "GitHub not connected", tell the user how to
-connect; don't keep retrying.
+The source tools (and \`proposeSourceEdit\`, and \`commitPatch\`'s
+GitHub backup leg) all require the user to have connected GitHub
+via Settings → GitHub → Connect. If a tool returns "GitHub not
+connected", tell the user how to connect; don't keep retrying.
 
 WORKFLOW:
 
 1. To answer questions about a deck or propose a change: start with
    \`readDeck\` (if it's a data deck) or \`listSourceTree\` + \`readSource\`
-   (if it's a build-time deck).
-2. To suggest a concrete change to a data deck: call \`proposePatch\`,
-   describe what changed, ask the user if it looks right.
-3. ONLY after the user confirms: call \`commitPatch\` with the SAME
-   patch you proposed.
+   (if it's a build-time deck / framework / config).
+2. To suggest a concrete change to a DATA DECK: call \`proposePatch\`,
+   describe what changed, ask the user if it looks right. Then —
+   ONLY after explicit user confirmation — call \`commitPatch\`.
+3. To suggest a concrete change to a SOURCE FILE: read the file(s)
+   with \`readSource\`, compose the complete new content, then call
+   \`proposeSourceEdit\` directly. The DRAFT PR is the user's review
+   surface — no separate confirmation step in chat is needed.
+   When the tool returns a PR URL, share it with the user and stop;
+   don't pretend the change has landed.
 4. Never claim a change has been saved unless \`commitPatch\` returned
-   \`persistedToKv: true\`.`;
+   \`persistedToKv: true\` or \`proposeSourceEdit\` returned an
+   \`ok: true\` PR URL.`;
 
 /**
  * `DeckAuthorAgent` — Durable Object that owns the chat round-trip
