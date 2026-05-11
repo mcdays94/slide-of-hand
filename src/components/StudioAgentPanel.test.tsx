@@ -34,6 +34,8 @@ vi.mock("@cloudflare/ai-chat/react", () => ({
 }));
 
 import { StudioAgentPanel } from "./StudioAgentPanel";
+import { SettingsProvider } from "@/framework/viewer/useSettings";
+import { DEFAULT_SETTINGS } from "@/lib/settings";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type TestMessagePart = any;
@@ -101,6 +103,40 @@ describe("<StudioAgentPanel>", () => {
     // happy-dom's default hostname is "localhost", so the test
     // environment exercises the dev branch — see getDevAuthQuery.
     expect(opts.query).toEqual({ "cf-access-auth-email": "dev@local" });
+  });
+
+  // Item A model-picker plumbing (issue #131). On every render the
+  // panel reads `settings.aiAssistantModel` from `useSettings` and
+  // passes it to `useAgentChat` via the `body` option. The server
+  // (worker/agent.ts, `resolveAiAssistantModel`) re-validates against
+  // the allow-list and resolves to the catalog ID.
+  it("passes the default aiAssistantModel via useAgentChat's body when no provider is mounted", () => {
+    // No `<SettingsProvider>` wrapping → `useSettings()` falls back
+    // to DEFAULT_SETTINGS, so the body should carry the default key.
+    setupHooks();
+    render(<StudioAgentPanel deckSlug="hello" onClose={vi.fn()} />);
+    expect(useAgentChatMock).toHaveBeenCalled();
+    const [chatOpts] = useAgentChatMock.mock.calls[0];
+    expect(chatOpts.body).toEqual({
+      model: DEFAULT_SETTINGS.aiAssistantModel,
+    });
+  });
+
+  it("passes the user's chosen aiAssistantModel via useAgentChat's body when SettingsProvider supplies one", () => {
+    setupHooks();
+    render(
+      <SettingsProvider
+        initialSettings={{
+          ...DEFAULT_SETTINGS,
+          aiAssistantModel: "gpt-oss-120b",
+        }}
+      >
+        <StudioAgentPanel deckSlug="hello" onClose={vi.fn()} />
+      </SettingsProvider>,
+    );
+    expect(useAgentChatMock).toHaveBeenCalled();
+    const [chatOpts] = useAgentChatMock.mock.calls[0];
+    expect(chatOpts.body).toEqual({ model: "gpt-oss-120b" });
   });
 
   it("renders a message list when messages exist", () => {

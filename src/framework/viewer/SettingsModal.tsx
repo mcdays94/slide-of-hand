@@ -25,6 +25,7 @@ import {
 } from "framer-motion";
 import { useEffect, useId, type MouseEvent, type ReactNode } from "react";
 import type {
+  AiAssistantModel,
   DeckCardHoverAnimationSettings,
   NotesDefaultMode,
 } from "@/lib/settings";
@@ -250,6 +251,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const presenterFinalPhaseId = useId();
   const notesDefaultModeId = useId();
   const deckCardHoverId = useId();
+  const aiAssistantModelId = useId();
 
   // Click-on-backdrop closes; clicks on the inner panel must NOT bubble
   // to the backdrop. We compare currentTarget vs target so a click that
@@ -304,6 +306,11 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
           onChangeDeckCardHoverAnimation={(next) =>
             setSetting("deckCardHoverAnimation", next)
           }
+          aiAssistantModel={settings.aiAssistantModel}
+          aiAssistantModelId={aiAssistantModelId}
+          onChangeAiAssistantModel={(next) =>
+            setSetting("aiAssistantModel", next)
+          }
           onBackdropClick={onBackdropClick}
           onClose={onClose}
         />
@@ -327,6 +334,9 @@ interface SettingsModalContentProps {
   onChangeDeckCardHoverAnimation: (
     next: DeckCardHoverAnimationSettings,
   ) => void;
+  aiAssistantModel: AiAssistantModel;
+  aiAssistantModelId: string;
+  onChangeAiAssistantModel: (next: AiAssistantModel) => void;
   onBackdropClick: (e: MouseEvent<HTMLDivElement>) => void;
   onClose: () => void;
 }
@@ -343,6 +353,8 @@ function SettingsModalContent({
   deckCardHoverAnimation,
   deckCardHoverId,
   onChangeDeckCardHoverAnimation,
+  aiAssistantModel,
+  onChangeAiAssistantModel,
   onBackdropClick,
   onClose,
 }: SettingsModalContentProps): ReactNode {
@@ -447,7 +459,23 @@ function SettingsModalContent({
               testIdPrefix="settings-modal-deck-card-hover-slide-count"
             />
           )}
-          {presenterMode && <GitHubConnectRow />}
+          {presenterMode && (
+            <>
+              <SettingsSegmentedRow
+                label="AI assistant model"
+                description="Which Workers AI model the in-Studio chat assistant uses. Kimi K2.6 is the frontier default; Llama 4 Scout is multimodal; GPT-OSS 120B is reasoning-tuned. The server validates against the allow-list on every turn."
+                value={aiAssistantModel}
+                options={[
+                  { value: "kimi-k2.6", label: "Kimi K2.6" },
+                  { value: "llama-4-scout", label: "Llama 4 Scout" },
+                  { value: "gpt-oss-120b", label: "GPT-OSS 120B" },
+                ]}
+                onChange={onChangeAiAssistantModel}
+                testIdPrefix="settings-modal-ai-assistant-model"
+              />
+              <GitHubConnectRow />
+            </>
+          )}
         </div>
       </motion.div>
     </motion.div>

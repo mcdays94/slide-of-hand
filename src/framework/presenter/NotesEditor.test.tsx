@@ -422,6 +422,7 @@ describe("<NotesEditor> settings-driven default mode (#126)", () => {
       presenterNextSlideShowsFinalPhase: false,
       notesDefaultMode: "markdown",
       deckCardHoverAnimation: { enabled: true, slideCount: 3 },
+      aiAssistantModel: "kimi-k2.6",
     };
     render(
       <SettingsProvider initialSettings={settings}>
@@ -450,6 +451,7 @@ describe("<NotesEditor> settings-driven default mode (#126)", () => {
       presenterNextSlideShowsFinalPhase: false,
       notesDefaultMode: "rich",
       deckCardHoverAnimation: { enabled: true, slideCount: 3 },
+      aiAssistantModel: "kimi-k2.6",
     };
     render(
       <SettingsProvider initialSettings={settings}>

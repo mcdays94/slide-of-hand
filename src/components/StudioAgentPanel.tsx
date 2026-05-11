@@ -47,6 +47,7 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useAgent } from "agents/react";
 import { useAgentChat } from "@cloudflare/ai-chat/react";
 import { easeEntrance, easeStandard } from "@/lib/motion";
+import { useSettings } from "@/framework/viewer/useSettings";
 
 export interface StudioAgentPanelProps {
   /** Slug of the deck this conversation belongs to. */
@@ -152,8 +153,20 @@ function PanelInner({ deckSlug, onRequestClose }: PanelInnerProps) {
     query: getDevAuthQuery(),
   });
 
+  // Read the user's selected AI model from settings so we can hand it
+  // to the server on every chat turn (issue #131 item A). Falls back
+  // to DEFAULT_SETTINGS via `useSettings`'s no-provider safety branch
+  // — see `src/framework/viewer/useSettings.ts`. The server allow-list-
+  // validates the value before invoking Workers AI, so it's safe to
+  // forward whatever the user has selected.
+  const { settings } = useSettings();
+
   const { messages, sendMessage, status, clearHistory } = useAgentChat({
     agent,
+    // `body` is forwarded to `onChatMessage`'s `options.body` on the
+    // server every turn. See `worker/agent.ts`'s
+    // `resolveAiAssistantModel(options.body)` call.
+    body: { model: settings.aiAssistantModel },
   });
 
   // Local form state — we don't use uncontrolled inputs because the

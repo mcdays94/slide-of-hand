@@ -58,7 +58,13 @@ vi.mock("ai", () => ({
 
 // Import AFTER mocks are registered so the module wires up against
 // the stubs.
-import { handleAgent, DeckAuthorAgent, type AgentEnv } from "./agent";
+import {
+  handleAgent,
+  DeckAuthorAgent,
+  resolveAiAssistantModel,
+  AI_ASSISTANT_MODEL_IDS,
+  type AgentEnv,
+} from "./agent";
 
 const stubAi = { run: async () => ({}) } as unknown as Ai;
 
@@ -348,5 +354,84 @@ describe("DeckAuthorAgent.onConnect (issue #131 item B)", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await (agent as any).onConnect(connection, ctx);
     expect(connection.setState).not.toHaveBeenCalled();
+  });
+});
+
+// ─── resolveAiAssistantModel (issue #131 item A) ─────────────────────
+//
+// The client sends a friendly model key (e.g. "kimi-k2.6") on every
+// chat turn via `useAgentChat`'s `body` option. The server must (a)
+// resolve the key to a Workers AI catalog ID and (b) defend in depth
+// against arbitrary client-supplied values — the key MUST be in the
+// allow-list, otherwise the catalog default is used. This keeps the
+// server in control of which models can actually be invoked, even if
+// the client UI gets out of sync with the catalog (stale builds,
+// localStorage tampering, etc.).
+
+describe("resolveAiAssistantModel (issue #131 item A)", () => {
+  it("exposes AI_ASSISTANT_MODEL_IDS with one entry per friendly key", () => {
+    // Three friendly keys, three catalog IDs. The IDs come straight
+    // from `npx wrangler ai models` (verified 2026-05-11). If any
+    // catalog ID 5018s on Workers AI, the test won't catch it — only
+    // a real invocation will. But pinning the IDs here means a stray
+    // diff (e.g. accidental rename) is visible in code review.
+    expect(AI_ASSISTANT_MODEL_IDS).toEqual({
+      "kimi-k2.6": "@cf/moonshotai/kimi-k2.6",
+      "llama-4-scout": "@cf/meta/llama-4-scout-17b-16e-instruct",
+      "gpt-oss-120b": "@cf/openai/gpt-oss-120b",
+    });
+  });
+
+  it("returns the default catalog ID when body is undefined", () => {
+    expect(resolveAiAssistantModel(undefined)).toBe(
+      "@cf/moonshotai/kimi-k2.6",
+    );
+  });
+
+  it("returns the default catalog ID when body has no model key", () => {
+    expect(resolveAiAssistantModel({})).toBe("@cf/moonshotai/kimi-k2.6");
+  });
+
+  it("returns the default catalog ID when body.model is not a string", () => {
+    expect(resolveAiAssistantModel({ model: 42 })).toBe(
+      "@cf/moonshotai/kimi-k2.6",
+    );
+    expect(resolveAiAssistantModel({ model: null })).toBe(
+      "@cf/moonshotai/kimi-k2.6",
+    );
+    expect(resolveAiAssistantModel({ model: { nested: "x" } })).toBe(
+      "@cf/moonshotai/kimi-k2.6",
+    );
+  });
+
+  it("returns the default catalog ID when body.model is an unknown string", () => {
+    // The defence-in-depth case: client says "claude-3-opus" (not in
+    // our allow-list because Workers AI doesn't have it) → fall back
+    // to the default rather than passing through to streamText where
+    // it would 5018.
+    expect(resolveAiAssistantModel({ model: "claude-3-opus" })).toBe(
+      "@cf/moonshotai/kimi-k2.6",
+    );
+    expect(resolveAiAssistantModel({ model: "" })).toBe(
+      "@cf/moonshotai/kimi-k2.6",
+    );
+  });
+
+  it("returns the kimi catalog ID for body.model = 'kimi-k2.6'", () => {
+    expect(resolveAiAssistantModel({ model: "kimi-k2.6" })).toBe(
+      "@cf/moonshotai/kimi-k2.6",
+    );
+  });
+
+  it("returns the llama-4-scout catalog ID for body.model = 'llama-4-scout'", () => {
+    expect(resolveAiAssistantModel({ model: "llama-4-scout" })).toBe(
+      "@cf/meta/llama-4-scout-17b-16e-instruct",
+    );
+  });
+
+  it("returns the gpt-oss catalog ID for body.model = 'gpt-oss-120b'", () => {
+    expect(resolveAiAssistantModel({ model: "gpt-oss-120b" })).toBe(
+      "@cf/openai/gpt-oss-120b",
+    );
   });
 });

@@ -11,11 +11,13 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  AI_ASSISTANT_MODELS,
   DEFAULT_SETTINGS,
   STORAGE_KEY,
   readSettings,
   resetSettings,
   writeSettings,
+  type AiAssistantModel,
 } from "./settings";
 
 beforeEach(() => {
@@ -83,6 +85,7 @@ describe("writeSettings()", () => {
       presenterNextSlideShowsFinalPhase: false,
       notesDefaultMode: "rich",
       deckCardHoverAnimation: { enabled: true, slideCount: 3 },
+      aiAssistantModel: "kimi-k2.6",
     });
   });
 
@@ -264,5 +267,99 @@ describe("deckCardHoverAnimation (issue #128)", () => {
       enabled: false,
       slideCount: 6,
     });
+  });
+});
+
+// ─── aiAssistantModel (issue #131 item A — Workers AI model picker) ──
+//
+// The in-Studio AI agent's model is selectable from a closed set of
+// friendly keys (e.g. "kimi-k2.6"). Friendly keys keep the user-facing
+// labels stable across catalog churn — Workers AI model IDs drift
+// (kimi-k2.5 deprecation, llama-4-scout addition, etc.) but the
+// `<SettingsSegmentedRow>` and any persisted state should keep
+// working. The server is the single source of truth for which
+// friendly key maps to which catalog ID — see `worker/agent.ts`.
+//
+// The setting is persisted in localStorage like every other setting.
+// Unknown / malformed values fall back to the default so a stale
+// localStorage from a future build (with an extra option) or a past
+// build (without this option) both degrade gracefully.
+
+describe("aiAssistantModel (issue #131 item A)", () => {
+  it("DEFAULT_SETTINGS.aiAssistantModel defaults to 'kimi-k2.6'", () => {
+    expect(DEFAULT_SETTINGS.aiAssistantModel).toBe("kimi-k2.6");
+  });
+
+  it("exposes AI_ASSISTANT_MODELS with exactly three friendly keys", () => {
+    // Three is the spec from RESUME.md item A: the current default
+    // plus 2 swap-ins. Adding/removing one is a deliberate design
+    // change, so this test is here to make that explicit.
+    expect(AI_ASSISTANT_MODELS).toEqual([
+      "kimi-k2.6",
+      "llama-4-scout",
+      "gpt-oss-120b",
+    ]);
+  });
+
+  it("readSettings returns the default model when storage is empty", () => {
+    expect(readSettings().aiAssistantModel).toBe("kimi-k2.6");
+  });
+
+  it("readSettings preserves a persisted valid model key", () => {
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ aiAssistantModel: "llama-4-scout" }),
+    );
+    expect(readSettings().aiAssistantModel).toBe("llama-4-scout");
+  });
+
+  it("readSettings preserves each of the AI_ASSISTANT_MODELS keys", () => {
+    for (const model of AI_ASSISTANT_MODELS) {
+      window.localStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify({ aiAssistantModel: model }),
+      );
+      expect(readSettings().aiAssistantModel).toBe(model);
+    }
+  });
+
+  it("falls back to default when aiAssistantModel is an unknown string", () => {
+    // Could happen when a stale localStorage from a future build has
+    // an option this build doesn't recognise, or when a user manually
+    // edits localStorage.
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ aiAssistantModel: "claude-3-opus" }),
+    );
+    expect(readSettings().aiAssistantModel).toBe("kimi-k2.6");
+  });
+
+  it("falls back to default when aiAssistantModel is not a string", () => {
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ aiAssistantModel: 42 }),
+    );
+    expect(readSettings().aiAssistantModel).toBe("kimi-k2.6");
+  });
+
+  it("falls back to default when aiAssistantModel is missing entirely", () => {
+    // Mirrors a localStorage written by an older build that didn't
+    // have this setting. Forward-compat with our own past selves.
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ showSlideIndicators: false }),
+    );
+    expect(readSettings().aiAssistantModel).toBe("kimi-k2.6");
+  });
+
+  it("writeSettings persists aiAssistantModel", () => {
+    const merged = writeSettings({
+      aiAssistantModel: "gpt-oss-120b" satisfies AiAssistantModel,
+    });
+    expect(merged.aiAssistantModel).toBe("gpt-oss-120b");
+    const persisted = JSON.parse(
+      window.localStorage.getItem(STORAGE_KEY)!,
+    ) as { aiAssistantModel?: string };
+    expect(persisted.aiAssistantModel).toBe("gpt-oss-120b");
   });
 });
