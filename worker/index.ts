@@ -38,6 +38,7 @@ import { handleAuthStatus, type AuthStatusEnv } from "./auth-status";
 import { handleAgent, type AgentEnv } from "./agent";
 import { handleGitHubOAuth, type GitHubOAuthEnv } from "./github-oauth";
 import { handleSandboxSmoke, type SandboxSmokeEnv } from "./sandbox-smoke";
+import { handleSkills, type SkillsEnv } from "./skill-composer";
 import { applyCacheControl } from "./cache-control";
 
 // Re-export the agent DO class so wrangler can find it from the same
@@ -62,7 +63,8 @@ export interface Env
     AuthStatusEnv,
     AgentEnv,
     GitHubOAuthEnv,
-    SandboxSmokeEnv {
+    SandboxSmokeEnv,
+    SkillsEnv {
   ASSETS: Fetcher;
 }
 
@@ -101,6 +103,13 @@ export default {
     // endpoint rather than a one-off bring-up script.
     const sandboxSmokeResponse = await handleSandboxSmoke(request, env);
     if (sandboxSmokeResponse) return sandboxSmokeResponse;
+    // Skill composer (issue #168 Wave 4). Serves a composed Markdown
+    // skill describing the deck-authoring contract + a live list of
+    // every public deck. Consumed by the in-Studio AI agent and by
+    // external harnesses (Opencode / Claude Code / Codex) via service
+    // token. See `worker/skill-composer.ts`.
+    const skillsResponse = await handleSkills(request, env);
+    if (skillsResponse) return skillsResponse;
 
     // All non-API paths fall through to the Static Assets binding.
     // The binding's `not_found_handling: single-page-application`
