@@ -72,6 +72,7 @@ import {
   DeckAuthorAgent,
   resolveAiAssistantModel,
   AI_ASSISTANT_MODEL_IDS,
+  buildSystemPrompt,
   type AgentEnv,
 } from "./agent";
 
@@ -446,5 +447,67 @@ describe("resolveAiAssistantModel (issue #131 item A)", () => {
     expect(resolveAiAssistantModel({ model: "gpt-oss-120b" })).toBe(
       "@cf/openai/gpt-oss-120b",
     );
+  });
+});
+
+// ─── buildSystemPrompt ───────────────────────────────────────────────
+//
+// Surfaced post-deploy 2026-05-11: user asked "what is this deck about?"
+// on a build-time deck and the agent listed all 5 public decks then
+// asked "which one are you editing?" — even though the agent instance
+// is keyed by the slug. The old static SYSTEM_PROMPT never told the
+// model. Fix: inject the slug into the prompt up front so the agent
+// knows + the source path is concrete for build-time decks.
+
+describe("buildSystemPrompt", () => {
+  it("includes the current deck slug verbatim", () => {
+    const prompt = buildSystemPrompt("cf247-dtx-manchester");
+    expect(prompt).toMatch(/cf247-dtx-manchester/);
+  });
+
+  it("tells the model it is SCOPED to the slug (so it doesn't ask)", () => {
+    const prompt = buildSystemPrompt("hello");
+    expect(prompt).toMatch(/scoped to the deck/i);
+    // The "don't ask which deck" instruction is the load-bearing
+    // behavioural change — pin it explicitly.
+    expect(prompt).toMatch(/don't ask the user which deck/i);
+  });
+
+  it("gives the concrete source path for build-time decks", () => {
+    // The fix isn't just "tell the model the slug" — it's "tell the
+    // model the FILE PATH for build-time decks". Otherwise the model
+    // might still flail looking for the deck under a wrong path.
+    const prompt = buildSystemPrompt("hello");
+    expect(prompt).toMatch(/src\/decks\/public\/hello/);
+  });
+
+  it("references the slug in the data-deck section (so commitPatch knows where it goes)", () => {
+    const prompt = buildSystemPrompt("my-talk");
+    // The data-decks/<slug>.json line should resolve to the actual slug.
+    expect(prompt).toMatch(/data-decks\/my-talk\.json/);
+  });
+
+  it("escapes special chars safely (slug used in template literal — no injection)", () => {
+    // Slugs come from the URL (DO instance name) — guarded upstream
+    // by `name` validation in the SDK, but belt-and-braces: a slug
+    // with backticks shouldn't break the resulting string.
+    const prompt = buildSystemPrompt("safe-slug-123");
+    expect(prompt).toMatch(/safe-slug-123/);
+    expect(typeof prompt).toBe("string");
+    expect(prompt.length).toBeGreaterThan(500);
+  });
+
+  it("still lists all six tools", () => {
+    const prompt = buildSystemPrompt("any");
+    for (const tool of [
+      "readDeck",
+      "proposePatch",
+      "commitPatch",
+      "listSourceTree",
+      "readSource",
+      "proposeSourceEdit",
+    ]) {
+      expect(prompt).toContain(tool);
+    }
   });
 });

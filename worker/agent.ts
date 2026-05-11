@@ -159,31 +159,48 @@ export function resolveAiAssistantModel(
 }
 
 /**
- * System prompt. Updated for phase 3a + 3b (issue #131) — the agent
- * now has full read + propose + commit for KV data decks, and read
- * access to the entire GitHub source tree (including build-time JSX
- * decks).
+ * Build the system prompt with the current deck's slug injected up
+ * front so the model never has to ask "which deck are you editing?".
  *
- * The agent can still NOT write to build-time JSX deck source files
- * directly — that's phase 3c (PR-based source edits, Sandbox-validated).
- * For phase 3a+3b the agent can READ source files via GitHub but only
- * WRITE through the data-deck KV + JSON-mirror path.
+ * The agent instance is keyed by `<deck-slug>` (see `this.name` in
+ * `onChatMessage`), so the slug is known at conversation start. The
+ * old static `SYSTEM_PROMPT` never told the model this — it just
+ * described tools that had the slug baked in via closure — so the
+ * model had to either guess or ask the user, even though the data
+ * was right there. Issue surfaced post-deploy 2026-05-11: user asked
+ * "what is this deck about?" on a build-time deck, agent listed the
+ * 5 public decks and asked "which one are you editing?".
  *
  * Phrasing is deliberately scope-honest:
- *   - tells the model when to USE each tool (proactive read; don't
- *     guess about decks you can fetch)
+ *   - tells the model what deck it's scoped to and what FILE PATH the
+ *     source lives at for build-time decks
+ *   - tells it when to USE each tool (proactive read; don't ask for
+ *     info we already have)
  *   - tells it when NOT to claim a change has shipped (dry-run vs
  *     commit are clearly separated)
  *   - gates `commitPatch` on user confirmation so the model can't
  *     auto-apply edits the user hasn't seen
  */
-const SYSTEM_PROMPT = `You are an AI assistant embedded in Slide of Hand,
+export function buildSystemPrompt(slug: string): string {
+  return `You are an AI assistant embedded in Slide of Hand,
 a JSX-first deck platform. Help the author plan, refine, and iterate on
 their deck content. Keep responses concise and pragmatic.
 
+CURRENT DECK CONTEXT:
+
+You are scoped to the deck with slug \`${slug}\`. All deck-content
+tools (\`readDeck\`, \`proposePatch\`, \`commitPatch\`) operate on this
+slug automatically — the user does NOT need to tell you which deck
+they're editing, you already know. If this is a build-time JSX deck
+(i.e. \`readDeck\` returns \`{ found: false }\`), its source lives at
+\`src/decks/public/${slug}/\` in the repo. Proactively
+\`listSourceTree({ path: "src/decks/public/${slug}" })\` and then
+\`readSource\` the relevant files to answer questions about it —
+don't ask the user which deck they want to work on.
+
 You have six tools available:
 
-DECK CONTENT (KV-backed data decks):
+DECK CONTENT (KV-backed data decks — operates on slug \`${slug}\`):
 
 - \`readDeck()\` — fetches the current deck JSON, if it's a data
   (KV-backed) deck. Returns \`{ found: false }\` for build-time JSX
@@ -197,13 +214,13 @@ DECK CONTENT (KV-backed data decks):
 
 - \`commitPatch({ patch, commitMessage? })\` — persists a previously-
   proposed patch. Writes to KV (the live source of truth) AND
-  best-effort commits the deck JSON to \`data-decks/<slug>.json\` in
+  best-effort commits the deck JSON to \`data-decks/${slug}.json\` in
   the repo as a version-controlled backup. ONLY call this AFTER the
   user has explicitly confirmed they want the change applied. NEVER
   chain \`proposePatch\` → \`commitPatch\` without an explicit user
   go-ahead in between.
 
-SOURCE FILES (read + write):
+SOURCE FILES (read + write — anywhere in the repo):
 
 - \`listSourceTree({ path, ref? })\` — list files / directories at a
   given path in the repo. Use empty string for repo root.
@@ -229,9 +246,12 @@ connected", tell the user how to connect; don't keep retrying.
 
 WORKFLOW:
 
-1. To answer questions about a deck or propose a change: start with
-   \`readDeck\` (if it's a data deck) or \`listSourceTree\` + \`readSource\`
-   (if it's a build-time deck / framework / config).
+1. To answer ANY question about the current deck — start by reading
+   it. Call \`readDeck\` first. If it returns \`{ found: true }\`, you
+   have everything. If \`{ found: false }\`, immediately call
+   \`listSourceTree({ path: "src/decks/public/${slug}" })\` to see
+   the deck's source files, then \`readSource\` the index plus
+   whichever slide files look relevant.
 2. To suggest a concrete change to a DATA DECK: call \`proposePatch\`,
    describe what changed, ask the user if it looks right. Then —
    ONLY after explicit user confirmation — call \`commitPatch\`.
@@ -244,6 +264,7 @@ WORKFLOW:
 4. Never claim a change has been saved unless \`commitPatch\` returned
    \`persistedToKv: true\` or \`proposeSourceEdit\` returned an
    \`ok: true\` PR URL.`;
+}
 
 /**
  * `DeckAuthorAgent` — Durable Object that owns the chat round-trip
@@ -321,7 +342,11 @@ export class DeckAuthorAgent extends AIChatAgent<AgentEnv> {
       // catalog but the TS type sometimes lags behind).
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       model: workersai(modelId as any),
-      system: SYSTEM_PROMPT,
+      // Build the system prompt fresh per turn so the current deck
+      // slug (this.name) is injected into the prompt. The model can
+      // see what deck it's scoped to + know the source path without
+      // asking. See `buildSystemPrompt` for the rationale.
+      system: buildSystemPrompt(this.name),
       messages: await convertToModelMessages(this.messages),
       tools,
       // Multi-step: the default `stepCountIs(1)` would stop after the
