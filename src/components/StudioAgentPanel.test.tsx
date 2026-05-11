@@ -200,6 +200,30 @@ describe("<StudioAgentPanel>", () => {
     expect(panel.getAttribute("role")).toBe("dialog");
     expect(panel.getAttribute("aria-label")).toMatch(/AI assistant/i);
   });
+
+  // Click-to-advance suppression — issue #131 item C. The viewer's
+  // `<Deck>` advances on any unsuppressed click inside the slide;
+  // its suppressor selector (`[data-no-advance], [data-interactive],
+  // a, button, input, select, textarea, label, [contenteditable=true]`)
+  // does NOT cover `<details>` / `<summary>`, so a click on the
+  // tool-card "Show JSON" expander would otherwise bubble all the way
+  // up and advance the slide while expanding the panel. Mark the
+  // whole panel surface — and the backdrop sibling — as `data-no-advance`
+  // so the entire chat interface is opted out, including any future
+  // controls we add inside it.
+  it("has data-no-advance on the panel root so clicks inside don't advance the slide", () => {
+    setupHooks();
+    render(<StudioAgentPanel deckSlug="hello" onClose={vi.fn()} />);
+    const panel = screen.getByTestId("studio-agent-panel");
+    expect(panel.hasAttribute("data-no-advance")).toBe(true);
+  });
+
+  it("has data-no-advance on the backdrop so clicking to close doesn't also advance", () => {
+    setupHooks();
+    render(<StudioAgentPanel deckSlug="hello" onClose={vi.fn()} />);
+    const backdrop = screen.getByTestId("studio-agent-backdrop");
+    expect(backdrop.hasAttribute("data-no-advance")).toBe(true);
+  });
 });
 
 describe("<StudioAgentPanel> — tool-call rendering (phase 2)", () => {
