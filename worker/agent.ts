@@ -68,11 +68,17 @@ import { buildTools } from "./agent-tools";
 /**
  * Env subset the agent needs. Composed into the main `Env` interface
  * in `worker/index.ts` alongside every other handler's Env.
+ *
+ * `GITHUB_TOKENS` is shared with the OAuth helper module — see
+ * `worker/github-oauth.ts`. The agent's source-read tools and the
+ * `commitPatch` GitHub backup both pull per-user OAuth tokens from
+ * here.
  */
 export interface AgentEnv {
   AI: Ai;
   DeckAuthorAgent: DurableObjectNamespace;
   DECKS: KVNamespace;
+  GITHUB_TOKENS: KVNamespace;
 }
 
 /**
@@ -88,42 +94,81 @@ export interface AgentEnv {
 const MODEL_ID = "@cf/moonshotai/kimi-k2.6";
 
 /**
- * System prompt. Updated for phase 2 (issue #131) — the agent now
- * has read + propose-patch tools for KV-backed data decks, but
- * cannot yet commit changes (that's phase 3) and cannot touch
- * build-time JSX decks (that's phase 5+ with the Sandbox).
+ * System prompt. Updated for phase 3a + 3b (issue #131) — the agent
+ * now has full read + propose + commit for KV data decks, and read
+ * access to the entire GitHub source tree (including build-time JSX
+ * decks).
  *
- * Phrasing is deliberately scope-honest in both directions: the
- * model knows when to USE the tools (so it doesn't try to reason
- * about a deck it could just read), AND when NOT to claim to have
- * applied a change (the dry-run never persists).
+ * The agent can still NOT write to build-time JSX deck source files
+ * directly — that's phase 3c (PR-based source edits, Sandbox-validated).
+ * For phase 3a+3b the agent can READ source files via GitHub but only
+ * WRITE through the data-deck KV + JSON-mirror path.
+ *
+ * Phrasing is deliberately scope-honest:
+ *   - tells the model when to USE each tool (proactive read; don't
+ *     guess about decks you can fetch)
+ *   - tells it when NOT to claim a change has shipped (dry-run vs
+ *     commit are clearly separated)
+ *   - gates `commitPatch` on user confirmation so the model can't
+ *     auto-apply edits the user hasn't seen
  */
 const SYSTEM_PROMPT = `You are an AI assistant embedded in Slide of Hand,
 a JSX-first deck platform. Help the author plan, refine, and iterate on
 their deck content. Keep responses concise and pragmatic.
 
-You have two tools available:
+You have five tools available:
+
+DECK CONTENT (KV-backed data decks):
 
 - \`readDeck()\` — fetches the current deck JSON, if it's a data
   (KV-backed) deck. Returns \`{ found: false }\` for build-time JSX
-  decks; in that case explain to the user that you can only read
-  data decks for now.
+  decks (those live as React source — use the source tools below
+  to read them, but you cannot patch them via \`proposePatch\`).
 
 - \`proposePatch({ patch })\` — applies a partial-deck patch as a
-  DRY-RUN and returns the resulting deck without persisting it. The
-  user must separately confirm to actually apply changes (that's
-  the next phase — for now, just describe the proposed change and
-  ask if it looks right). \`patch.meta\` is shallow-merged into the
-  current deck's meta; \`patch.slides\`, if provided, REPLACES the
-  slides array wholesale.
+  DRY-RUN and returns the resulting deck without persisting it.
+  \`patch.meta\` is shallow-merged into the current deck's meta;
+  \`patch.slides\`, if provided, REPLACES the slides array wholesale.
 
-Use \`readDeck\` proactively when the user asks about the deck or
-wants to make a change — you'll need to see the current state. Use
-\`proposePatch\` to suggest concrete changes; the user reviews the
-dry-run output before anything ships.
+- \`commitPatch({ patch, commitMessage? })\` — persists a previously-
+  proposed patch. Writes to KV (the live source of truth) AND
+  best-effort commits the deck JSON to \`data-decks/<slug>.json\` in
+  the repo as a version-controlled backup. ONLY call this AFTER the
+  user has explicitly confirmed they want the change applied. NEVER
+  chain \`proposePatch\` → \`commitPatch\` without an explicit user
+  go-ahead in between.
 
-Never claim a change has been saved — every proposal is dry-run
-until the user confirms.`;
+SOURCE FILES (read-only — any file in the repo):
+
+- \`listSourceTree({ path, ref? })\` — list files / directories at a
+  given path in the repo. Use empty string for repo root.
+
+- \`readSource({ path, ref? })\` — read a single file's UTF-8 contents.
+
+The source tools work on the WHOLE repo, including build-time JSX
+decks at \`src/decks/public/<slug>/\`. Build-time decks are React
+components — you can read and reason about them, but you cannot
+patch them through \`proposePatch\` (which only works on KV-backed
+data decks). If the user wants to modify a build-time deck, explain
+that those edits will need to go through a separate PR-based flow
+(coming in a later phase).
+
+The source tools and \`commitPatch\`'s GitHub backup leg both require
+the user to have connected GitHub via Settings → GitHub → Connect.
+If a tool returns "GitHub not connected", tell the user how to
+connect; don't keep retrying.
+
+WORKFLOW:
+
+1. To answer questions about a deck or propose a change: start with
+   \`readDeck\` (if it's a data deck) or \`listSourceTree\` + \`readSource\`
+   (if it's a build-time deck).
+2. To suggest a concrete change to a data deck: call \`proposePatch\`,
+   describe what changed, ask the user if it looks right.
+3. ONLY after the user confirms: call \`commitPatch\` with the SAME
+   patch you proposed.
+4. Never claim a change has been saved unless \`commitPatch\` returned
+   \`persistedToKv: true\`.`;
 
 /**
  * `DeckAuthorAgent` — Durable Object that owns the chat round-trip

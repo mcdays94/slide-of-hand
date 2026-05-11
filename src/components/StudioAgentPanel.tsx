@@ -637,7 +637,92 @@ function summariseToolOutput(
       };
     }
   }
+  if (toolName === "commitPatch" && output && typeof output === "object") {
+    const o = output as {
+      ok?: boolean;
+      errors?: string[];
+      error?: string;
+      persistedToKv?: boolean;
+      deck?: { meta?: { title?: string }; slides?: unknown[] };
+      githubCommit?:
+        | { ok: true; commitSha: string; commitHtmlUrl: string }
+        | { ok: false; reason: string };
+    };
+    if (o.ok === true && o.deck) {
+      const slideCount = Array.isArray(o.deck.slides)
+        ? o.deck.slides.length
+        : 0;
+      const title = o.deck.meta?.title ?? "(untitled)";
+      const ghDetail =
+        o.githubCommit && o.githubCommit.ok
+          ? ` · committed to GitHub (${o.githubCommit.commitSha.slice(0, 7)})`
+          : "";
+      return {
+        icon: "💾",
+        label: "Saved",
+        detail: `“${title}” · ${slideCount} slide${slideCount === 1 ? "" : "s"}${ghDetail}`,
+      };
+    }
+    if (o.ok === false) {
+      const msg = o.errors?.join("; ") ?? o.error ?? "Commit failed.";
+      return { icon: "⚠️", label: "Commit failed", detail: msg };
+    }
+  }
+  if (toolName === "listSourceTree" && output && typeof output === "object") {
+    const o = output as {
+      ok?: boolean;
+      error?: string;
+      path?: string;
+      items?: Array<{ name: string; type: string }>;
+    };
+    if (o.ok === true) {
+      const count = o.items?.length ?? 0;
+      return {
+        icon: "📂",
+        label: "Listed source tree",
+        detail: `${o.path || "(root)"} · ${count} item${count === 1 ? "" : "s"}`,
+      };
+    }
+    if (o.ok === false) {
+      return {
+        icon: "⚠️",
+        label: "List failed",
+        detail: o.error ?? "Could not read directory.",
+      };
+    }
+  }
+  if (toolName === "readSource" && output && typeof output === "object") {
+    const o = output as {
+      ok?: boolean;
+      error?: string;
+      path?: string;
+      size?: number;
+    };
+    if (o.ok === true) {
+      const sizeLabel =
+        typeof o.size === "number" ? ` · ${formatBytes(o.size)}` : "";
+      return {
+        icon: "📄",
+        label: "Read source",
+        detail: `${o.path ?? "(unknown path)"}${sizeLabel}`,
+      };
+    }
+    if (o.ok === false) {
+      return {
+        icon: "⚠️",
+        label: "Read failed",
+        detail: o.error ?? "Could not read file.",
+      };
+    }
+  }
   return { icon: "🔧", label: "Tool result" };
+}
+
+/** Format byte counts as B / KB / MB. */
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 /**

@@ -424,3 +424,201 @@ describe("<StudioAgentPanel> — tool-call rendering (phase 2)", () => {
     expect(pill.textContent).toMatch(/tool result/i);
   });
 });
+
+// ─── Phase 3a + 3b tool summaries ────────────────────────────────────
+
+describe("<StudioAgentPanel> — phase 3 tool-call rendering", () => {
+  it("renders the commitPatch success summary including the GitHub commit sha", () => {
+    setupHooks({
+      messages: [
+        {
+          id: "a1",
+          role: "assistant",
+          parts: [
+            {
+              type: "tool-commitPatch",
+              toolCallId: "call-1",
+              state: "output-available",
+              input: { patch: { meta: { title: "Renamed" } } },
+              output: {
+                ok: true,
+                persistedToKv: true,
+                deck: {
+                  meta: { title: "Renamed", slug: "my-talk" },
+                  slides: [{ id: "a" }],
+                },
+                githubCommit: {
+                  ok: true,
+                  commitSha: "abcdef1234567890",
+                  commitHtmlUrl:
+                    "https://github.com/mcdays94/slide-of-hand/commit/abcdef1234567890",
+                  path: "data-decks/my-talk.json",
+                },
+              },
+            },
+          ],
+        },
+      ],
+    });
+    render(<StudioAgentPanel deckSlug="my-talk" onClose={vi.fn()} />);
+    const pill = screen.getByTestId("studio-agent-tool-part");
+    expect(pill.textContent).toMatch(/saved/i);
+    expect(pill.textContent).toMatch(/Renamed/);
+    expect(pill.textContent).toMatch(/abcdef1/); // first 7 chars of sha
+  });
+
+  it("renders commitPatch success without GitHub when the commit was skipped", () => {
+    setupHooks({
+      messages: [
+        {
+          id: "a1",
+          role: "assistant",
+          parts: [
+            {
+              type: "tool-commitPatch",
+              toolCallId: "call-1",
+              state: "output-available",
+              input: { patch: { meta: { title: "T" } } },
+              output: {
+                ok: true,
+                persistedToKv: true,
+                deck: {
+                  meta: { title: "T", slug: "x" },
+                  slides: [],
+                },
+                githubCommit: {
+                  ok: false,
+                  reason:
+                    "GitHub not connected. Open Settings → GitHub → Connect.",
+                },
+              },
+            },
+          ],
+        },
+      ],
+    });
+    render(<StudioAgentPanel deckSlug="x" onClose={vi.fn()} />);
+    const pill = screen.getByTestId("studio-agent-tool-part");
+    expect(pill.textContent).toMatch(/saved/i);
+    expect(pill.textContent).not.toMatch(/commitsha/i);
+  });
+
+  it("renders commitPatch failure", () => {
+    setupHooks({
+      messages: [
+        {
+          id: "a1",
+          role: "assistant",
+          parts: [
+            {
+              type: "tool-commitPatch",
+              toolCallId: "call-1",
+              state: "output-available",
+              input: { patch: {} },
+              output: {
+                ok: false,
+                errors: ["meta.slug is required"],
+              },
+            },
+          ],
+        },
+      ],
+    });
+    render(<StudioAgentPanel deckSlug="x" onClose={vi.fn()} />);
+    const pill = screen.getByTestId("studio-agent-tool-part");
+    expect(pill.textContent).toMatch(/commit failed/i);
+    expect(pill.textContent).toMatch(/slug/);
+  });
+
+  it("renders the listSourceTree success summary", () => {
+    setupHooks({
+      messages: [
+        {
+          id: "a1",
+          role: "assistant",
+          parts: [
+            {
+              type: "tool-listSourceTree",
+              toolCallId: "call-1",
+              state: "output-available",
+              input: { path: "src/decks/public/hello" },
+              output: {
+                ok: true,
+                path: "src/decks/public/hello",
+                ref: "main",
+                items: [
+                  { name: "01-title.tsx", path: "x", type: "file", size: 100 },
+                  { name: "lib", path: "y", type: "dir", size: 0 },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    });
+    render(<StudioAgentPanel deckSlug="hello" onClose={vi.fn()} />);
+    const pill = screen.getByTestId("studio-agent-tool-part");
+    expect(pill.textContent).toMatch(/listed source tree/i);
+    expect(pill.textContent).toMatch(/2 items/);
+    expect(pill.textContent).toMatch(/src\/decks\/public\/hello/);
+  });
+
+  it("renders the readSource success summary", () => {
+    setupHooks({
+      messages: [
+        {
+          id: "a1",
+          role: "assistant",
+          parts: [
+            {
+              type: "tool-readSource",
+              toolCallId: "call-1",
+              state: "output-available",
+              input: { path: "src/decks/public/hello/01-title.tsx" },
+              output: {
+                ok: true,
+                path: "src/decks/public/hello/01-title.tsx",
+                ref: "main",
+                content: "// ... file content ...",
+                size: 2048,
+                sha: "abc",
+              },
+            },
+          ],
+        },
+      ],
+    });
+    render(<StudioAgentPanel deckSlug="hello" onClose={vi.fn()} />);
+    const pill = screen.getByTestId("studio-agent-tool-part");
+    expect(pill.textContent).toMatch(/read source/i);
+    expect(pill.textContent).toMatch(/01-title\.tsx/);
+    expect(pill.textContent).toMatch(/2\.0 KB/);
+  });
+
+  it("renders listSourceTree / readSource failures with the error message", () => {
+    setupHooks({
+      messages: [
+        {
+          id: "a1",
+          role: "assistant",
+          parts: [
+            {
+              type: "tool-readSource",
+              toolCallId: "call-1",
+              state: "output-available",
+              input: { path: "missing.ts" },
+              output: {
+                ok: false,
+                error: "GitHub not connected. Open Settings → GitHub → Connect.",
+              },
+            },
+          ],
+        },
+      ],
+    });
+    render(<StudioAgentPanel deckSlug="hello" onClose={vi.fn()} />);
+    const pill = screen.getByTestId("studio-agent-tool-part");
+    expect(pill.textContent).toMatch(/read failed/i);
+    expect(pill.textContent).toMatch(/Settings/);
+  });
+});
