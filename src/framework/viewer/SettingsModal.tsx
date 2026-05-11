@@ -271,6 +271,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const notesDefaultModeId = useId();
   const deckCardHoverId = useId();
   const aiAssistantModelId = useId();
+  const showAssistantReasoningId = useId();
 
   // Click-on-backdrop closes; clicks on the inner panel must NOT bubble
   // to the backdrop. We compare currentTarget vs target so a click that
@@ -330,6 +331,11 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
           onChangeAiAssistantModel={(next) =>
             setSetting("aiAssistantModel", next)
           }
+          showAssistantReasoning={settings.showAssistantReasoning}
+          showAssistantReasoningId={showAssistantReasoningId}
+          onToggleShowAssistantReasoning={(next) =>
+            setSetting("showAssistantReasoning", next)
+          }
           onBackdropClick={onBackdropClick}
           onClose={onClose}
         />
@@ -356,6 +362,9 @@ interface SettingsModalContentProps {
   aiAssistantModel: AiAssistantModel;
   aiAssistantModelId: string;
   onChangeAiAssistantModel: (next: AiAssistantModel) => void;
+  showAssistantReasoning: boolean;
+  showAssistantReasoningId: string;
+  onToggleShowAssistantReasoning: (next: boolean) => void;
   onBackdropClick: (e: MouseEvent<HTMLDivElement>) => void;
   onClose: () => void;
 }
@@ -374,6 +383,9 @@ function SettingsModalContent({
   onChangeDeckCardHoverAnimation,
   aiAssistantModel,
   onChangeAiAssistantModel,
+  showAssistantReasoning,
+  showAssistantReasoningId,
+  onToggleShowAssistantReasoning,
   onBackdropClick,
   onClose,
 }: SettingsModalContentProps): ReactNode {
@@ -491,6 +503,14 @@ function SettingsModalContent({
                 ]}
                 onChange={onChangeAiAssistantModel}
                 testIdPrefix="settings-modal-ai-assistant-model"
+              />
+              <SettingsRow
+                inputId={showAssistantReasoningId}
+                label="Show model thinking"
+                description="Render the assistant's chain-of-thought above each reply, in a collapsible block. Off by default. Only reasoning-tuned models (GPT-OSS 120B today) emit visible thinking — enabling this for Kimi K2.6 or Llama 4 Scout is a no-op."
+                checked={showAssistantReasoning}
+                onChange={onToggleShowAssistantReasoning}
+                testId="settings-modal-toggle-show-assistant-reasoning"
               />
               <GitHubConnectRow />
             </>

@@ -465,6 +465,198 @@ describe("<StudioAgentPanel>", () => {
   });
 });
 
+// "Show model thinking" — power-user opt-in for rendering the
+// assistant's reasoning parts in the chat panel. Off by default
+// (covered by existing tests above: the empty / text-only / tool
+// rendering tests never see a reasoning block). When ON, reasoning
+// parts on assistant messages are rendered in a <details open>
+// block ABOVE the answer bubble — each instance keeps its own
+// collapse state via the native disclosure widget.
+describe("<StudioAgentPanel> — show model thinking", () => {
+  it("does NOT render reasoning when the setting is OFF (default), even if a reasoning part is present", () => {
+    setupHooks({
+      messages: [
+        {
+          id: "a1",
+          role: "assistant",
+          parts: [
+            { type: "reasoning", text: "Let me think about this..." },
+            { type: "text", text: "Here is my answer." },
+          ],
+        },
+      ],
+    });
+    // No SettingsProvider → useSettings falls back to DEFAULT_SETTINGS
+    // → showAssistantReasoning === false → no reasoning block.
+    render(<StudioAgentPanel deckSlug="hello" onClose={vi.fn()} />);
+    expect(screen.queryByTestId("studio-agent-reasoning")).toBeNull();
+    // The actual answer still renders.
+    expect(screen.getByTestId("studio-agent-text").textContent).toMatch(
+      /Here is my answer/,
+    );
+  });
+
+  it("renders the reasoning block ABOVE the answer when the setting is ON", () => {
+    setupHooks({
+      messages: [
+        {
+          id: "a1",
+          role: "assistant",
+          parts: [
+            { type: "reasoning", text: "Let me think about this..." },
+            { type: "text", text: "Here is my answer." },
+          ],
+        },
+      ],
+    });
+    render(
+      <SettingsProvider
+        initialSettings={{
+          ...DEFAULT_SETTINGS,
+          showAssistantReasoning: true,
+        }}
+      >
+        <StudioAgentPanel deckSlug="hello" onClose={vi.fn()} />
+      </SettingsProvider>,
+    );
+    const reasoning = screen.getByTestId("studio-agent-reasoning");
+    expect(reasoning).toBeDefined();
+    expect(reasoning.textContent).toMatch(/Let me think about this/);
+    // Reasoning sits before the answer bubble in document order.
+    const text = screen.getByTestId("studio-agent-text");
+    expect(
+      reasoning.compareDocumentPosition(text) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("renders the reasoning block as a <details> element open by default", () => {
+    // Native <details open> means the reasoning is expanded when the
+    // turn arrives, but the user can click the summary to collapse
+    // it per-instance. Each <details> keeps its own state — no
+    // global "collapsed all reasoning" flag.
+    setupHooks({
+      messages: [
+        {
+          id: "a1",
+          role: "assistant",
+          parts: [{ type: "reasoning", text: "thinking..." }],
+        },
+      ],
+    });
+    render(
+      <SettingsProvider
+        initialSettings={{
+          ...DEFAULT_SETTINGS,
+          showAssistantReasoning: true,
+        }}
+      >
+        <StudioAgentPanel deckSlug="hello" onClose={vi.fn()} />
+      </SettingsProvider>,
+    );
+    const reasoning = screen.getByTestId("studio-agent-reasoning");
+    expect(reasoning.tagName).toBe("DETAILS");
+    expect((reasoning as HTMLDetailsElement).open).toBe(true);
+    // The summary carries the human-readable label so users know
+    // what the disclosure contains before they expand it.
+    const summary = reasoning.querySelector("summary");
+    expect(summary).not.toBeNull();
+    expect(summary!.textContent?.toLowerCase()).toMatch(/thinking|reasoning/);
+  });
+
+  it("concatenates multiple reasoning parts on the same assistant turn", () => {
+    // The AI SDK streams reasoning as a sequence of `reasoning`
+    // parts (one chunk per token batch). Render them as a single
+    // block, joined in order, so the user reads continuous prose.
+    setupHooks({
+      messages: [
+        {
+          id: "a1",
+          role: "assistant",
+          parts: [
+            { type: "reasoning", text: "Step one. " },
+            { type: "reasoning", text: "Step two. " },
+            { type: "reasoning", text: "Step three." },
+            { type: "text", text: "Final answer." },
+          ],
+        },
+      ],
+    });
+    render(
+      <SettingsProvider
+        initialSettings={{
+          ...DEFAULT_SETTINGS,
+          showAssistantReasoning: true,
+        }}
+      >
+        <StudioAgentPanel deckSlug="hello" onClose={vi.fn()} />
+      </SettingsProvider>,
+    );
+    const reasoning = screen.getByTestId("studio-agent-reasoning");
+    expect(reasoning.textContent).toMatch(
+      /Step one\. Step two\. Step three\./,
+    );
+  });
+
+  it("does NOT render a reasoning block for user messages even when the setting is ON", () => {
+    // Reasoning is an assistant-only concept; user messages don't
+    // have a chain-of-thought. Defensive — the SDK only emits
+    // reasoning parts on assistant messages, but pinning the
+    // assistant-role gate prevents weird future bugs if a tool
+    // ever attaches reasoning to a user-role message.
+    setupHooks({
+      messages: [
+        {
+          id: "u1",
+          role: "user",
+          parts: [
+            { type: "reasoning", text: "secretly thinking" },
+            { type: "text", text: "user question" },
+          ],
+        },
+      ],
+    });
+    render(
+      <SettingsProvider
+        initialSettings={{
+          ...DEFAULT_SETTINGS,
+          showAssistantReasoning: true,
+        }}
+      >
+        <StudioAgentPanel deckSlug="hello" onClose={vi.fn()} />
+      </SettingsProvider>,
+    );
+    expect(screen.queryByTestId("studio-agent-reasoning")).toBeNull();
+  });
+
+  it("does NOT render an empty reasoning block when no reasoning parts are present (setting ON)", () => {
+    // Non-reasoning models (Kimi K2.6, Llama 4 Scout) never emit
+    // reasoning parts — the toggle should be invisible in their
+    // output. Pin this so a stray empty <details> doesn't leak into
+    // every assistant bubble.
+    setupHooks({
+      messages: [
+        {
+          id: "a1",
+          role: "assistant",
+          parts: [{ type: "text", text: "Just an answer, no thinking." }],
+        },
+      ],
+    });
+    render(
+      <SettingsProvider
+        initialSettings={{
+          ...DEFAULT_SETTINGS,
+          showAssistantReasoning: true,
+        }}
+      >
+        <StudioAgentPanel deckSlug="hello" onClose={vi.fn()} />
+      </SettingsProvider>,
+    );
+    expect(screen.queryByTestId("studio-agent-reasoning")).toBeNull();
+  });
+});
+
 describe("<StudioAgentPanel> — tool-call rendering (phase 2)", () => {
   it("renders a 'Calling <name>…' pill while a tool call is in progress", () => {
     setupHooks({

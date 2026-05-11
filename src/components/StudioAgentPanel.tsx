@@ -191,6 +191,14 @@ function PanelInner({ deckSlug, onRequestClose }: PanelInnerProps) {
     body: { model: settings.aiAssistantModel },
   });
 
+  // "Show model thinking" — power-user opt-in for rendering the
+  // assistant's `reasoning` parts in a collapsible block above each
+  // turn. Off by default. Reasoning-tuned models (GPT-OSS 120B today)
+  // emit reasoning parts during streaming; non-reasoning models
+  // (Kimi K2.6, Llama 4 Scout) don't, so the toggle is invisible in
+  // their output even when enabled.
+  const showReasoning = settings.showAssistantReasoning;
+
   // Local form state — we don't use uncontrolled inputs because the
   // streaming-token UI needs to keep the input cleared after submit.
   const [input, setInput] = useState("");
@@ -349,7 +357,11 @@ function PanelInner({ deckSlug, onRequestClose }: PanelInnerProps) {
             // `type` at runtime, so structurally we only read fields
             // that exist on the parts we care about.
             messages.map((m) => (
-              <MessageBubble key={m.id} message={m as unknown as UiMessageLike} />
+              <MessageBubble
+                key={m.id}
+                message={m as unknown as UiMessageLike}
+                showReasoning={showReasoning}
+              />
             ))
           )}
         </div>
@@ -457,6 +469,16 @@ interface TextPart extends BasePart {
   type: "text";
   text?: string;
 }
+interface ReasoningPart extends BasePart {
+  /**
+   * The assistant's chain-of-thought, streamed by reasoning-tuned
+   * models (e.g. GPT-OSS 120B). The AI SDK splits reasoning into
+   * one part per token batch — we concatenate `text` across all
+   * reasoning parts to render a single block per turn.
+   */
+  type: "reasoning";
+  text?: string;
+}
 interface ToolPart extends BasePart {
   /** `tool-<name>` for static tools, `dynamic-tool` for runtime tools. */
   type: string;
@@ -475,7 +497,7 @@ interface ToolPart extends BasePart {
   output?: unknown;
   errorText?: string;
 }
-type AnyPart = TextPart | ToolPart;
+type AnyPart = TextPart | ReasoningPart | ToolPart;
 
 interface UiMessageLike {
   id: string;
@@ -501,7 +523,19 @@ function getToolNameFromPart(p: ToolPart): string {
   return p.type.startsWith("tool-") ? p.type.slice(5) : p.type;
 }
 
-function MessageBubble({ message }: { message: UiMessageLike }) {
+function MessageBubble({
+  message,
+  showReasoning,
+}: {
+  message: UiMessageLike;
+  /**
+   * When true AND this is an assistant message AND the message has
+   * at least one `reasoning` part with non-empty text, render the
+   * concatenated reasoning above the answer in a `<details open>`
+   * block. Driven by the `showAssistantReasoning` setting.
+   */
+  showReasoning: boolean;
+}) {
   const isUser = message.role === "user";
 
   // Group consecutive text parts together so the bubble doesn't
@@ -512,13 +546,31 @@ function MessageBubble({ message }: { message: UiMessageLike }) {
     .join("");
   const toolParts = message.parts.filter(isToolPart);
 
+  // Reasoning parts only render when (a) the setting is on, (b) this
+  // is an assistant turn (user messages don't have a chain-of-thought
+  // even if a misbehaving tool attached one), and (c) at least one
+  // reasoning part actually carries text. The SDK streams reasoning
+  // as a sequence of `reasoning` parts during the model's thinking
+  // phase; we join them so the user reads continuous prose rather
+  // than per-token bubbles.
+  const reasoningText =
+    showReasoning && !isUser
+      ? message.parts
+          .filter((p): p is ReasoningPart => p.type === "reasoning")
+          .map((p) => p.text ?? "")
+          .join("")
+      : "";
+
   // A message can be:
   //   - pure text (most user messages, most assistant text responses)
   //   - text + tool calls (assistant explaining what it's about to do
   //     or summarising results)
   //   - tool calls only (assistant mid-turn between text deltas)
-  // Render text bubble first if present, then each tool part, so the
-  // visual order matches the assistant's narrative.
+  //   - reasoning + text (assistant turns from reasoning-tuned models
+  //     with the "show model thinking" setting on)
+  // Render reasoning first (visually above the answer), then text
+  // bubble if present, then each tool part — matching the chronological
+  // order the assistant produced them.
 
   return (
     <div
@@ -529,6 +581,7 @@ function MessageBubble({ message }: { message: UiMessageLike }) {
       <p className="font-mono text-[9px] uppercase tracking-[0.25em] text-cf-text-subtle">
         {isUser ? "You" : "Assistant"}
       </p>
+      {reasoningText && <ReasoningCard text={reasoningText} />}
       {text && (
         <div
           data-testid="studio-agent-text"
@@ -900,6 +953,48 @@ function summariseToolOutput(
     }
   }
   return { icon: "🔧", label: "Tool result" };
+}
+
+/**
+ * Renders the assistant's chain-of-thought ("thinking") for a single
+ * turn, in a collapsible block above the answer bubble.
+ *
+ * Uses a native `<details open>` element so:
+ *   - Each instance keeps its own collapse state — collapsing one
+ *     turn's reasoning doesn't affect any other turn.
+ *   - Keyboard + screen-reader accessibility comes for free (no
+ *     custom aria-expanded wiring).
+ *   - The "open by default" behavior is one HTML attribute, not a
+ *     React-controlled boolean we'd have to track per turn.
+ *
+ * Visual style: muted background + dashed-hover summary, distinct
+ * from both the answer bubble (cf-bg-200) and the tool-card variants
+ * (red-bordered errors / orange-text successes). The reasoning is
+ * deliberately quieter than the answer — it's supporting context,
+ * not the primary content.
+ *
+ * Reasoning is run through the same markdown pipeline as assistant
+ * text because reasoning often contains code spans, lists, and
+ * inline formatting from the model.
+ */
+function ReasoningCard({ text }: { text: string }) {
+  return (
+    <details
+      open
+      data-testid="studio-agent-reasoning"
+      className="w-full max-w-[90%] rounded-md border border-cf-border bg-cf-bg-200/60 text-cf-text-muted"
+    >
+      <summary
+        data-interactive
+        className="cursor-pointer select-none px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.2em] text-cf-text-subtle transition-colors hover:border-dashed hover:text-cf-text"
+      >
+        Thinking
+      </summary>
+      <div className="border-t border-cf-border px-3 py-2 text-[13px] leading-relaxed italic">
+        <MarkdownContent text={text} />
+      </div>
+    </details>
+  );
 }
 
 /**

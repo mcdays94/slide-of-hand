@@ -423,6 +423,7 @@ describe("<NotesEditor> settings-driven default mode (#126)", () => {
       notesDefaultMode: "markdown",
       deckCardHoverAnimation: { enabled: true, slideCount: 3 },
       aiAssistantModel: "kimi-k2.6",
+      showAssistantReasoning: false,
     };
     render(
       <SettingsProvider initialSettings={settings}>
@@ -452,6 +453,7 @@ describe("<NotesEditor> settings-driven default mode (#126)", () => {
       notesDefaultMode: "rich",
       deckCardHoverAnimation: { enabled: true, slideCount: 3 },
       aiAssistantModel: "kimi-k2.6",
+      showAssistantReasoning: false,
     };
     render(
       <SettingsProvider initialSettings={settings}>
