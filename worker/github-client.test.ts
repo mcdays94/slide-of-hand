@@ -17,6 +17,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   dataDeckPath,
   listContents,
+  openPullRequest,
   putFileContents,
   readFileContents,
   TARGET_REPO,
@@ -496,5 +497,300 @@ describe("putFileContents", () => {
     // Should NOT have made a PUT — the look-up error means we don't
     // know whether to create or update.
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ─── openPullRequest (issue #131 phase 3c) ───────────────────────────
+
+describe("openPullRequest", () => {
+  /** Reusable happy-path PR JSON body, matching GitHub's response shape. */
+  const samplePr = {
+    number: 999,
+    html_url: "https://github.com/mcdays94/slide-of-hand/pull/999",
+    node_id: "PR_kwDOXXX",
+    head: { ref: "agent/hello-1715425200000" },
+    base: { ref: "main" },
+  };
+
+  it("POSTs to /repos/.../pulls with title + head + base + draft:true by default", async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify(samplePr), {
+          status: 201,
+          headers: { "content-type": "application/json" },
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await openPullRequest({
+      token: "gho_xyz",
+      head: "agent/hello-1715425200000",
+      title: "Agent: tighten title slide copy",
+      body: "Test plan: vitest run\nResult: 1587 passed.",
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.result).toEqual({
+      number: 999,
+      htmlUrl: samplePr.html_url,
+      nodeId: samplePr.node_id,
+      head: "agent/hello-1715425200000",
+      base: "main",
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [
+      string,
+      RequestInit,
+    ];
+    expect(url).toBe(`${REPO_API}/pulls`);
+    expect(init.method).toBe("POST");
+    const sent = JSON.parse(init.body as string) as {
+      title: string;
+      head: string;
+      base: string;
+      body: string;
+      draft: boolean;
+    };
+    expect(sent).toEqual({
+      title: "Agent: tighten title slide copy",
+      head: "agent/hello-1715425200000",
+      base: DEFAULT_BRANCH,
+      body: "Test plan: vitest run\nResult: 1587 passed.",
+      // The agent flow defaults to draft — humans review before
+      // marking ready in GitHub's UI.
+      draft: true,
+    });
+  });
+
+  it("honours an explicit base + draft=false override", async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            ...samplePr,
+            base: { ref: "develop" },
+          }),
+          { status: 201 },
+        ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await openPullRequest({
+      token: "gho_xyz",
+      head: "x",
+      title: "t",
+      body: "b",
+      base: "develop",
+      draft: false,
+    });
+    expect(result.ok).toBe(true);
+    const [, init] = fetchMock.mock.calls[0] as unknown as [
+      string,
+      RequestInit,
+    ];
+    const sent = JSON.parse(init.body as string) as {
+      base: string;
+      draft: boolean;
+    };
+    expect(sent.base).toBe("develop");
+    expect(sent.draft).toBe(false);
+  });
+
+  it("sends an empty body when none provided", async () => {
+    const fetchMock = vi.fn(
+      async () => new Response(JSON.stringify(samplePr), { status: 201 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    await openPullRequest({
+      token: "gho_xyz",
+      head: "x",
+      title: "t",
+      body: "",
+    });
+    const [, init] = fetchMock.mock.calls[0] as unknown as [
+      string,
+      RequestInit,
+    ];
+    const sent = JSON.parse(init.body as string) as { body: string };
+    expect(sent.body).toBe("");
+  });
+
+  it("returns an auth error (no fetch) when the token is empty", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await openPullRequest({
+      token: "",
+      head: "x",
+      title: "t",
+      body: "b",
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.kind).toBe("auth");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("returns 'other' error (no fetch) when head is empty", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await openPullRequest({
+      token: "gho_xyz",
+      head: "  ",
+      title: "t",
+      body: "b",
+    });
+    expect(result.ok).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("returns 'other' error (no fetch) when title is empty", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await openPullRequest({
+      token: "gho_xyz",
+      head: "x",
+      title: " ",
+      body: "b",
+    });
+    expect(result.ok).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("translates 401 / 403 into the structured auth error", async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ message: "Bad credentials" }), {
+          status: 401,
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await openPullRequest({
+      token: "gho_xyz",
+      head: "x",
+      title: "t",
+      body: "b",
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.kind).toBe("auth");
+    if (result.kind !== "auth") return;
+    expect(result.status).toBe(401);
+  });
+
+  it("translates 422 (validation failure — typical missing-branch or duplicate-PR) into 'other'", async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            message:
+              "Validation Failed: A pull request already exists for mcdays94:agent/hello-1.",
+          }),
+          { status: 422 },
+        ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await openPullRequest({
+      token: "gho_xyz",
+      head: "agent/hello-1",
+      title: "t",
+      body: "b",
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.kind).toBe("other");
+    expect(result.message).toMatch(/422/);
+    expect(result.message).toMatch(/already exists/);
+  });
+
+  it("translates 429 into a structured rate-limit error", async () => {
+    const fetchMock = vi.fn(
+      async () => new Response("", { status: 429 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await openPullRequest({
+      token: "gho_xyz",
+      head: "x",
+      title: "t",
+      body: "b",
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.kind).toBe("rate_limited");
+  });
+
+  it("translates other non-2xx into 'other' with the response body snippet", async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response("internal server error", { status: 500 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await openPullRequest({
+      token: "gho_xyz",
+      head: "x",
+      title: "t",
+      body: "b",
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.kind).toBe("other");
+    if (result.kind !== "other") return;
+    expect(result.status).toBe(500);
+  });
+
+  it("translates network errors into 'other'", async () => {
+    const fetchMock = vi.fn(async () => {
+      throw new Error("ECONNREFUSED");
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await openPullRequest({
+      token: "gho_xyz",
+      head: "x",
+      title: "t",
+      body: "b",
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.kind).toBe("other");
+    expect(result.message).toMatch(/network error/);
+  });
+
+  it("treats a 2xx with the wrong shape as 'other' (defence vs GitHub API drift)", async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ id: 1 }), {
+          status: 201,
+          headers: { "content-type": "application/json" },
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await openPullRequest({
+      token: "gho_xyz",
+      head: "x",
+      title: "t",
+      body: "b",
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.kind).toBe("other");
+    expect(result.message).toMatch(/unexpected/);
+  });
+
+  it("uses the provided repo override instead of TARGET_REPO", async () => {
+    const fetchMock = vi.fn(
+      async () => new Response(JSON.stringify(samplePr), { status: 201 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    await openPullRequest({
+      token: "gho_xyz",
+      repo: { owner: "different", repo: "fork" },
+      head: "x",
+      title: "t",
+      body: "b",
+    });
+    const [url] = fetchMock.mock.calls[0] as unknown as [
+      string,
+      RequestInit,
+    ];
+    expect(url).toBe("https://api.github.com/repos/different/fork/pulls");
   });
 });

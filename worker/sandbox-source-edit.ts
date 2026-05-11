@@ -283,12 +283,12 @@ async function runPhase(
   workdir: string,
 ): Promise<PhaseResult> {
   try {
-    // `cd <workdir> && <command>` because Sandbox's `exec` doesn't
-    // accept a cwd option directly (the workdir is at the container
-    // level, not per-call). Using a subshell keeps the boundary
-    // clean — the working directory change doesn't leak to the next
-    // phase's exec.
-    const result = await sandbox.exec(`cd ${workdir} && ${command}`);
+    // The Sandbox SDK's ExecOptions accepts `cwd` so we don't have
+    // to wrap the command with `cd ... && ...`. Cleaner reporting
+    // (the recorded `command` stays as `npm ci` rather than the
+    // shell-joined form) and avoids subtle quoting issues when the
+    // command itself contains `&&` / `|`.
+    const result = await sandbox.exec(command, { cwd: workdir });
     return {
       phase,
       ok: result.success && result.exitCode === 0,
@@ -305,6 +305,181 @@ async function runPhase(
       stdout: "",
       stderr: err instanceof Error ? err.message : String(err),
       exitCode: -1,
+    };
+  }
+}
+
+// ─── Helper 4: commitAndPushInSandbox ──────────────────────────────
+
+export interface CommitAndPushOptions {
+  /**
+   * Branch name to create + push. Convention: `agent/<slug>-<timestamp>`
+   * so it's obvious in the GitHub UI that this branch came from the
+   * in-Studio agent and not from a hand-driven workflow.
+   */
+  branchName: string;
+  /**
+   * Git author name. Surfaced in the commit metadata + the PR's
+   * commit list. Mirrors `runCommitPatch`'s pattern — typically the
+   * connected GitHub user's username.
+   */
+  authorName: string;
+  /**
+   * Git author email. GitHub validates this when surfacing the commit
+   * — using the user's `<id>+<username>@users.noreply.github.com`
+   * keeps the commit author resolved to the user's GitHub profile.
+   */
+  authorEmail: string;
+  /**
+   * Human-readable commit message. Used verbatim — the script passes
+   * it through an env var so embedded quotes / newlines don't need
+   * shell escaping.
+   */
+  commitMessage: string;
+}
+
+export type CommitAndPushResult =
+  | {
+      ok: true;
+      /** The new commit's full 40-char SHA. */
+      sha: string;
+      /** Echo back the branch we pushed for downstream PR-open use. */
+      branch: string;
+    }
+  | {
+      ok: false;
+      /** True only when the diff was empty after `git add -A`. */
+      noEffectiveChanges?: boolean;
+      error: string;
+      /** Captured stderr from the failing step (empty if the SDK call itself threw). */
+      stderr?: string;
+    };
+
+/**
+ * Path inside the sandbox where the commit script is written. Single
+ * fixed path because the sandbox is single-use per chat turn; if
+ * `commitAndPushInSandbox` is called more than once (e.g. retry), it
+ * just overwrites the previous script.
+ */
+const COMMIT_SCRIPT_PATH = "/tmp/agent-commit.sh";
+
+/**
+ * Commit script — written to a file inside the sandbox and executed
+ * with the relevant inputs piped in via env vars. Lives as a file
+ * (rather than a long `bash -c '...'` literal) so the script's quoting
+ * stays simple bash and the JS string in this module doesn't need
+ * shell-escape gymnastics for branch names / commit messages.
+ *
+ * Exit codes:
+ *   - 0      = commit + push succeeded; commit SHA is on stdout.
+ *   - 2      = `git add -A` found nothing to commit (degenerate case
+ *              where the model proposed edits but they were no-ops vs.
+ *              HEAD). Stderr has the `NO_EFFECTIVE_CHANGES` marker.
+ *   - other  = git failed at some step; stderr has the underlying
+ *              error.
+ */
+const COMMIT_SCRIPT = `#!/bin/bash
+set -e
+git checkout -b "$BRANCH_NAME"
+git add -A
+if git diff --cached --quiet; then
+  echo "NO_EFFECTIVE_CHANGES" >&2
+  exit 2
+fi
+git commit -m "$COMMIT_MSG"
+git push -u origin "$BRANCH_NAME"
+git rev-parse HEAD
+`;
+
+/**
+ * Inside the cloned sandbox repo: create a fresh branch, commit
+ * everything in the working tree, push to origin, return the commit
+ * SHA. Wrapper around a single `sandbox.exec(bash agent-commit.sh)`
+ * call — the bash script handles fail-fast + the no-effective-changes
+ * special case; this function translates the result into our typed
+ * union.
+ *
+ * Identity: passed via the standard `GIT_AUTHOR_*` / `GIT_COMMITTER_*`
+ * env vars which git natively respects. Avoids touching `git config`
+ * (which would persist into the cloned repo and surprise any later
+ * scripts that read it).
+ *
+ * **Why `git add -A`** (which the project's own commit discipline
+ * forbids elsewhere): the sandbox starts as a clean clone, then
+ * `applyFilesIntoSandbox` is the ONLY thing that mutates the tree.
+ * `git add -A` therefore tracks exactly the files the model proposed
+ * — and only those. The sandbox is destroyed after this call, so
+ * there's no broader workspace to accidentally include. The project's
+ * "no `git add -A` in your own checkout" rule still applies for the
+ * orchestrator / worker.
+ */
+export async function commitAndPushInSandbox(
+  sandbox: SandboxLike,
+  options: CommitAndPushOptions,
+  workdir: string = DEFAULT_WORKDIR,
+): Promise<CommitAndPushResult> {
+  const trimmedWorkdir = workdir.replace(/\/+$/, "");
+  const branchName = options.branchName.trim();
+  const commitMessage = options.commitMessage.trim();
+  const authorName = options.authorName.trim();
+  const authorEmail = options.authorEmail.trim();
+  if (!branchName) return { ok: false, error: "Missing branch name" };
+  if (!commitMessage) return { ok: false, error: "Missing commit message" };
+  if (!authorName) return { ok: false, error: "Missing author name" };
+  if (!authorEmail) return { ok: false, error: "Missing author email" };
+
+  try {
+    await sandbox.writeFile(COMMIT_SCRIPT_PATH, COMMIT_SCRIPT);
+    const result = await sandbox.exec(`bash ${COMMIT_SCRIPT_PATH}`, {
+      cwd: trimmedWorkdir,
+      env: {
+        BRANCH_NAME: branchName,
+        COMMIT_MSG: commitMessage,
+        // Set BOTH author + committer so the commit is attributed
+        // consistently — git falls back to system identity for either
+        // if only one is set, which would surface as a mismatched
+        // "Committed by" line on GitHub.
+        GIT_AUTHOR_NAME: authorName,
+        GIT_AUTHOR_EMAIL: authorEmail,
+        GIT_COMMITTER_NAME: authorName,
+        GIT_COMMITTER_EMAIL: authorEmail,
+      },
+    });
+    if (result.exitCode === 2 && /NO_EFFECTIVE_CHANGES/.test(result.stderr ?? "")) {
+      return {
+        ok: false,
+        noEffectiveChanges: true,
+        error: "No effective changes to commit (working tree matches HEAD).",
+        stderr: result.stderr,
+      };
+    }
+    if (!result.success || result.exitCode !== 0) {
+      return {
+        ok: false,
+        error: `Commit / push failed (exit ${result.exitCode ?? "unknown"})`,
+        stderr: result.stderr ?? "",
+      };
+    }
+    // `git rev-parse HEAD` is the last command — its full-SHA output
+    // is the last non-empty line of stdout. Defensive parsing in
+    // case earlier git commands leak chatter to stdout.
+    const lines = (result.stdout ?? "")
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0);
+    const sha = lines[lines.length - 1] ?? "";
+    if (!/^[0-9a-f]{40}$/i.test(sha)) {
+      return {
+        ok: false,
+        error: `Commit succeeded but could not parse SHA from stdout`,
+        stderr: result.stderr ?? "",
+      };
+    }
+    return { ok: true, sha, branch: branchName };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
     };
   }
 }
