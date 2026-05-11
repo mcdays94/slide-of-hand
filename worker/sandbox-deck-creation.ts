@@ -1,0 +1,230 @@
+/**
+ * Sandbox-side flow for AI-driven deck creation — scaffolding for issue
+ * #168 Wave 1 (Worker A fills in the implementation).
+ *
+ * ## Status: SCAFFOLD ONLY
+ *
+ * Functions return `{ ok: false, error: "not implemented" }` so the
+ * surrounding agent tool stubs can compile and tests can mock the
+ * shape, but the actual Sandbox + Workers AI flow is unimplemented.
+ *
+ * ## What this module owns
+ *
+ * Two orchestrators:
+ *
+ *   - `runCreateDeckDraft(env, input)` — first turn of a new draft.
+ *     Forks the deck-starter Artifacts repo, spawns a Sandbox, clones
+ *     the fork, runs Workers AI to generate JSX, commits + pushes a
+ *     `prompt-001` commit with the user prompt in a git note, returns
+ *     the resulting commit SHA + the public preview URL.
+ *
+ *   - `runIterateOnDeckDraft(env, input)` — subsequent turns. Resolves
+ *     the existing draft repo, clones HEAD, applies an additional AI
+ *     pass conditioned on the new prompt + any pinned elements,
+ *     commits a `prompt-NNN` commit, returns the new SHA.
+ *
+ * Both orchestrators COMPOSE the helpers in `worker/sandbox-source-edit.ts`
+ * (`cloneRepoIntoSandbox`, `applyFilesIntoSandbox`, `runSandboxTestGate`,
+ * `commitAndPushInSandbox`). The helpers are URL-agnostic — they accept
+ * any HTTPS clone target with an embedded token — so the Artifacts
+ * remote works without modification. Worker A should compose, not
+ * duplicate.
+ *
+ * ## Iteration test gate is cheaper than publish gate
+ *
+ * Per #168 amendment 2, iteration runs a CHEAP typecheck-only gate
+ * (no vitest, no build) so the prompt → preview turnaround stays
+ * fast. The full test gate runs only when the user clicks Publish
+ * (see `runPublishDraft` below — also a stub).
+ *
+ * Worker A's implementation must extend `runSandboxTestGate` with a
+ * `phases` parameter or add a sibling `runSandboxIterationGate` that
+ * skips the heavy phases. Either approach is fine; the public
+ * contract is "iteration is fast enough that the user doesn't notice".
+ *
+ * ## Auth context
+ *
+ * The `env` parameter must carry the Cloudflare Sandbox DO binding
+ * AND the Artifacts binding. Per-user GitHub OAuth tokens (already in
+ * `GITHUB_TOKENS` KV) are only needed for the Publish flow when the
+ * draft is pushed to the real GitHub repo. The Artifacts repo
+ * authenticates with a short-lived write token minted via
+ * `mintWriteToken(repo)` (see `worker/artifacts-client.ts`).
+ */
+
+import type { Sandbox } from "@cloudflare/sandbox";
+import type { ArtifactsBinding } from "./artifacts-client";
+
+/**
+ * Env subset the Sandbox-side deck creation flow needs. The Artifacts
+ * binding is OPTIONAL on the stub so existing tests don't break before
+ * Worker A's implementation lands (and before the user adds the
+ * binding to `wrangler.jsonc`).
+ *
+ * Worker A should make `ARTIFACTS` REQUIRED when filling in the
+ * implementation — at that point the user has authorised the binding
+ * and missing config should be a hard error, not a runtime fallback.
+ */
+export interface SandboxDeckCreationEnv {
+  Sandbox: DurableObjectNamespace<Sandbox>;
+  ARTIFACTS?: ArtifactsBinding;
+  AI?: Ai;
+}
+
+export interface CreateDeckDraftInput {
+  userEmail: string;
+  slug: string;
+  prompt: string;
+  /**
+   * Optional reference URLs (Wave 3) — the agent will fetch and strip
+   * each, attach as system-prompt context blocks. Out of scope for
+   * Wave 1 but the parameter is plumbed through so Wave 3 can land
+   * without disturbing the tool contract.
+   */
+  references?: string[];
+}
+
+export interface IterateOnDeckDraftInput {
+  userEmail: string;
+  slug: string;
+  prompt: string;
+  /**
+   * Wave 2 — pinned elements from the element inspector. Each pin is
+   * `{ file, lineStart, lineEnd, htmlExcerpt }`. Worker A's iteration
+   * pass narrows the AI's scope to just the pinned source ranges.
+   */
+  pins?: Array<{
+    file: string;
+    lineStart: number;
+    lineEnd: number;
+    htmlExcerpt: string;
+  }>;
+  references?: string[];
+}
+
+export interface DeckDraftResult {
+  ok: true;
+  commitSha: string;
+  branch: string;
+  draftId: string;
+  previewUrl: string;
+}
+
+export interface DeckDraftError {
+  ok: false;
+  phase:
+    | "auth"
+    | "fork"
+    | "clone"
+    | "ai_generation"
+    | "iteration_gate"
+    | "commit_push"
+    | "not_implemented";
+  error: string;
+}
+
+/**
+ * First-turn deck creation. STUB — Worker A fills in.
+ *
+ * The expected flow once implemented:
+ *   1. `forkDeckStarter(env.ARTIFACTS, input.userEmail, input.slug)`.
+ *   2. `mintWriteToken(repo)`.
+ *   3. `getSandbox(env.Sandbox, draftId)` + `cloneRepoIntoSandbox(...)`.
+ *   4. Workers AI generates JSX files for the new deck.
+ *   5. `applyFilesIntoSandbox(...)`.
+ *   6. Cheap typecheck gate.
+ *   7. `commitAndPushInSandbox(...)` with the prompt as a git note.
+ *   8. Return `{ ok, commitSha, branch, draftId, previewUrl }`.
+ */
+export async function runCreateDeckDraft(
+  env: SandboxDeckCreationEnv,
+  input: CreateDeckDraftInput,
+): Promise<DeckDraftResult | DeckDraftError> {
+  void env;
+  void input;
+  return {
+    ok: false,
+    phase: "not_implemented",
+    error:
+      "Deck creation is not implemented yet (issue #168 Wave 1 / Worker A). " +
+      "Add the ARTIFACTS binding to wrangler.jsonc and fill in this function.",
+  };
+}
+
+/**
+ * Iteration on an existing draft. STUB — Worker A fills in.
+ */
+export async function runIterateOnDeckDraft(
+  env: SandboxDeckCreationEnv,
+  input: IterateOnDeckDraftInput,
+): Promise<DeckDraftResult | DeckDraftError> {
+  void env;
+  void input;
+  return {
+    ok: false,
+    phase: "not_implemented",
+    error:
+      "Deck iteration is not implemented yet (issue #168 Wave 1 / Worker A). " +
+      "Add the ARTIFACTS binding to wrangler.jsonc and fill in this function.",
+  };
+}
+
+export interface PublishDraftInput {
+  userEmail: string;
+  slug: string;
+  /**
+   * If true, squash all draft commits into a single GitHub commit.
+   * Otherwise preserve the per-iteration history.
+   */
+  squash?: boolean;
+}
+
+export interface PublishDraftResult {
+  ok: true;
+  /** GitHub branch the draft was pushed to (e.g. `deck/<slug>`). */
+  branch: string;
+  /** GitHub PR number opened against `main`. */
+  prNumber: number;
+  prHtmlUrl: string;
+}
+
+export interface PublishDraftError {
+  ok: false;
+  phase:
+    | "auth"
+    | "github_token"
+    | "artifacts_resolve"
+    | "clone"
+    | "test_gate"
+    | "github_push"
+    | "open_pr"
+    | "not_implemented";
+  error: string;
+}
+
+/**
+ * Publish a draft to GitHub. STUB — Worker A fills in.
+ *
+ * The expected flow once implemented:
+ *   1. Resolve the user's GitHub OAuth token from `GITHUB_TOKENS` KV.
+ *   2. Resolve the draft Artifacts repo + mint a read token.
+ *   3. `cloneRepoIntoSandbox` from Artifacts.
+ *   4. Run the FULL test gate (`npm ci` → typecheck → vitest → build).
+ *   5. `commitAndPushInSandbox` to GitHub (`deck/<slug>` branch).
+ *   6. Open a draft PR via `openPullRequest`.
+ *   7. Return `{ ok, branch, prNumber, prHtmlUrl }`.
+ */
+export async function runPublishDraft(
+  env: SandboxDeckCreationEnv,
+  input: PublishDraftInput,
+): Promise<PublishDraftResult | PublishDraftError> {
+  void env;
+  void input;
+  return {
+    ok: false,
+    phase: "not_implemented",
+    error:
+      "Deck publish is not implemented yet (issue #168 Wave 1 / Worker A). " +
+      "Add the ARTIFACTS binding to wrangler.jsonc and fill in this function.",
+  };
+}

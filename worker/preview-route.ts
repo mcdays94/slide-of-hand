@@ -1,0 +1,91 @@
+/**
+ * `/preview/<draft-id>/<sha>/*` — draft-deck preview route scaffolding
+ * for issue #168 Wave 1 (Worker A's full implementation lands here).
+ *
+ * ## Status: SCAFFOLD ONLY
+ *
+ * `handlePreview` returns `null` for every request — the fall-through
+ * in `worker/index.ts` is a no-op until Worker A wires up the body.
+ * The route slot is reserved so the Worker bundle has a stable shape
+ * the moment Worker A ships.
+ *
+ * ## What this module owns once filled in
+ *
+ * Read files from a Cloudflare Artifacts draft repo and serve them as
+ * a preview bundle. Specifically:
+ *
+ *   - `GET /preview/<draft-id>/<sha>/index.html` → minimal HTML shell
+ *     that mounts the draft's JSX.
+ *   - `GET /preview/<draft-id>/<sha>/<path>` → file content from the
+ *     Artifacts repo at the given commit.
+ *
+ * The exact serving strategy is TBD in Worker A's spike:
+ *   - Option A: in-Worker on-the-fly Vite compile (heavy, slow).
+ *   - Option B: a sub-Sandbox dev server, fetched via fetch().
+ *   - Option C: pre-built bundles uploaded to R2 alongside each commit.
+ *
+ * Worker A picks the cheapest end-to-end option once the Artifacts
+ * binding is wired and the read latency is measured.
+ *
+ * ## Auth
+ *
+ * Admin-gated via `requireAccessAuth`. The route serves draft source
+ * code — leaking it to anonymous traffic is undesirable even though
+ * the source is non-secret. The auth gate also enables future per-user
+ * scoping (a user can only preview their own drafts).
+ *
+ * ## Path matching
+ *
+ * `/preview/...` not `/api/preview/...` — the route serves an HTML
+ * preview meant to be loaded inside an iframe in the Studio. The
+ * `/api/` prefix is reserved for JSON / binary APIs.
+ */
+
+import type { ArtifactsBinding } from "./artifacts-client";
+
+/**
+ * Env subset the preview route needs. `ARTIFACTS` is optional on the
+ * stub for the same reason it's optional in `sandbox-deck-creation.ts`:
+ * pre-binding deployment shouldn't break the build. Worker A makes it
+ * required when filling in the implementation.
+ */
+export interface PreviewEnv {
+  ARTIFACTS?: ArtifactsBinding;
+}
+
+const ROUTE_PREFIX = "/preview/";
+
+/**
+ * Fetch-handler entry. Returns `null` for paths outside `/preview/*`
+ * so the main fetch chain can fall through.
+ *
+ * STUB — Worker A fills in the body. Today this handler returns 501
+ * (Not Implemented) for matching paths and `null` for non-matching
+ * paths so the contract is enforced (route exists; behaviour stubbed).
+ */
+export async function handlePreview(
+  request: Request,
+  _env: PreviewEnv,
+): Promise<Response | null> {
+  const url = new URL(request.url);
+  if (!url.pathname.startsWith(ROUTE_PREFIX)) return null;
+
+  // Matching path but unimplemented body — return 501 so the client
+  // gets a deterministic "feature not wired" signal rather than a
+  // surprising 200 / 404 / 500.
+  return new Response(
+    JSON.stringify({
+      ok: false,
+      error:
+        "Draft preview is not implemented yet (issue #168 Wave 1 / Worker A). " +
+        "Add the ARTIFACTS binding to wrangler.jsonc and fill in handlePreview.",
+    }),
+    {
+      status: 501,
+      headers: {
+        "content-type": "application/json",
+        "cache-control": "no-store",
+      },
+    },
+  );
+}

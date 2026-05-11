@@ -39,6 +39,8 @@ import { handleAgent, type AgentEnv } from "./agent";
 import { handleGitHubOAuth, type GitHubOAuthEnv } from "./github-oauth";
 import { handleSandboxSmoke, type SandboxSmokeEnv } from "./sandbox-smoke";
 import { handleSkills, type SkillsEnv } from "./skill-composer";
+import { handleMcpServers, type McpServersEnv } from "./mcp-servers";
+import { handlePreview, type PreviewEnv } from "./preview-route";
 import { applyCacheControl } from "./cache-control";
 
 // Re-export the agent DO class so wrangler can find it from the same
@@ -64,7 +66,9 @@ export interface Env
     AgentEnv,
     GitHubOAuthEnv,
     SandboxSmokeEnv,
-    SkillsEnv {
+    SkillsEnv,
+    McpServersEnv,
+    PreviewEnv {
   ASSETS: Fetcher;
 }
 
@@ -110,6 +114,18 @@ export default {
     // token. See `worker/skill-composer.ts`.
     const skillsResponse = await handleSkills(request, env);
     if (skillsResponse) return skillsResponse;
+    // MCP server registry CRUD (issue #168 Wave 6). Per-user MCP
+    // server configs stored in KV; consumed at chat turn time by the
+    // agent's tool merge hook. STUB — returns 501 until Worker C wires
+    // in the body. See `worker/mcp-servers.ts`.
+    const mcpServersResponse = await handleMcpServers(request, env);
+    if (mcpServersResponse) return mcpServersResponse;
+    // Draft deck preview route (issue #168 Wave 1). Serves preview
+    // bundles from Cloudflare Artifacts draft repos so the Studio can
+    // iframe each commit's output. STUB — returns 501 until Worker A
+    // wires in the body. See `worker/preview-route.ts`.
+    const previewResponse = await handlePreview(request, env);
+    if (previewResponse) return previewResponse;
 
     // All non-API paths fall through to the Static Assets binding.
     // The binding's `not_found_handling: single-page-application`
