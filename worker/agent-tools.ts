@@ -74,17 +74,51 @@ const KV_DECK = (slug: string) => `deck:${slug}`;
  * context. Tools that hit GitHub need this to look up the per-user
  * OAuth token in `GITHUB_TOKENS` KV.
  *
- * Wrapped + exported so it can be stubbed in tests. The Agents SDK's
- * `getCurrentAgent()` returns `{ agent, connection, request, email }`
- * — we use `request` because Access populates the email header on
- * every authenticated request (interactive flows AND service tokens
- * carry the JWT header that satisfies our `requireAccessAuth`).
+ * Two paths, tried in order:
+ *
+ *   1. `getCurrentAgent().request` — set by the SDK during the HTTP
+ *      `onRequest` hook and the WebSocket upgrade `onConnect` hook.
+ *      Parse the Access-issued email header off it directly.
+ *
+ *   2. `getCurrentAgent().connection?.state?.email` — fallback for
+ *      the WebSocket-frame path that drives `onChatMessage`. The SDK
+ *      runs `onMessage` (and the tool `execute` callbacks it
+ *      triggers) inside an `AsyncLocalStorage` context with
+ *      `request: undefined` but `connection` populated. To bridge
+ *      the gap, `DeckAuthorAgent.onConnect` stashes the email on
+ *      connection state via `connection.setState({ email })`; we
+ *      read it back here. `Connection.setState` persists into the
+ *      WebSocket attachment per partyserver's contract, so this
+ *      survives DO hibernation.
+ *
+ *   3. Otherwise return `null`. Service-token connections legitimately
+ *      hit this branch — they pass `requireAccessAuth` via the JWT
+ *      signal but carry no user identity. Tool runners that need an
+ *      email surface a friendly "no user identity" error.
+ *
+ * Wrapped + exported so it can be stubbed in tests. See issue #131
+ * item B for the SDK-internal investigation that surfaced the
+ * `onMessage` / `onConnect` request-availability asymmetry.
  */
 export function currentUserEmail(): string | null {
   try {
     const ctx = getCurrentAgent();
-    if (!ctx.request) return null;
-    return getAccessUserEmail(ctx.request);
+    // Prefer the current request's Access header — it's the most
+    // recently-issued auth signal for this call, so it wins over
+    // anything potentially stale on connection state.
+    if (ctx.request) {
+      const fromReq = getAccessUserEmail(ctx.request);
+      if (fromReq) return fromReq;
+    }
+    // Fallback: read whatever DeckAuthorAgent.onConnect stashed on
+    // the connection at upgrade time. The SDK's strict typing on
+    // `Connection.state` is `unknown`; this module owns the schema
+    // (just `{ email: string }`), so a narrow local cast is fine.
+    const state = ctx.connection?.state as
+      | { email?: string | null }
+      | null
+      | undefined;
+    return state?.email ?? null;
   } catch {
     return null;
   }

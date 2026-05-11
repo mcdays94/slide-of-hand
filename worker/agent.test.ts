@@ -58,7 +58,7 @@ vi.mock("ai", () => ({
 
 // Import AFTER mocks are registered so the module wires up against
 // the stubs.
-import { handleAgent, type AgentEnv } from "./agent";
+import { handleAgent, DeckAuthorAgent, type AgentEnv } from "./agent";
 
 const stubAi = { run: async () => ({}) } as unknown as Ai;
 
@@ -259,5 +259,94 @@ describe("handleAgent — local-dev WebSocket auth fallback", () => {
     );
     const res = await handleAgent(req, makeEnv());
     expect(res!.status).toBe(200);
+  });
+});
+
+// ─── onConnect — item B (issue #131) email plumbing ──────────────────
+//
+// The bug: the agents SDK only populates `getCurrentAgent().request`
+// during the upgrade `onConnect` hook and the plain HTTP `onRequest`
+// hook. During `onMessage` (which dispatches `onChatMessage` and the
+// tool `execute` callbacks), `request` is undefined. So every tool
+// that needed the per-user email — `listSourceTree`, `readSource`,
+// and `commitPatch`'s GitHub-backup leg — returned the "service-token
+// context" error message even for interactive Access users.
+//
+// The fix: override `onConnect` on `DeckAuthorAgent`, read the email
+// from the Access-issued header on `ctx.request`, and stash it on
+// `connection.setState({ email })` so later `onMessage` calls can
+// recover it through `getCurrentAgent().connection?.state?.email`.
+// `Connection.setState` persists into the WebSocket attachment per
+// the partyserver SDK docs, so the value survives DO hibernation
+// transparently.
+
+describe("DeckAuthorAgent.onConnect (issue #131 item B)", () => {
+  // `AIChatAgent` is mocked above as `class {}`, so we can instantiate
+  // `DeckAuthorAgent` directly without the real DO machinery. The
+  // test only exercises our own `onConnect` override.
+  function makeAgent(): InstanceType<typeof DeckAuthorAgent> {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return new (DeckAuthorAgent as any)();
+  }
+
+  // Minimum-viable mock of partyserver's `Connection`. Real
+  // connections are a WebSocket-with-id; the only surface we touch
+  // in `onConnect` is `setState`.
+  function makeConnection() {
+    const setState = vi.fn();
+    return {
+      id: "conn-test",
+      state: undefined,
+      setState,
+    };
+  }
+
+  it("stashes the Access user email on connection state when the upgrade request carries cf-access-authenticated-user-email", async () => {
+    const agent = makeAgent();
+    const connection = makeConnection();
+    const ctx = {
+      request: new Request("https://example.com/upgrade", {
+        headers: {
+          "cf-access-authenticated-user-email": "miguel@cloudflare.com",
+        },
+      }),
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (agent as any).onConnect(connection, ctx);
+    expect(connection.setState).toHaveBeenCalledTimes(1);
+    expect(connection.setState).toHaveBeenCalledWith({
+      email: "miguel@cloudflare.com",
+    });
+  });
+
+  it("does NOT call setState when there is no Access email header (service-token connection)", async () => {
+    // Service tokens authenticate at Access (via the JWT signal) but
+    // carry no email. We must NOT stash an empty value — downstream
+    // code distinguishes "no user identity" from "user identity X"
+    // and uses that distinction to drive friendly error messages.
+    const agent = makeAgent();
+    const connection = makeConnection();
+    const ctx = {
+      request: new Request("https://example.com/upgrade"),
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (agent as any).onConnect(connection, ctx);
+    expect(connection.setState).not.toHaveBeenCalled();
+  });
+
+  it("does NOT call setState when the email header is an empty string", async () => {
+    // Defense against header-injection-style oddities — Access never
+    // sends an empty value for a successful interactive session, but
+    // a misrouted internal request could. Treat empty as absent.
+    const agent = makeAgent();
+    const connection = makeConnection();
+    const ctx = {
+      request: new Request("https://example.com/upgrade", {
+        headers: { "cf-access-authenticated-user-email": "" },
+      }),
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (agent as any).onConnect(connection, ctx);
+    expect(connection.setState).not.toHaveBeenCalled();
   });
 });

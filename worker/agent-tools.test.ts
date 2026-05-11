@@ -20,16 +20,26 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // Stub `agents` at import time — same reason as `worker/agent.test.ts`:
 // the package transitively pulls in `cloudflare:workers` which only
 // resolves inside the Workers runtime, not happy-dom. We re-export
-// `getCurrentAgent` because `currentUserEmail` calls it (the `run*`
-// helpers all accept an `emailOverride` so we don't actually need the
-// real return value here — a stubbed-empty value is fine).
+// `getCurrentAgent` because `currentUserEmail` calls it. Type the
+// mock with the same shape the SDK's real `getCurrentAgent` returns
+// (`AgentContextStore`) so per-test `mockReturnValueOnce` calls can
+// pass a `Request` for `request` or a `Connection`-shaped object for
+// `connection` without TypeScript narrowing the default to literal
+// `undefined`.
 const { getCurrentAgentMock } = vi.hoisted(() => ({
-  getCurrentAgentMock: vi.fn(() => ({
-    agent: undefined,
-    connection: undefined,
-    request: undefined,
-    email: undefined,
-  })),
+  getCurrentAgentMock: vi.fn(
+    (): {
+      agent: unknown;
+      connection: unknown;
+      request: Request | undefined;
+      email: unknown;
+    } => ({
+      agent: undefined,
+      connection: undefined,
+      request: undefined,
+      email: undefined,
+    }),
+  ),
 }));
 vi.mock("agents", () => ({
   getCurrentAgent: getCurrentAgentMock,
@@ -55,6 +65,7 @@ vi.mock("./github-oauth", () => githubOauthMock);
 
 import {
   buildTools,
+  currentUserEmail,
   runCommitPatch,
   runListSourceTree,
   runReadSource,
@@ -848,5 +859,171 @@ describe("buildTools — phase 3 surface", () => {
     expect(typeof tools.commitPatch.description).toBe("string");
     expect(typeof tools.listSourceTree.description).toBe("string");
     expect(typeof tools.readSource.description).toBe("string");
+  });
+});
+
+// ─── currentUserEmail — item B regression coverage ───────────────────
+//
+// The agents SDK's AsyncLocalStorage context has different fields
+// populated depending on which hook is currently running. During
+// HTTP `onRequest`, the upgrade `onConnect`, and the broad
+// `withAgentContext` wrapping, `request` is set. During `onMessage`
+// (which dispatches `onChatMessage` and the tool `execute`
+// callbacks) `request` is undefined but `connection` is set. The
+// fix is to stash the Access-issued email on connection state
+// during `onConnect` and let `currentUserEmail` fall back to reading
+// it from there when `request` is unavailable.
+
+describe("currentUserEmail (issue #131 item B)", () => {
+  it("returns the email from getCurrentAgent().request when the cf-access header is present", () => {
+    getCurrentAgentMock.mockReturnValueOnce({
+      agent: undefined,
+      connection: undefined,
+      request: new Request("https://example.com/agents/x", {
+        headers: {
+          "cf-access-authenticated-user-email": "miguel@cloudflare.com",
+        },
+      }),
+      email: undefined,
+    });
+    expect(currentUserEmail()).toBe("miguel@cloudflare.com");
+  });
+
+  it("falls back to connection.state.email when request is undefined (chat-dispatch case)", () => {
+    // This is the bug-fix regression test. Before item B, currentUserEmail
+    // returned null here, which made every tool that needs a per-user
+    // GitHub token (listSourceTree, readSource, commitPatch's GitHub
+    // backup leg) fall back to the "service-token context" error
+    // message — even for interactive Access users.
+    getCurrentAgentMock.mockReturnValueOnce({
+      agent: undefined,
+      connection: {
+        id: "c1",
+        state: { email: "miguel@cloudflare.com" },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any,
+      request: undefined,
+      email: undefined,
+    });
+    expect(currentUserEmail()).toBe("miguel@cloudflare.com");
+  });
+
+  it("returns null when neither request nor connection state carry an email (service-token case)", () => {
+    // Service-token authenticated requests pass `requireAccessAuth`
+    // via the JWT signal but never carry an email — the "no user
+    // identity" branch must still degrade gracefully so callers can
+    // emit a friendly error message.
+    getCurrentAgentMock.mockReturnValueOnce({
+      agent: undefined,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      connection: { id: "c1", state: null } as any,
+      request: undefined,
+      email: undefined,
+    });
+    expect(currentUserEmail()).toBeNull();
+  });
+
+  it("returns null when getCurrentAgent has no store at all", () => {
+    // Defensive: if the AsyncLocalStorage store is missing entirely
+    // (call from outside any agent context), the SDK returns
+    // all-undefined. Don't throw — return null and let the caller
+    // decide what to do.
+    getCurrentAgentMock.mockReturnValueOnce({
+      agent: undefined,
+      connection: undefined,
+      request: undefined,
+      email: undefined,
+    });
+    expect(currentUserEmail()).toBeNull();
+  });
+
+  it("prefers the request-borne email over the connection-state email when both are present", () => {
+    // The request is the more recently-issued auth signal for this
+    // call, so when both are available, trust the request. Stops a
+    // stale connection-state email from overriding a fresh per-call
+    // identity (e.g. inside an HTTP onRequest hook firing on a
+    // long-lived WebSocket).
+    getCurrentAgentMock.mockReturnValueOnce({
+      agent: undefined,
+      connection: {
+        id: "c1",
+        state: { email: "stale@example.com" },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any,
+      request: new Request("https://example.com/x", {
+        headers: {
+          "cf-access-authenticated-user-email": "fresh@example.com",
+        },
+      }),
+      email: undefined,
+    });
+    expect(currentUserEmail()).toBe("fresh@example.com");
+  });
+
+  it("returns null when getCurrentAgent throws", () => {
+    // Pure defensive: if the SDK internals throw (shouldn't happen
+    // but the wrapper is `try`-`catch` anyway), return null instead
+    // of letting the throw escape into tool execution.
+    getCurrentAgentMock.mockImplementationOnce(() => {
+      throw new Error("not in an agent context");
+    });
+    expect(currentUserEmail()).toBeNull();
+  });
+});
+
+// ─── End-to-end regression through a tool runner ─────────────────────
+//
+// The unit tests above prove the fallback logic in `currentUserEmail`.
+// This block proves the fallback actually plumbs through to a real
+// tool runner — i.e. that the bug is fixed at the call-site that
+// reported it (the chat panel's listSourceTree invocation).
+
+describe("runListSourceTree — chat-dispatch path (issue #131 item B)", () => {
+  it("succeeds when only connection.state.email is set (no emailOverride, no request)", async () => {
+    // Mirrors the production chat-dispatch context: getCurrentAgent
+    // returns a connection (with email previously stashed on
+    // onConnect) but `request` is undefined because we're inside
+    // onMessage, not onConnect.
+    getCurrentAgentMock.mockReturnValueOnce({
+      agent: undefined,
+      connection: {
+        id: "c1",
+        state: { email: "miguel@cloudflare.com" },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any,
+      request: undefined,
+      email: undefined,
+    });
+    githubOauthMock.getStoredGitHubToken.mockResolvedValue({
+      token: "gho_xyz",
+      username: "miguel",
+      userId: 42,
+      scopes: ["public_repo"],
+      connectedAt: 0,
+    });
+    githubClientMock.listContents.mockResolvedValue({
+      ok: true,
+      items: [
+        { name: "01-title.tsx", path: "src/x", type: "file", size: 100 },
+      ],
+    });
+    const { env } = makeEnv();
+    // No emailOverride — forces the fallback through currentUserEmail
+    // → connection.state.email.
+    const result = (await runListSourceTree(
+      env,
+      "src/decks/public/hello",
+    )) as ListSourceTreeResult;
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.items).toHaveLength(1);
+      expect(result.items[0].name).toBe("01-title.tsx");
+    }
+    // Sanity: the per-user GitHub token lookup used the email from
+    // connection state.
+    expect(githubOauthMock.getStoredGitHubToken).toHaveBeenCalledWith(
+      env,
+      "miguel@cloudflare.com",
+    );
   });
 });
