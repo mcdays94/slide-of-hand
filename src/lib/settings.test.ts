@@ -86,6 +86,7 @@ describe("writeSettings()", () => {
       notesDefaultMode: "rich",
       deckCardHoverAnimation: { enabled: true, slideCount: 3 },
       aiAssistantModel: "kimi-k2.6",
+      showAssistantReasoning: false,
     });
   });
 
@@ -361,5 +362,63 @@ describe("aiAssistantModel (issue #131 item A)", () => {
       window.localStorage.getItem(STORAGE_KEY)!,
     ) as { aiAssistantModel?: string };
     expect(persisted.aiAssistantModel).toBe("gpt-oss-120b");
+  });
+});
+
+// ─── showAssistantReasoning (show model thinking in chat) ──────────
+// Off-by-default opt-in toggle for rendering the assistant's
+// chain-of-thought reasoning parts in the chat panel. Power-user
+// reveal; the toggle is invisible in the output of non-reasoning
+// models (Kimi K2.6, Llama 4 Scout) since they don't emit reasoning
+// parts. Tests mirror the aiAssistantModel block above.
+describe("showAssistantReasoning", () => {
+  it("DEFAULT_SETTINGS.showAssistantReasoning defaults to false", () => {
+    expect(DEFAULT_SETTINGS.showAssistantReasoning).toBe(false);
+  });
+
+  it("readSettings returns false when nothing is persisted", () => {
+    expect(readSettings().showAssistantReasoning).toBe(false);
+  });
+
+  it("readSettings respects a persisted boolean (true)", () => {
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ showAssistantReasoning: true }),
+    );
+    expect(readSettings().showAssistantReasoning).toBe(true);
+  });
+
+  it("readSettings respects a persisted boolean (false)", () => {
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ showAssistantReasoning: false }),
+    );
+    expect(readSettings().showAssistantReasoning).toBe(false);
+  });
+
+  it("falls back to default when showAssistantReasoning is a non-boolean", () => {
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ showAssistantReasoning: "yes" }),
+    );
+    expect(readSettings().showAssistantReasoning).toBe(false);
+  });
+
+  it("falls back to default when showAssistantReasoning is missing entirely", () => {
+    // Forward-compat with older bundles that pre-date this setting.
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ showSlideIndicators: true }),
+    );
+    expect(readSettings().showAssistantReasoning).toBe(false);
+  });
+
+  it("writeSettings persists showAssistantReasoning", () => {
+    const merged = writeSettings({ showAssistantReasoning: true });
+    expect(merged.showAssistantReasoning).toBe(true);
+    const persisted = JSON.parse(
+      window.localStorage.getItem(STORAGE_KEY)!,
+    ) as { showAssistantReasoning?: boolean };
+    expect(persisted.showAssistantReasoning).toBe(true);
   });
 });

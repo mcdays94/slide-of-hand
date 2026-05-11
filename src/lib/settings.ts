@@ -128,6 +128,23 @@ export interface Settings {
    * `AiAssistantModel` above for the per-option rationale.
    */
   aiAssistantModel: AiAssistantModel;
+  /**
+   * When `true`, the in-Studio chat panel renders the assistant's
+   * `reasoning` message parts (the model's chain-of-thought) inline,
+   * in a `<details open>` block above each assistant turn that emits
+   * them. The user can collapse a given turn's reasoning per-instance;
+   * each `<details>` keeps its own open state independently.
+   *
+   * Off by default. Reasoning is internal-feeling text most users
+   * don't want by default, and the non-reasoning Workers AI models
+   * (Kimi K2.6, Llama 4 Scout) don't emit reasoning parts anyway — so
+   * the toggle is invisible in their output. Power-user opt-in only.
+   *
+   * Only the reasoning-tuned models (GPT-OSS 120B today) reliably
+   * emit reasoning parts, but the setting is model-agnostic: enabling
+   * it on a non-reasoning model is a no-op rather than an error.
+   */
+  showAssistantReasoning: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -136,6 +153,7 @@ export const DEFAULT_SETTINGS: Settings = {
   notesDefaultMode: "rich",
   deckCardHoverAnimation: { enabled: true, slideCount: 3 },
   aiAssistantModel: "kimi-k2.6",
+  showAssistantReasoning: false,
 };
 
 /**
@@ -209,6 +227,10 @@ export function readSettings(): Settings {
       aiAssistantModel: isAiAssistantModel(partial.aiAssistantModel)
         ? partial.aiAssistantModel
         : DEFAULT_SETTINGS.aiAssistantModel,
+      showAssistantReasoning:
+        typeof partial.showAssistantReasoning === "boolean"
+          ? partial.showAssistantReasoning
+          : DEFAULT_SETTINGS.showAssistantReasoning,
     };
   } catch {
     return { ...DEFAULT_SETTINGS };

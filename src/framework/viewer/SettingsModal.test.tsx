@@ -172,6 +172,7 @@ describe("<SettingsModal>", () => {
       notesDefaultMode: "rich",
       deckCardHoverAnimation: { enabled: true, slideCount: 3 },
       aiAssistantModel: "kimi-k2.6",
+      showAssistantReasoning: false,
     });
 
     // Toggling again flips it back ON.
@@ -185,6 +186,7 @@ describe("<SettingsModal>", () => {
       notesDefaultMode: "rich",
       deckCardHoverAnimation: { enabled: true, slideCount: 3 },
       aiAssistantModel: "kimi-k2.6",
+      showAssistantReasoning: false,
     });
   });
 
@@ -440,6 +442,78 @@ describe("<SettingsModal>", () => {
       // Buttons should NOT be flex-1 in horizontal mode (they sit
       // at their content size).
       expect(rich.className).not.toMatch(/flex-1/);
+    });
+  });
+
+  // showAssistantReasoning — power-user opt-in for rendering the
+  // model's chain-of-thought above each assistant turn in the chat
+  // panel. Same presenter-mode gating as the model picker since both
+  // configure the in-Studio agent.
+  describe("showAssistantReasoning toggle", () => {
+    it("renders the toggle when presenter mode is enabled", () => {
+      render(
+        <PresenterModeProvider enabled={true}>
+          <SettingsProvider>
+            <SettingsModal open={true} onClose={() => {}} />
+          </SettingsProvider>
+        </PresenterModeProvider>,
+      );
+      expect(
+        screen.getByTestId(
+          "settings-modal-toggle-show-assistant-reasoning",
+        ),
+      ).toBeTruthy();
+    });
+
+    it("does NOT render the toggle when presenter mode is disabled (public viewer)", () => {
+      // Same rationale as the model picker — the setting only
+      // affects the in-Studio agent UI, which is admin-only.
+      render(
+        <SettingsProvider>
+          <SettingsModal open={true} onClose={() => {}} />
+        </SettingsProvider>,
+      );
+      expect(
+        screen.queryByTestId(
+          "settings-modal-toggle-show-assistant-reasoning",
+        ),
+      ).toBeNull();
+    });
+
+    it("defaults to off (aria-checked=false)", () => {
+      render(
+        <PresenterModeProvider enabled={true}>
+          <SettingsProvider>
+            <SettingsModal open={true} onClose={() => {}} />
+          </SettingsProvider>
+        </PresenterModeProvider>,
+      );
+      const toggle = screen.getByTestId(
+        "settings-modal-toggle-show-assistant-reasoning",
+      );
+      expect(toggle.getAttribute("aria-checked")).toBe("false");
+    });
+
+    it("clicking the toggle flips its state and persists the choice", () => {
+      render(
+        <PresenterModeProvider enabled={true}>
+          <SettingsProvider>
+            <SettingsModal open={true} onClose={() => {}} />
+          </SettingsProvider>
+        </PresenterModeProvider>,
+      );
+      const toggle = screen.getByTestId(
+        "settings-modal-toggle-show-assistant-reasoning",
+      );
+      act(() => {
+        toggle.click();
+      });
+      expect(toggle.getAttribute("aria-checked")).toBe("true");
+
+      const persisted = JSON.parse(
+        window.localStorage.getItem(STORAGE_KEY)!,
+      ) as { showAssistantReasoning: boolean };
+      expect(persisted.showAssistantReasoning).toBe(true);
     });
   });
 });
