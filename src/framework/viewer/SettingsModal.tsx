@@ -434,6 +434,11 @@ function SettingsModalContent({
           </button>
         </div>
         <div className="divide-y divide-cf-border border-y border-cf-border">
+          {/* Audience-side setting — visible to everyone, including
+              unauthenticated visitors on `/decks/<slug>`. Show-slide-
+              indicators is a pure viewer-side display preference; it
+              doesn't reveal any admin surface or expose deck-author
+              context. Every other setting below is admin-gated. */}
           <SettingsRow
             inputId={showIndicatorsId}
             label="Show slide indicators always"
@@ -442,56 +447,62 @@ function SettingsModalContent({
             onChange={onToggleShowIndicators}
             testId="settings-modal-toggle-show-indicators"
           />
-          <SettingsRow
-            inputId={presenterFinalPhaseId}
-            label="Next slide preview shows final state"
-            description="In the presenter window, render the next-slide preview as a single thumbnail at its last phase (fully revealed). When off, multi-phase next slides show a horizontal filmstrip — one mini thumbnail per phase, in order — so you can see each reveal before pressing Next."
-            checked={presenterFinalPhase}
-            onChange={onTogglePresenterFinalPhase}
-            testId="settings-modal-toggle-presenter-final-phase"
-          />
-          <SettingsSegmentedRow
-            label="Default speaker-notes mode"
-            description="Which view the speaker-notes editor opens in. Rich is a WYSIWYG editor with a PowerPoint-style toolbar. Markdown opens directly to the source view — pick this if you prefer to write or paste markdown directly. You can still toggle modes per-slide via the toolbar."
-            value={notesDefaultMode}
-            options={[
-              { value: "rich", label: "Rich" },
-              { value: "markdown", label: "Markdown" },
-            ]}
-            onChange={onChangeNotesDefaultMode}
-            testIdPrefix="settings-modal-notes-default-mode"
-          />
-          <SettingsRow
-            inputId={deckCardHoverId}
-            label="Deck card hover preview"
-            description="On the homepage and admin grid, hovering a deck card cycles through the first few slide thumbnails so you can preview a deck without opening it. List view never animates."
-            checked={deckCardHoverAnimation.enabled}
-            onChange={(next) =>
-              onChangeDeckCardHoverAnimation({
-                ...deckCardHoverAnimation,
-                enabled: next,
-              })
-            }
-            testId="settings-modal-toggle-deck-card-hover"
-          />
-          {deckCardHoverAnimation.enabled && (
-            <SettingsNumericRow
-              label="Slides shown on hover"
-              description="How many slide thumbnails to cycle through while hovering. The first slide is always shown when not hovering."
-              value={deckCardHoverAnimation.slideCount}
-              min={DECK_CARD_HOVER_SLIDE_COUNT_MIN}
-              max={DECK_CARD_HOVER_SLIDE_COUNT_MAX}
-              onChange={(next) =>
-                onChangeDeckCardHoverAnimation({
-                  ...deckCardHoverAnimation,
-                  slideCount: next,
-                })
-              }
-              testIdPrefix="settings-modal-deck-card-hover-slide-count"
-            />
-          )}
+          {/* Admin-only rows. Gated on `presenterMode` which on the
+              public deck route is driven by `useAccessAuth()` (see
+              `routes/deck.$slug.tsx`). Hiding these from non-Access
+              visitors prevents information disclosure (model names,
+              GitHub connection state, presenter-only preferences) and
+              keeps the audience-side viewer Settings modal lean. */}
           {presenterMode && (
             <>
+              <SettingsRow
+                inputId={presenterFinalPhaseId}
+                label="Next slide preview shows final state"
+                description="In the presenter window, render the next-slide preview as a single thumbnail at its last phase (fully revealed). When off, multi-phase next slides show a horizontal filmstrip — one mini thumbnail per phase, in order — so you can see each reveal before pressing Next."
+                checked={presenterFinalPhase}
+                onChange={onTogglePresenterFinalPhase}
+                testId="settings-modal-toggle-presenter-final-phase"
+              />
+              <SettingsSegmentedRow
+                label="Default speaker-notes mode"
+                description="Which view the speaker-notes editor opens in. Rich is a WYSIWYG editor with a PowerPoint-style toolbar. Markdown opens directly to the source view — pick this if you prefer to write or paste markdown directly. You can still toggle modes per-slide via the toolbar."
+                value={notesDefaultMode}
+                options={[
+                  { value: "rich", label: "Rich" },
+                  { value: "markdown", label: "Markdown" },
+                ]}
+                onChange={onChangeNotesDefaultMode}
+                testIdPrefix="settings-modal-notes-default-mode"
+              />
+              <SettingsRow
+                inputId={deckCardHoverId}
+                label="Deck card hover preview"
+                description="On the homepage and admin grid, hovering a deck card cycles through the first few slide thumbnails so you can preview a deck without opening it. List view never animates."
+                checked={deckCardHoverAnimation.enabled}
+                onChange={(next) =>
+                  onChangeDeckCardHoverAnimation({
+                    ...deckCardHoverAnimation,
+                    enabled: next,
+                  })
+                }
+                testId="settings-modal-toggle-deck-card-hover"
+              />
+              {deckCardHoverAnimation.enabled && (
+                <SettingsNumericRow
+                  label="Slides shown on hover"
+                  description="How many slide thumbnails to cycle through while hovering. The first slide is always shown when not hovering."
+                  value={deckCardHoverAnimation.slideCount}
+                  min={DECK_CARD_HOVER_SLIDE_COUNT_MIN}
+                  max={DECK_CARD_HOVER_SLIDE_COUNT_MAX}
+                  onChange={(next) =>
+                    onChangeDeckCardHoverAnimation({
+                      ...deckCardHoverAnimation,
+                      slideCount: next,
+                    })
+                  }
+                  testIdPrefix="settings-modal-deck-card-hover-slide-count"
+                />
+              )}
               <SettingsSegmentedRow
                 label="AI assistant model"
                 description="Which Workers AI model the in-Studio chat assistant uses. Kimi K2.6 is the frontier default; Llama 4 Scout is multimodal; GPT-OSS 120B is reasoning-tuned. The server validates against the allow-list on every turn."

@@ -15,8 +15,36 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
+import type { ReactNode } from "react";
 import type { Deck } from "@/framework/viewer/types";
 import type { DataDeck as DataDeckRecord } from "@/lib/deck-record";
+
+// `useAccessAuth` and `PresenterModeProvider` are now load-bearing for
+// the route's security model — the provider's `enabled` is driven by
+// the hook's result. Mock both at file root so:
+//   - existing tests still pass (the PresenterModeProvider mock is a
+//     passthrough that renders its children, so the stub Deck /
+//     DataDeck assertions are unaffected);
+//   - new tests below can flip `useAccessAuth`'s return value to
+//     verify the `enabled` prop tracks auth status.
+const useAccessAuthMock = vi.hoisted(() => vi.fn());
+const presenterModeProviderMock = vi.hoisted(() =>
+  vi.fn(({ children }: { children: ReactNode; enabled: boolean }) => children),
+);
+
+vi.mock("@/lib/use-access-auth", () => ({
+  useAccessAuth: useAccessAuthMock,
+}));
+
+vi.mock("@/framework/presenter/mode", async () => {
+  const actual = await vi.importActual<
+    typeof import("@/framework/presenter/mode")
+  >("@/framework/presenter/mode");
+  return {
+    ...actual,
+    PresenterModeProvider: presenterModeProviderMock,
+  };
+});
 
 const stubSlide = { id: "stub", render: () => null };
 
@@ -88,6 +116,12 @@ afterEach(() => {
 
 beforeEach(() => {
   vi.resetModules();
+  // Default to "authenticated" so existing tests (which don't care
+  // about the auth-gate logic) see the full admin chrome wired up.
+  // The new "PresenterModeProvider auth wiring" describe overrides
+  // per-test to exercise the other states.
+  useAccessAuthMock.mockReturnValue("authenticated");
+  presenterModeProviderMock.mockClear();
 });
 
 function mockFetchSequence(
@@ -239,5 +273,105 @@ describe("/decks/<slug> — KV fallback (Slice 5)", () => {
         args[0].startsWith("/api/decks/source-deck"),
     );
     expect(calledWithKvUrl).toBe(false);
+  });
+});
+
+// Security: the public `/decks/<slug>` route used to wrap the viewer in
+// `<PresenterModeProvider enabled={true}>` unconditionally, exposing
+// the admin chrome (Theme / Inspect / Analytics / AI buttons, Settings
+// rows for AI model / GitHub / speaker-notes mode / deck-card hover,
+// the P-key presenter trigger) to anyone hitting the URL. The fix
+// drives `enabled` from `useAccessAuth()` so unauthenticated visitors
+// get the audience view and authenticated admins still see their
+// tooling when previewing on the public URL.
+describe("/decks/<slug> — PresenterModeProvider auth wiring (security)", () => {
+  it("passes enabled=true to PresenterModeProvider for a build-time deck when the visitor is authenticated", async () => {
+    useAccessAuthMock.mockReturnValue("authenticated");
+    vi.doMock(
+      "@/lib/decks-registry",
+      makeRegistryMock({ "source-deck": sourceDeck }),
+    );
+    await renderRouteAt("source-deck");
+    // The provider may be invoked more than once during render; the
+    // SECURITY-RELEVANT invocation is the one wrapping the deck stub.
+    // Filter to calls that actually rendered children (i.e. were the
+    // wrap call, not React's internal probing).
+    expect(presenterModeProviderMock).toHaveBeenCalled();
+    const lastCall =
+      presenterModeProviderMock.mock.calls[
+        presenterModeProviderMock.mock.calls.length - 1
+      ];
+    expect(lastCall[0]).toMatchObject({ enabled: true });
+  });
+
+  it("passes enabled=false to PresenterModeProvider for a build-time deck when the visitor is unauthenticated", async () => {
+    useAccessAuthMock.mockReturnValue("unauthenticated");
+    vi.doMock(
+      "@/lib/decks-registry",
+      makeRegistryMock({ "source-deck": sourceDeck }),
+    );
+    await renderRouteAt("source-deck");
+    expect(presenterModeProviderMock).toHaveBeenCalled();
+    const lastCall =
+      presenterModeProviderMock.mock.calls[
+        presenterModeProviderMock.mock.calls.length - 1
+      ];
+    expect(lastCall[0]).toMatchObject({ enabled: false });
+  });
+
+  it("passes enabled=false during the initial 'checking' probe (conservative — no admin-UI flash)", async () => {
+    // Before the auth probe resolves the route mounts in `checking`
+    // state. Treat that as not-yet-authenticated so admin chrome
+    // never flashes for non-Access visitors.
+    useAccessAuthMock.mockReturnValue("checking");
+    vi.doMock(
+      "@/lib/decks-registry",
+      makeRegistryMock({ "source-deck": sourceDeck }),
+    );
+    await renderRouteAt("source-deck");
+    expect(presenterModeProviderMock).toHaveBeenCalled();
+    const lastCall =
+      presenterModeProviderMock.mock.calls[
+        presenterModeProviderMock.mock.calls.length - 1
+      ];
+    expect(lastCall[0]).toMatchObject({ enabled: false });
+  });
+
+  it("passes enabled=true to PresenterModeProvider for a KV-backed deck when authenticated", async () => {
+    useAccessAuthMock.mockReturnValue("authenticated");
+    vi.stubGlobal(
+      "fetch",
+      mockFetchSequence([{ ok: true, body: dataDeckRecord }]),
+    );
+    vi.doMock("@/lib/decks-registry", makeRegistryMock({}));
+    await renderRouteAt("kv-deck");
+    await waitFor(() =>
+      expect(screen.queryByTestId("data-deck-stub")).toBeTruthy(),
+    );
+    expect(presenterModeProviderMock).toHaveBeenCalled();
+    const lastCall =
+      presenterModeProviderMock.mock.calls[
+        presenterModeProviderMock.mock.calls.length - 1
+      ];
+    expect(lastCall[0]).toMatchObject({ enabled: true });
+  });
+
+  it("passes enabled=false to PresenterModeProvider for a KV-backed deck when unauthenticated", async () => {
+    useAccessAuthMock.mockReturnValue("unauthenticated");
+    vi.stubGlobal(
+      "fetch",
+      mockFetchSequence([{ ok: true, body: dataDeckRecord }]),
+    );
+    vi.doMock("@/lib/decks-registry", makeRegistryMock({}));
+    await renderRouteAt("kv-deck");
+    await waitFor(() =>
+      expect(screen.queryByTestId("data-deck-stub")).toBeTruthy(),
+    );
+    expect(presenterModeProviderMock).toHaveBeenCalled();
+    const lastCall =
+      presenterModeProviderMock.mock.calls[
+        presenterModeProviderMock.mock.calls.length - 1
+      ];
+    expect(lastCall[0]).toMatchObject({ enabled: false });
   });
 });

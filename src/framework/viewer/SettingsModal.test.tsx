@@ -191,11 +191,19 @@ describe("<SettingsModal>", () => {
   });
 
   describe("deckCardHoverAnimation rows (issue #128)", () => {
+    // These rows are admin-only — gated by `presenterMode`. On the
+    // public deck route `presenterMode` is now driven by Cloudflare
+    // Access auth (see `routes/deck.$slug.tsx`); audience visitors
+    // never see them. Tests wrap in `<PresenterModeProvider enabled>`
+    // to exercise the rows; a separate test below covers the hidden
+    // case.
     it("renders the hover-animation toggle row", () => {
       render(
-        <SettingsProvider>
-          <SettingsModal open={true} onClose={() => {}} />
-        </SettingsProvider>,
+        <PresenterModeProvider enabled={true}>
+          <SettingsProvider>
+            <SettingsModal open={true} onClose={() => {}} />
+          </SettingsProvider>
+        </PresenterModeProvider>,
       );
       expect(
         screen.getByTestId("settings-modal-toggle-deck-card-hover"),
@@ -204,9 +212,11 @@ describe("<SettingsModal>", () => {
 
     it("the hover-animation toggle defaults to ON", () => {
       render(
-        <SettingsProvider>
-          <SettingsModal open={true} onClose={() => {}} />
-        </SettingsProvider>,
+        <PresenterModeProvider enabled={true}>
+          <SettingsProvider>
+            <SettingsModal open={true} onClose={() => {}} />
+          </SettingsProvider>
+        </PresenterModeProvider>,
       );
       expect(
         screen
@@ -217,9 +227,11 @@ describe("<SettingsModal>", () => {
 
     it("renders a slideCount control when enabled is true", () => {
       render(
-        <SettingsProvider>
-          <SettingsModal open={true} onClose={() => {}} />
-        </SettingsProvider>,
+        <PresenterModeProvider enabled={true}>
+          <SettingsProvider>
+            <SettingsModal open={true} onClose={() => {}} />
+          </SettingsProvider>
+        </PresenterModeProvider>,
       );
       // Default state: enabled=true → numeric/segmented row visible.
       expect(
@@ -229,9 +241,11 @@ describe("<SettingsModal>", () => {
 
     it("hides the slideCount control when enabled is toggled off", () => {
       render(
-        <SettingsProvider>
-          <SettingsModal open={true} onClose={() => {}} />
-        </SettingsProvider>,
+        <PresenterModeProvider enabled={true}>
+          <SettingsProvider>
+            <SettingsModal open={true} onClose={() => {}} />
+          </SettingsProvider>
+        </PresenterModeProvider>,
       );
       const toggle = screen.getByTestId(
         "settings-modal-toggle-deck-card-hover",
@@ -247,9 +261,11 @@ describe("<SettingsModal>", () => {
 
     it("clicking a slideCount option persists the choice", () => {
       render(
-        <SettingsProvider>
-          <SettingsModal open={true} onClose={() => {}} />
-        </SettingsProvider>,
+        <PresenterModeProvider enabled={true}>
+          <SettingsProvider>
+            <SettingsModal open={true} onClose={() => {}} />
+          </SettingsProvider>
+        </PresenterModeProvider>,
       );
       const opt5 = screen.getByTestId(
         "settings-modal-deck-card-hover-slide-count-5",
@@ -265,9 +281,11 @@ describe("<SettingsModal>", () => {
 
     it("toggling the hover toggle persists enabled=false", () => {
       render(
-        <SettingsProvider>
-          <SettingsModal open={true} onClose={() => {}} />
-        </SettingsProvider>,
+        <PresenterModeProvider enabled={true}>
+          <SettingsProvider>
+            <SettingsModal open={true} onClose={() => {}} />
+          </SettingsProvider>
+        </PresenterModeProvider>,
       );
       const toggle = screen.getByTestId(
         "settings-modal-toggle-deck-card-hover",
@@ -283,9 +301,11 @@ describe("<SettingsModal>", () => {
 
     it("renders all 8 slideCount options", () => {
       render(
-        <SettingsProvider>
-          <SettingsModal open={true} onClose={() => {}} />
-        </SettingsProvider>,
+        <PresenterModeProvider enabled={true}>
+          <SettingsProvider>
+            <SettingsModal open={true} onClose={() => {}} />
+          </SettingsProvider>
+        </PresenterModeProvider>,
       );
       for (let n = 1; n <= 8; n++) {
         expect(
@@ -294,6 +314,84 @@ describe("<SettingsModal>", () => {
           ),
         ).toBeTruthy();
       }
+    });
+
+    it("does NOT render the hover-animation rows when presenter mode is disabled (public viewer)", () => {
+      // Audience-side viewer at `/decks/<slug>` for unauthenticated
+      // visitors — no PresenterModeProvider wrap means `presenterMode`
+      // is false, the whole hover-animation block stays hidden.
+      render(
+        <SettingsProvider>
+          <SettingsModal open={true} onClose={() => {}} />
+        </SettingsProvider>,
+      );
+      expect(
+        screen.queryByTestId("settings-modal-toggle-deck-card-hover"),
+      ).toBeNull();
+      expect(
+        screen.queryByTestId("settings-modal-deck-card-hover-slide-count"),
+      ).toBeNull();
+    });
+  });
+
+  // Three additional rows moved into the presenter-mode-gated block
+  // as part of the Access-auth security fix: presenter-final-phase
+  // toggle, notes-default-mode picker, and (already covered above)
+  // deck-card-hover. Tests below pin the gate on the two not yet
+  // covered.
+  describe("audience-side row visibility (security gate)", () => {
+    it("does NOT render the presenter-final-phase row in the public viewer", () => {
+      render(
+        <SettingsProvider>
+          <SettingsModal open={true} onClose={() => {}} />
+        </SettingsProvider>,
+      );
+      expect(
+        screen.queryByTestId("settings-modal-toggle-presenter-final-phase"),
+      ).toBeNull();
+    });
+
+    it("does NOT render the notes-default-mode row in the public viewer", () => {
+      render(
+        <SettingsProvider>
+          <SettingsModal open={true} onClose={() => {}} />
+        </SettingsProvider>,
+      );
+      expect(
+        screen.queryByTestId("settings-modal-notes-default-mode-rich"),
+      ).toBeNull();
+      expect(
+        screen.queryByTestId("settings-modal-notes-default-mode-markdown"),
+      ).toBeNull();
+    });
+
+    it("renders the presenter-final-phase + notes-default-mode rows when presenter mode is enabled", () => {
+      render(
+        <PresenterModeProvider enabled={true}>
+          <SettingsProvider>
+            <SettingsModal open={true} onClose={() => {}} />
+          </SettingsProvider>
+        </PresenterModeProvider>,
+      );
+      expect(
+        screen.getByTestId("settings-modal-toggle-presenter-final-phase"),
+      ).toBeTruthy();
+      expect(
+        screen.getByTestId("settings-modal-notes-default-mode-rich"),
+      ).toBeTruthy();
+    });
+
+    it("keeps the show-slide-indicators row visible in the public viewer (audience-side preference)", () => {
+      // Pure viewer-side display preference — NOT gated. Audience
+      // visitors need to be able to control the progress-bar fade.
+      render(
+        <SettingsProvider>
+          <SettingsModal open={true} onClose={() => {}} />
+        </SettingsProvider>,
+      );
+      expect(
+        screen.getByTestId("settings-modal-toggle-show-indicators"),
+      ).toBeTruthy();
     });
   });
 

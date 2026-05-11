@@ -14,7 +14,28 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { Deck } from "@/framework/viewer/types";
+
+// The presenter window now probes `useAccessAuth()` on mount as a
+// defense-in-depth check (the `?presenter=1` URL bypasses the deck
+// route's `<PresenterModeProvider enabled={authStatus === ...}>`
+// gate). Unstubbed `fetch` in happy-dom would either throw or hang;
+// either way the existing tests — which expect to render the full
+// presenter UI — would fail with a "sign-in required" landing. Mock
+// the hook to return "authenticated" by default so the existing
+// behavior tests pass; specific tests in the auth-gate describe block
+// override per-test to exercise "checking" and "unauthenticated".
+const useAccessAuthMock = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/use-access-auth", () => ({
+  useAccessAuth: useAccessAuthMock,
+}));
+
 import { PresenterWindow } from "./PresenterWindow";
+
+// Root-level beforeEach — runs before every test in the file regardless
+// of nesting. Each describe's own beforeEach still runs after this one.
+beforeEach(() => {
+  useAccessAuthMock.mockReturnValue("authenticated");
+});
 
 const deck: Deck = {
   meta: {
@@ -766,5 +787,71 @@ describe("<PresenterWindow> — URL sync (#122)", () => {
         pushSpy.mockRestore();
       }
     });
+  });
+});
+
+// Defense-in-depth auth gate. The deck route's PresenterModeProvider is
+// now driven by Cloudflare Access status — but `?presenter=1` bypasses
+// that wrapper (the route renders `<PresenterWindow>` directly, no
+// PresenterModeProvider). Without this gate, anyone with the URL could
+// read the deck's speaker notes and use the pacing tools. The gate
+// shows a "Sign in required" landing for unauthenticated callers, a
+// brief "Checking session…" splash while the probe is in flight, and
+// only mounts the deck-rendering inner component when authenticated.
+describe("<PresenterWindow> — auth gate", () => {
+  afterEach(() => cleanup());
+
+  it("renders the sign-in landing when the Access session is unauthenticated", () => {
+    useAccessAuthMock.mockReturnValue("unauthenticated");
+    render(<PresenterWindow deck={deck} />);
+    expect(screen.getByTestId("presenter-auth-required")).toBeTruthy();
+    expect(screen.getByText(/sign.?in required/i)).toBeTruthy();
+    // The Reload action triggers a fresh request → bounces through
+    // Access's SSO redirect for a stale CF_Authorization cookie.
+    const reload = screen.getByTestId("presenter-auth-reload");
+    expect(reload).toBeTruthy();
+    expect(reload.tagName).toBe("BUTTON");
+    // The "View deck" link drops to the audience-side viewer at the
+    // same slug with no `?presenter=1`.
+    const view = screen.getByTestId("presenter-auth-view-deck") as HTMLAnchorElement;
+    expect(view).toBeTruthy();
+    expect(view.getAttribute("href")).toBe(
+      `/decks/${encodeURIComponent(deck.meta.slug)}`,
+    );
+  });
+
+  it("renders the brief 'Checking session…' splash while the probe is in flight", () => {
+    useAccessAuthMock.mockReturnValue("checking");
+    render(<PresenterWindow deck={deck} />);
+    expect(screen.getByTestId("presenter-auth-checking")).toBeTruthy();
+    // Neither the deck content NOR the sign-in landing renders during
+    // checking — avoids a flash of UI we'd then have to swap.
+    expect(screen.queryByTestId("presenter-auth-required")).toBeNull();
+  });
+
+  it("renders the normal presenter UI when authenticated (default)", () => {
+    // Sanity check that the existing rendering path still works after
+    // wrapping the inner component in the auth gate.
+    useAccessAuthMock.mockReturnValue("authenticated");
+    render(<PresenterWindow deck={deck} />);
+    // The auth-required landing is gone; the deck-cursor-driven UI is up.
+    expect(screen.queryByTestId("presenter-auth-required")).toBeNull();
+    expect(screen.queryByTestId("presenter-auth-checking")).toBeNull();
+  });
+
+  it("does NOT render the speaker-notes panel for unauthenticated visitors", () => {
+    // Pinned separately because the speaker notes are the most
+    // sensitive surface inside the presenter window — they often
+    // contain author-private cues. Make sure the gate blocks the
+    // panel itself, not just the chrome around it.
+    useAccessAuthMock.mockReturnValue("unauthenticated");
+    render(<PresenterWindow deck={deck} />);
+    // SpeakerNotes renders with a data-testid="speaker-notes" inside
+    // the authenticated branch. The unauth landing replaces the whole
+    // tree, so neither this nor any other presenter-internal testid
+    // should be findable.
+    expect(screen.queryByTestId("speaker-notes")).toBeNull();
+    expect(screen.queryByTestId("presenter-pacing")).toBeNull();
+    expect(screen.queryByTestId("presenter-filmstrip")).toBeNull();
   });
 });
