@@ -45,6 +45,7 @@
 
 import { tool } from "ai";
 import { getCurrentAgent } from "agents";
+import { getSandbox, type Sandbox } from "@cloudflare/sandbox";
 import { z } from "zod";
 import {
   validateDataDeck,
@@ -55,16 +56,33 @@ import { getStoredGitHubToken } from "./github-oauth";
 import {
   dataDeckPath,
   listContents,
+  openPullRequest,
   putFileContents,
   readFileContents,
   TARGET_REPO,
   type GitHubError,
 } from "./github-client";
+import {
+  applyFilesIntoSandbox,
+  cloneRepoIntoSandbox,
+  commitAndPushInSandbox,
+  runSandboxTestGate,
+  type FileEdit,
+  type PhaseResult,
+  type TestGatePhase,
+} from "./sandbox-source-edit";
 
 /** Subset of the Worker env the tools need. */
 export interface AgentToolsEnv {
   DECKS: KVNamespace;
   GITHUB_TOKENS: KVNamespace;
+  /**
+   * `Sandbox` Durable Object namespace (issue #131 phase 3c) — backs
+   * `proposeSourceEdit`. Typed as `DurableObjectNamespace<Sandbox>`
+   * so `getSandbox(env.Sandbox, ...)` surfaces the full RPC method
+   * union at call sites.
+   */
+  Sandbox: DurableObjectNamespace<Sandbox>;
 }
 
 const KV_DECK = (slug: string) => `deck:${slug}`;
@@ -178,6 +196,52 @@ export type ReadSourceResult =
       sha: string;
     }
   | { ok: false; error: string };
+
+/**
+ * Result of `proposeSourceEdit` — the source-deck PR-based write flow
+ * (issue #131 phase 3c). The model sees this and decides whether to
+ * iterate (on failure) or stop talking and let the human review the
+ * PR (on success). Discriminated by `ok` then by `phase` so the chat
+ * UI can render a tailored summary for each stage's failure mode.
+ */
+export type ProposeSourceEditResult =
+  | {
+      ok: true;
+      prNumber: number;
+      prHtmlUrl: string;
+      branch: string;
+      commitSha: string;
+      /**
+       * Each phase of the test gate's per-phase result. Useful for
+       * the UI to summarise "all four gates passed" without making
+       * the model re-quote them in chat.
+       */
+      testGatePhases: PhaseResult[];
+    }
+  | {
+      ok: false;
+      /**
+       * Which step of the pipeline failed — surfaced separately so
+       * the model can suggest the right remediation (re-prompt the
+       * user vs. re-attempt vs. give up).
+       */
+      phase:
+        | "auth"
+        | "github_token"
+        | "clone"
+        | "apply"
+        | "test_gate"
+        | "commit_push"
+        | "open_pr";
+      error: string;
+      /** Set when phase === 'test_gate'. */
+      failedTestGatePhase?: TestGatePhase;
+      testGatePhases?: PhaseResult[];
+      /** Set when phase === 'apply'. */
+      failedPath?: string;
+      /** Set when phase === 'commit_push' and the diff was empty. */
+      noEffectiveChanges?: boolean;
+    };
 
 /**
  * Build the tool record the agent passes to `streamText({ tools })`.
@@ -352,6 +416,82 @@ export function buildTools(env: AgentToolsEnv, slug: string) {
       }),
       execute: async ({ path, ref }): Promise<ReadSourceResult> => {
         return runReadSource(env, path, ref);
+      },
+    }),
+
+    proposeSourceEdit: tool({
+      description:
+        "Propose source-file edits to the Slide of Hand repo " +
+        `(${TARGET_REPO.owner}/${TARGET_REPO.repo}) ` +
+        "as a Sandbox-validated draft PULL REQUEST. " +
+        "This is how to make REAL CHANGES to build-time JSX decks, " +
+        "framework code, or any other non-data file. The workflow: " +
+        "(1) we spawn an isolated Cloudflare Sandbox, " +
+        "(2) clone the repo with the user's GitHub OAuth, " +
+        "(3) apply your proposed file edits, " +
+        "(4) run the full test gate (`npm ci` → typecheck → " +
+        "vitest → build), " +
+        "(5) commit + push a fresh `agent/<slug>-<timestamp>` branch, " +
+        "(6) open a DRAFT pull request the user reviews on GitHub. " +
+        "Use this tool ONLY after exploring the relevant source via " +
+        "`listSourceTree` / `readSource`, so your file contents are " +
+        "complete (each `files[].content` REPLACES the file wholesale). " +
+        "The PR is opened as a draft — the user reviews + merges on " +
+        "GitHub, NOT via chat confirmation. Return the PR URL to the " +
+        "user when this succeeds; do NOT pretend a change has shipped " +
+        "until the user has merged the PR themselves.",
+      inputSchema: z.object({
+        files: z
+          .array(
+            z.object({
+              path: z
+                .string()
+                .describe(
+                  "Path relative to repo root, e.g. " +
+                    "`src/decks/public/hello/01-title.tsx`. " +
+                    "Forward-slash separated. No leading `/`. No `..`.",
+                ),
+              content: z
+                .string()
+                .describe(
+                  "The COMPLETE new file content. This REPLACES the " +
+                    "file wholesale — use `readSource` first to fetch " +
+                    "the current content + make your edits, otherwise " +
+                    "you'll lose existing code.",
+                ),
+            }),
+          )
+          .min(1)
+          .describe(
+            "One or more file edits. Each entry replaces the named " +
+              "file's content wholesale.",
+          ),
+        summary: z
+          .string()
+          .min(3)
+          .max(72)
+          .describe(
+            "One-line summary used as the PR title + commit subject. " +
+              "Keep it human-readable, e.g. 'tighten title slide copy'.",
+          ),
+        prDescription: z
+          .string()
+          .optional()
+          .describe(
+            "Optional Markdown PR body — typically a short rationale + " +
+              "test plan. The bot adds the test-gate result automatically.",
+          ),
+      }),
+      execute: async ({
+        files,
+        summary,
+        prDescription,
+      }): Promise<ProposeSourceEditResult> => {
+        return runProposeSourceEdit(env, slug, {
+          files,
+          summary,
+          prDescription,
+        });
       },
     }),
   };
@@ -592,4 +732,207 @@ async function resolveToken(
 
 function ghErrorMessage(err: GitHubError): string {
   return err.message;
+}
+
+// ─── proposeSourceEdit runner (issue #131 phase 3c) ─────────────────
+
+export interface ProposeSourceEditInput {
+  files: FileEdit[];
+  summary: string;
+  prDescription?: string;
+}
+
+/**
+ * Optional dependency-injection hook for tests. The runner uses
+ * `getSandbox` from `@cloudflare/sandbox` by default. Tests pass an
+ * override so the SDK doesn't have to be reachable from happy-dom.
+ */
+export type GetSandboxFn = (
+  namespace: DurableObjectNamespace<Sandbox>,
+  id: string,
+) => Sandbox;
+
+/**
+ * Sandbox-validated source-edit flow (issue #131 phase 3c). Composes
+ * the five helpers from `worker/sandbox-source-edit.ts` +
+ * `openPullRequest` from `worker/github-client.ts`:
+ *
+ *   auth → token lookup → clone → applyFiles → testGate → commit/push → openPR
+ *
+ * Each step has its own discriminant on the `ok: false` branch so the
+ * model + UI can render the right next action. Importantly, the
+ * runner does NOT swallow underlying errors — it propagates them
+ * verbatim (or as close as possible) so the model can iterate when
+ * the failure is recoverable (e.g. typecheck red) and stop cleanly
+ * when it isn't (e.g. user hasn't connected GitHub).
+ *
+ * **Idempotency.** The sandbox ID is keyed by `<deck-slug>` so
+ * sequential proposeSourceEdit invocations on the same deck reuse
+ * the warmed container (~saves the boot cost of subsequent attempts
+ * in the same chat). The first step inside the container is a fresh
+ * clone, so the working tree is always clean — no leakage between
+ * invocations.
+ */
+export async function runProposeSourceEdit(
+  env: AgentToolsEnv,
+  slug: string,
+  input: ProposeSourceEditInput,
+  /**
+   * Test hook — defaults to the real `getSandbox`. Real callers
+   * don't pass this.
+   */
+  getSandboxFn: GetSandboxFn = getSandbox,
+  /**
+   * Same hook for the current user's email. Mirrors `runCommitPatch`'s
+   * `emailOverride` pattern so tests can pin the identity without
+   * stubbing `getCurrentAgent` globally.
+   */
+  emailOverride?: string | null,
+): Promise<ProposeSourceEditResult> {
+  // 1. Auth: resolve the current user's email.
+  const email =
+    emailOverride !== undefined ? emailOverride : currentUserEmail();
+  if (!email) {
+    return {
+      ok: false,
+      phase: "auth",
+      error:
+        "Source-edit flow requires an authenticated user. Service-token " +
+        "contexts have no user identity to commit on behalf of.",
+    };
+  }
+
+  // 2. Token lookup: the per-user GitHub OAuth token. Same KV path
+  // as `commitPatch`'s GitHub-backup leg.
+  const stored = await getStoredGitHubToken(env, email);
+  if (!stored) {
+    return {
+      ok: false,
+      phase: "github_token",
+      error:
+        "GitHub not connected. Ask the user to open Settings → GitHub → " +
+        "Connect, then retry. This flow needs the user's GitHub " +
+        "credentials to clone the repo and open the PR.",
+    };
+  }
+
+  // Spawn / warm the sandbox.
+  const sandbox = getSandboxFn(env.Sandbox, `source-edit:${slug}`);
+
+  // 3. Clone the repo into the sandbox.
+  const clone = await cloneRepoIntoSandbox(sandbox, {
+    token: stored.token,
+    repo: TARGET_REPO,
+  });
+  if (!clone.ok) {
+    return { ok: false, phase: "clone", error: clone.error };
+  }
+
+  // 4. Apply the proposed file edits.
+  const apply = await applyFilesIntoSandbox(
+    sandbox,
+    input.files,
+    clone.workdir,
+  );
+  if (!apply.ok) {
+    return {
+      ok: false,
+      phase: "apply",
+      error: apply.error,
+      failedPath: apply.failedPath,
+    };
+  }
+
+  // 5. Run the test gate. This is the slow step — typically 30-60 s
+  // for the project's full vitest suite + tsc + vite build.
+  const gate = await runSandboxTestGate(sandbox, clone.workdir);
+  if (!gate.ok) {
+    return {
+      ok: false,
+      phase: "test_gate",
+      failedTestGatePhase: gate.failedPhase,
+      testGatePhases: gate.phases,
+      error: `Test gate failed at the \`${gate.failedPhase}\` phase.`,
+    };
+  }
+
+  // 6. Commit + push a fresh branch.
+  const branchName = `agent/${slug}-${Date.now()}`;
+  const authorName = stored.username ?? "slide-of-hand-agent";
+  const authorEmail = stored.username
+    ? `${stored.userId}+${stored.username}@users.noreply.github.com`
+    : "agent@slide-of-hand.local";
+  const commitResult = await commitAndPushInSandbox(
+    sandbox,
+    {
+      branchName,
+      authorName,
+      authorEmail,
+      commitMessage: input.summary,
+    },
+    clone.workdir,
+  );
+  if (!commitResult.ok) {
+    return {
+      ok: false,
+      phase: "commit_push",
+      error: commitResult.error,
+      noEffectiveChanges: commitResult.noEffectiveChanges,
+    };
+  }
+
+  // 7. Open the draft PR.
+  const prBody = buildPullRequestBody(input, gate.phases);
+  const pr = await openPullRequest({
+    token: stored.token,
+    head: commitResult.branch,
+    title: input.summary,
+    body: prBody,
+    draft: true,
+  });
+  if (!pr.ok) {
+    return {
+      ok: false,
+      phase: "open_pr",
+      error: ghErrorMessage(pr),
+    };
+  }
+
+  return {
+    ok: true,
+    prNumber: pr.result.number,
+    prHtmlUrl: pr.result.htmlUrl,
+    branch: commitResult.branch,
+    commitSha: commitResult.sha,
+    testGatePhases: gate.phases,
+  };
+}
+
+/**
+ * Compose the PR body. Prefers the model's `prDescription` (if it
+ * provided one); always appends an auto-generated test-gate summary
+ * so the human reviewer sees the install/typecheck/test/build status
+ * straight from the PR.
+ */
+function buildPullRequestBody(
+  input: ProposeSourceEditInput,
+  phases: PhaseResult[],
+): string {
+  const lines: string[] = [];
+  if (input.prDescription && input.prDescription.trim().length > 0) {
+    lines.push(input.prDescription.trim(), "", "---", "");
+  }
+  lines.push(
+    "Opened by the in-Studio AI agent (`proposeSourceEdit`).",
+    "",
+    "## Test gate",
+    "",
+    "| Phase | Command | Exit | Status |",
+    "| --- | --- | --- | --- |",
+    ...phases.map(
+      (p) =>
+        `| \`${p.phase}\` | \`${p.command}\` | ${p.exitCode} | ${p.ok ? "✅" : "❌"} |`,
+    ),
+  );
+  return lines.join("\n");
 }
