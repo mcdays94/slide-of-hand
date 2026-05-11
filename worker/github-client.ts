@@ -367,6 +367,187 @@ export async function putFileContents(
   };
 }
 
+// ─── Pull Request creation (issue #131 phase 3c) ───────────────────
+
+export interface OpenPullRequestOptions {
+  /**
+   * Per-user OAuth token. Must have `public_repo` scope (for public
+   * repos) or `repo` scope (for private), which `worker/github-oauth.ts`
+   * requests during the OAuth Web Flow.
+   */
+  token: string;
+  /** Repo to open the PR in. Defaults to `TARGET_REPO` if omitted. */
+  repo?: { owner: string; repo: string };
+  /**
+   * Branch the PR is sourced from — what `git push -u origin <branch>`
+   * landed inside the Sandbox.
+   */
+  head: string;
+  /** Branch the PR targets. Defaults to `DEFAULT_BRANCH` ("main"). */
+  base?: string;
+  /** Short, one-line PR title. */
+  title: string;
+  /** Markdown PR body. Empty string is fine. */
+  body: string;
+  /**
+   * Whether to open as draft. Defaults to `true` for the agent flow —
+   * the human reviews + flips to "Ready for review" before merging.
+   * GitHub rejects `draft: true` on personal-account repos that don't
+   * support draft PRs; this fall-back is at the caller's option.
+   */
+  draft?: boolean;
+}
+
+export interface OpenPullRequestResult {
+  /** The PR's number (e.g. 154). */
+  number: number;
+  /** Web URL for the PR — surfaced to the user in the chat panel. */
+  htmlUrl: string;
+  /** GraphQL node ID — kept around in case a later flow needs it. */
+  nodeId: string;
+  /** The branch the PR is sourced from. Echo of input.head. */
+  head: string;
+  /** The branch the PR targets. */
+  base: string;
+}
+
+/**
+ * Open a pull request via GitHub's REST API. Used by the agent's
+ * `proposeSourceEdit` tool after a successful Sandbox test gate +
+ * branch push (issue #131 phase 3c).
+ *
+ * Errors are translated into the shared `GitHubError` shape — same
+ * pattern as `listContents` / `readFileContents` / `putFileContents`
+ * above.
+ *
+ * Endpoint: POST /repos/{owner}/{repo}/pulls
+ * Docs: https://docs.github.com/en/rest/pulls/pulls#create-a-pull-request
+ */
+export async function openPullRequest(
+  options: OpenPullRequestOptions,
+): Promise<{ ok: true; result: OpenPullRequestResult } | GitHubError> {
+  const token = options.token.trim();
+  if (!token) {
+    return {
+      ok: false,
+      kind: "auth",
+      message:
+        "Missing GitHub OAuth token. Connect GitHub in Settings → GitHub.",
+      status: 401,
+    };
+  }
+  const head = options.head.trim();
+  if (!head) {
+    return {
+      ok: false,
+      kind: "other",
+      message: "Missing head branch.",
+    };
+  }
+  const title = options.title.trim();
+  if (!title) {
+    return { ok: false, kind: "other", message: "Missing PR title." };
+  }
+  const targetRepo = options.repo ?? TARGET_REPO;
+  const base = (options.base ?? DEFAULT_BRANCH).trim() || DEFAULT_BRANCH;
+  // Default to draft PR — the agent shouldn't be auto-marking
+  // changes as ready-for-review; the user reviews in GitHub's UI and
+  // flips that bit themselves.
+  const draft = options.draft ?? true;
+
+  const url = `${GITHUB_API}/repos/${targetRepo.owner}/${targetRepo.repo}/pulls`;
+  let resp: Response;
+  try {
+    resp = await fetch(url, {
+      method: "POST",
+      headers: {
+        ...ghHeaders(token),
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        title,
+        head,
+        base,
+        body: options.body ?? "",
+        draft,
+      }),
+    });
+  } catch (err) {
+    return {
+      ok: false,
+      kind: "other",
+      message: `network error: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+
+  if (resp.status === 401 || resp.status === 403) {
+    return {
+      ok: false,
+      kind: "auth",
+      message: `GitHub API returned ${resp.status} when opening the PR. The OAuth token may be missing the right scope, expired, or revoked. Suggest reconnecting from Settings.`,
+      status: resp.status,
+    };
+  }
+  if (resp.status === 422) {
+    // Validation failure — typically because:
+    //   - the head branch doesn't exist (push failed silently)
+    //   - a PR already exists for this head→base pair
+    //   - draft PRs aren't supported on the account tier
+    const text = await safeText(resp);
+    return {
+      ok: false,
+      kind: "other",
+      message: `GitHub rejected the PR (422): ${text.slice(0, 300)}`,
+      status: resp.status,
+    };
+  }
+  if (resp.status === 429) {
+    return {
+      ok: false,
+      kind: "rate_limited",
+      message: "GitHub API rate-limited the PR open call. Retry shortly.",
+    };
+  }
+  if (!resp.ok) {
+    const text = await safeText(resp);
+    return {
+      ok: false,
+      kind: "other",
+      message: `GitHub API returned ${resp.status}: ${text.slice(0, 200)}`,
+      status: resp.status,
+    };
+  }
+
+  const body = (await resp.json()) as {
+    number?: number;
+    html_url?: string;
+    node_id?: string;
+    head?: { ref?: string };
+    base?: { ref?: string };
+  };
+  if (
+    typeof body.number !== "number" ||
+    typeof body.html_url !== "string" ||
+    typeof body.node_id !== "string"
+  ) {
+    return {
+      ok: false,
+      kind: "other",
+      message: "GitHub returned 2xx but the PR response shape was unexpected.",
+    };
+  }
+  return {
+    ok: true,
+    result: {
+      number: body.number,
+      htmlUrl: body.html_url,
+      nodeId: body.node_id,
+      head: body.head?.ref ?? head,
+      base: body.base?.ref ?? base,
+    },
+  };
+}
+
 // ── helpers ───────────────────────────────────────────────────────────
 
 function stripLeadingSlash(p: string): string {

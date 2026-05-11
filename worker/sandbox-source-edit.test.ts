@@ -23,6 +23,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   applyFilesIntoSandbox,
   cloneRepoIntoSandbox,
+  commitAndPushInSandbox,
   runSandboxTestGate,
   DEFAULT_REF,
   DEFAULT_WORKDIR,
@@ -458,16 +459,17 @@ describe("runSandboxTestGate — happy path", () => {
     expect(exec).toHaveBeenCalledTimes(4);
   });
 
-  it("runs each phase inside the workdir via 'cd <workdir> && <command>'", async () => {
+  it("runs each phase inside the workdir via ExecOptions.cwd (no shell-join)", async () => {
     const { sandbox, exec } = makeSandboxMock();
     exec.mockResolvedValue(execResult(0));
     await runSandboxTestGate(sandbox, "/work");
-    // Sandbox's `exec` doesn't take a cwd, so we cd + && the command.
-    // The cd is per-call so a failed phase's stale cd doesn't leak
-    // to the next one.
+    // The Sandbox SDK's ExecOptions accepts `cwd` directly so we
+    // don't wrap with `cd ... && ...`. Cleaner reporting + avoids
+    // subtle quoting issues when commands contain shell metacharacters.
     for (const call of exec.mock.calls) {
-      const [cmd] = call;
-      expect(cmd).toMatch(/^cd \/work && /);
+      const [cmd, options] = call;
+      expect(cmd).not.toMatch(/^cd /);
+      expect(options).toEqual({ cwd: "/work" });
     }
   });
 
@@ -475,16 +477,14 @@ describe("runSandboxTestGate — happy path", () => {
     const { sandbox, exec } = makeSandboxMock();
     exec.mockResolvedValue(execResult(0));
     await runSandboxTestGate(sandbox, "/work/");
-    expect(exec.mock.calls[0][0]).toMatch(/^cd \/work && /);
+    expect(exec.mock.calls[0][1]).toEqual({ cwd: "/work" });
   });
 
   it("uses the default workdir when none is supplied", async () => {
     const { sandbox, exec } = makeSandboxMock();
     exec.mockResolvedValue(execResult(0));
     await runSandboxTestGate(sandbox);
-    expect(exec.mock.calls[0][0]).toMatch(
-      new RegExp(`^cd ${DEFAULT_WORKDIR} && `),
-    );
+    expect(exec.mock.calls[0][1]).toEqual({ cwd: DEFAULT_WORKDIR });
   });
 });
 
@@ -593,5 +593,193 @@ describe("runSandboxTestGate — error surface", () => {
     if (!result.ok) {
       expect(result.failedPhase).toBe("install");
     }
+  });
+});
+
+// ─── commitAndPushInSandbox ─────────────────────────────────────────
+
+const goodCommit = {
+  branchName: "agent/hello-1715425200000",
+  authorName: "alice",
+  authorEmail: "1234567+alice@users.noreply.github.com",
+  commitMessage: "Agent: tighten the title slide copy",
+};
+
+/** 40-char hex SHA. */
+const FAKE_SHA = "abcdef0123456789abcdef0123456789abcdef01";
+
+describe("commitAndPushInSandbox — happy path", () => {
+  it("writes the commit script, execs it, and returns the parsed SHA + branch", async () => {
+    const { sandbox, writeFile, exec } = makeSandboxMock();
+    writeFile.mockResolvedValue({ success: true });
+    exec.mockResolvedValue(execResult(0, { stdout: `${FAKE_SHA}\n` }));
+
+    const result = await commitAndPushInSandbox(sandbox, goodCommit);
+    expect(result).toEqual({
+      ok: true,
+      sha: FAKE_SHA,
+      branch: goodCommit.branchName,
+    });
+    // Single-shot script: write the .sh, then exec bash on it.
+    expect(writeFile).toHaveBeenCalledTimes(1);
+    const [scriptPath, scriptContent] = writeFile.mock.calls[0];
+    expect(scriptPath).toBe("/tmp/agent-commit.sh");
+    expect(scriptContent).toMatch(/git checkout -b "\$BRANCH_NAME"/);
+    expect(scriptContent).toMatch(/git push -u origin "\$BRANCH_NAME"/);
+    expect(scriptContent).toMatch(/git rev-parse HEAD/);
+  });
+
+  it("passes branch + commit message + git identity via env vars (no shell escaping)", async () => {
+    // Shell-escape gymnastics are how injection bugs creep in. The
+    // env-var path is bulletproof — any string is safe as a value.
+    const { sandbox, writeFile, exec } = makeSandboxMock();
+    writeFile.mockResolvedValue({ success: true });
+    exec.mockResolvedValue(execResult(0, { stdout: `${FAKE_SHA}\n` }));
+
+    await commitAndPushInSandbox(sandbox, {
+      branchName: "agent/hello-1",
+      authorName: "alice",
+      authorEmail: "alice@x.com",
+      // Embedded quotes + newline — wouldn't survive a `git commit -m "..."`
+      // shell-interpolation. The env-var path passes the literal bytes.
+      commitMessage: `Title: "fix"\nBody: ok`,
+    });
+    const [, options] = exec.mock.calls[0];
+    expect(options).toMatchObject({
+      cwd: DEFAULT_WORKDIR,
+      env: {
+        BRANCH_NAME: "agent/hello-1",
+        COMMIT_MSG: `Title: "fix"\nBody: ok`,
+        GIT_AUTHOR_NAME: "alice",
+        GIT_AUTHOR_EMAIL: "alice@x.com",
+        GIT_COMMITTER_NAME: "alice",
+        GIT_COMMITTER_EMAIL: "alice@x.com",
+      },
+    });
+  });
+
+  it("uses the supplied workdir when given (normalizing trailing slash)", async () => {
+    const { sandbox, writeFile, exec } = makeSandboxMock();
+    writeFile.mockResolvedValue({ success: true });
+    exec.mockResolvedValue(execResult(0, { stdout: `${FAKE_SHA}\n` }));
+    await commitAndPushInSandbox(sandbox, goodCommit, "/custom/work/");
+    expect(exec.mock.calls[0][1]).toMatchObject({ cwd: "/custom/work" });
+  });
+
+  it("trims chatter from earlier git commands and parses the SHA off the last line", async () => {
+    // Defensive parsing: if a future git release prints anything
+    // extra to stdout from checkout/commit/push, the SHA is still on
+    // the final line because `rev-parse HEAD` is the last command.
+    const { sandbox, writeFile, exec } = makeSandboxMock();
+    writeFile.mockResolvedValue({ success: true });
+    exec.mockResolvedValue(
+      execResult(0, {
+        stdout: [
+          "Switched to a new branch 'agent/x'",
+          "[agent/x 1234567] Agent edit",
+          "Branch 'agent/x' set up to track 'origin/agent/x'",
+          FAKE_SHA,
+          "",
+        ].join("\n"),
+      }),
+    );
+    const result = await commitAndPushInSandbox(sandbox, goodCommit);
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.sha).toBe(FAKE_SHA);
+  });
+});
+
+describe("commitAndPushInSandbox — input validation", () => {
+  it.each([
+    ["branch name", { ...goodCommit, branchName: "" }, /branch/i],
+    ["branch name (whitespace)", { ...goodCommit, branchName: "   " }, /branch/i],
+    ["commit message", { ...goodCommit, commitMessage: "" }, /message/i],
+    ["author name", { ...goodCommit, authorName: "" }, /author name/i],
+    ["author email", { ...goodCommit, authorEmail: "" }, /author email/i],
+  ])(
+    "rejects missing %s before spending any sandbox calls",
+    async (_label, options, errPattern) => {
+      const { sandbox, writeFile, exec } = makeSandboxMock();
+      const result = await commitAndPushInSandbox(sandbox, options);
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error).toMatch(errPattern);
+      expect(writeFile).not.toHaveBeenCalled();
+      expect(exec).not.toHaveBeenCalled();
+    },
+  );
+});
+
+describe("commitAndPushInSandbox — error paths", () => {
+  it("reports `noEffectiveChanges: true` when git diff --cached is empty (exit 2)", async () => {
+    // The degenerate case where the model proposed edits that, after
+    // applyFiles, match HEAD byte-for-byte. The bash script signals
+    // this with exit 2 + a specific stderr marker.
+    const { sandbox, writeFile, exec } = makeSandboxMock();
+    writeFile.mockResolvedValue({ success: true });
+    exec.mockResolvedValue({
+      stdout: "",
+      stderr: "NO_EFFECTIVE_CHANGES\n",
+      exitCode: 2,
+      success: false,
+    });
+    const result = await commitAndPushInSandbox(sandbox, goodCommit);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.noEffectiveChanges).toBe(true);
+      expect(result.error).toMatch(/no effective changes/i);
+    }
+  });
+
+  it("returns ok:false with stderr when the script exits non-zero", async () => {
+    const { sandbox, writeFile, exec } = makeSandboxMock();
+    writeFile.mockResolvedValue({ success: true });
+    exec.mockResolvedValue({
+      stdout: "",
+      stderr: "fatal: Authentication failed for 'https://github.com/...'\n",
+      exitCode: 128,
+      success: false,
+    });
+    const result = await commitAndPushInSandbox(sandbox, goodCommit);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toMatch(/exit 128/);
+      expect(result.stderr).toMatch(/Authentication failed/);
+      // Not the no-changes case.
+      expect(result.noEffectiveChanges).toBeUndefined();
+    }
+  });
+
+  it("returns ok:false when the script succeeded but stdout has no parseable SHA", async () => {
+    // Defensive: if the upstream git ever stops printing the SHA on
+    // the last line (unlikely, but Git CLI output IS technically
+    // "for human consumption"), we don't want to return a garbage SHA.
+    const { sandbox, writeFile, exec } = makeSandboxMock();
+    writeFile.mockResolvedValue({ success: true });
+    exec.mockResolvedValue(
+      execResult(0, { stdout: "some chatter without a sha\n" }),
+    );
+    const result = await commitAndPushInSandbox(sandbox, goodCommit);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toMatch(/SHA/);
+    }
+  });
+
+  it("returns ok:false when writeFile throws", async () => {
+    const { sandbox, writeFile, exec } = makeSandboxMock();
+    writeFile.mockRejectedValue(new Error("/tmp not writable"));
+    const result = await commitAndPushInSandbox(sandbox, goodCommit);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/not writable/);
+    expect(exec).not.toHaveBeenCalled();
+  });
+
+  it("returns ok:false when exec throws (e.g. container died mid-push)", async () => {
+    const { sandbox, writeFile, exec } = makeSandboxMock();
+    writeFile.mockResolvedValue({ success: true });
+    exec.mockRejectedValue(new Error("container EPIPE"));
+    const result = await commitAndPushInSandbox(sandbox, goodCommit);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/EPIPE/);
   });
 });
