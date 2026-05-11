@@ -150,6 +150,27 @@
     {
       "binding": "IMAGES_INDEX",
       "id": "8bd30c9791d84826a5d1b17201114602"
+    },
+    /**
+     * GitHub OAuth tokens (issue #131 phase 3 prep).
+     *
+     * Per-user GitHub OAuth tokens stored at key `github-token:<email>`,
+     * where the email is from the request's
+     * `cf-access-authenticated-user-email` header. The `commitPatch`
+     * tool (phase 3) reads this token to commit deck changes via the
+     * GitHub Contents API. Tokens come from the OAuth Web Flow at
+     * `/api/admin/auth/github/*` (see `worker/github-oauth.ts`).
+     *
+     * Short-lived OAuth state tokens live in the same namespace under
+     * `github-oauth-state:<state>` with a 10-minute TTL.
+     *
+     * No preview ID: the in-memory mock used by `wrangler dev` covers
+     * dev/test scenarios, and the OAuth flow needs the same KV the
+     * production Worker uses to round-trip cleanly.
+     */
+    {
+      "binding": "GITHUB_TOKENS",
+      "id": "9b73d3f19d8c41e6af524fac74a1a2f7"
     }
   ],
   /**

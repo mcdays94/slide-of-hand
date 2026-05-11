@@ -36,6 +36,7 @@ import { handleDecks, type DecksEnv } from "./decks";
 import { handleImages, type ImagesEnv } from "./images";
 import { handleAuthStatus, type AuthStatusEnv } from "./auth-status";
 import { handleAgent, type AgentEnv } from "./agent";
+import { handleGitHubOAuth, type GitHubOAuthEnv } from "./github-oauth";
 import { applyCacheControl } from "./cache-control";
 
 // Re-export the agent DO class so wrangler can find it from the same
@@ -51,7 +52,8 @@ export interface Env
     DecksEnv,
     ImagesEnv,
     AuthStatusEnv,
-    AgentEnv {
+    AgentEnv,
+    GitHubOAuthEnv {
   ASSETS: Fetcher;
 }
 
@@ -79,6 +81,11 @@ export default {
     // static files.
     const agentResponse = await handleAgent(request, env);
     if (agentResponse) return agentResponse;
+    // GitHub OAuth flow (issue #131 phase 3 prep). Per-user GitHub
+    // connection for the agent's `commitPatch` tool. See
+    // `worker/github-oauth.ts` for the trust model.
+    const githubOAuthResponse = await handleGitHubOAuth(request, env);
+    if (githubOAuthResponse) return githubOAuthResponse;
 
     // All non-API paths fall through to the Static Assets binding.
     // The binding's `not_found_handling: single-page-application`

@@ -28,6 +28,8 @@ import type {
   DeckCardHoverAnimationSettings,
   NotesDefaultMode,
 } from "@/lib/settings";
+import { usePresenterMode } from "@/framework/presenter/mode";
+import { GitHubConnectRow } from "@/components/GitHubConnectRow";
 import {
   DECK_CARD_HOVER_SLIDE_COUNT_MAX,
   DECK_CARD_HOVER_SLIDE_COUNT_MIN,
@@ -344,6 +346,12 @@ function SettingsModalContent({
   onBackdropClick,
   onClose,
 }: SettingsModalContentProps): ReactNode {
+  // Presenter mode is the gate for admin-only integrations. The
+  // SettingsModal is opened from both public deck routes and admin
+  // routes — the GitHub-connect row only makes sense in the admin
+  // context (the OAuth flow hits Access-gated endpoints; public
+  // visitors don't have an Access session).
+  const presenterMode = usePresenterMode();
   return (
     <motion.div
       key="settings-modal-backdrop"
@@ -439,6 +447,7 @@ function SettingsModalContent({
               testIdPrefix="settings-modal-deck-card-hover-slide-count"
             />
           )}
+          {presenterMode && <GitHubConnectRow />}
         </div>
       </motion.div>
     </motion.div>
