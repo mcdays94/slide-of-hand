@@ -59,7 +59,7 @@
  */
 
 import { AIChatAgent } from "@cloudflare/ai-chat";
-import { routeAgentRequest } from "agents";
+import { routeAgentRequest, type Connection } from "agents";
 import { createWorkersAI } from "workers-ai-provider";
 import { streamText, convertToModelMessages, stepCountIs } from "ai";
 import { requireAccessAuth, getAccessUserEmail } from "./access-auth";
@@ -183,6 +183,45 @@ WORKFLOW:
  * (lifecycle, persistence, transport) is base-class machinery.
  */
 export class DeckAuthorAgent extends AIChatAgent<AgentEnv> {
+  /**
+   * Capture the Access-issued user email at WebSocket upgrade time
+   * and stash it on per-connection state.
+   *
+   * Why this exists — issue #131 item B. The agents SDK runs each
+   * hook inside an `AsyncLocalStorage` context with a different
+   * subset of `{ agent, connection, request, email }` populated. The
+   * upgrade `onConnect` and HTTP `onRequest` hooks get `request`;
+   * the `onMessage` hook (which dispatches `onChatMessage` and our
+   * tool `execute` callbacks) does NOT. So `currentUserEmail()` —
+   * which previously only read from `getCurrentAgent().request` —
+   * always returned null during a chat turn, even for interactive
+   * Access users. Tools that look up the per-user GitHub token
+   * (`listSourceTree`, `readSource`, and `commitPatch`'s GitHub-
+   * backup leg) then returned the friendly-but-wrong "service-token
+   * context" error.
+   *
+   * The fix is to capture the email here (where `ctx.request` IS
+   * populated) and write it to the connection's state.
+   * `connection.setState` persists into the WebSocket attachment
+   * per partyserver's contract, so the value survives DO
+   * hibernation and is recoverable from `getCurrentAgent().connection
+   * ?.state?.email` on any later `onMessage` invocation.
+   *
+   * Service-token connections legitimately have no email. We
+   * deliberately skip `setState` in that case so downstream code
+   * can still distinguish "no user identity" from "user identity X"
+   * via the absence of the field.
+   */
+  async onConnect(
+    connection: Connection<{ email?: string }>,
+    ctx: { request: Request },
+  ) {
+    const email = getAccessUserEmail(ctx.request);
+    if (email) {
+      connection.setState({ email });
+    }
+  }
+
   async onChatMessage(
     onFinish: Parameters<AIChatAgent<AgentEnv>["onChatMessage"]>[0],
     options: Parameters<AIChatAgent<AgentEnv>["onChatMessage"]>[1],
