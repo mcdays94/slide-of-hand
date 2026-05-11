@@ -387,5 +387,59 @@ describe("<SettingsModal>", () => {
       ) as { aiAssistantModel: string };
       expect(persisted.aiAssistantModel).toBe("gpt-oss-120b");
     });
+
+    it("stacks the row vertically when there are 3+ options (label on top, buttons full-width below)", () => {
+      // The 3-option AI model picker is the use case that surfaced
+      // this layout bug on 2026-05-11. With horizontal layout, the
+      // long button labels (LLAMA 4 SCOUT, GPT-OSS 120B) squeezed
+      // the description column to ~8 chars per line. Stacking
+      // vertically gives both the description AND the buttons full
+      // width.
+      render(
+        <PresenterModeProvider enabled={true}>
+          <SettingsProvider>
+            <SettingsModal open={true} onClose={() => {}} />
+          </SettingsProvider>
+        </PresenterModeProvider>,
+      );
+      // The button group is the direct radio-group sibling of the
+      // label container. Find it via the button's parent.
+      const kimi = screen.getByTestId(
+        "settings-modal-ai-assistant-model-kimi-k2.6",
+      );
+      const radioGroup = kimi.closest('[role="group"]');
+      expect(radioGroup).not.toBeNull();
+      // In stacked mode, the radio-group is `self-stretch` (full
+      // width below the label) and the parent row is `flex-col`.
+      expect(radioGroup!.className).toMatch(/self-stretch/);
+      const row = radioGroup!.parentElement!;
+      expect(row.className).toMatch(/flex-col/);
+      // Each button is flex-1 to share the row equally.
+      expect(kimi.className).toMatch(/flex-1/);
+    });
+
+    it("keeps the 2-option `notesDefaultMode` row horizontal (no regression)", () => {
+      // The 2-option notes-mode picker should KEEP its horizontal
+      // layout — only 3+ option rows should stack.
+      render(
+        <PresenterModeProvider enabled={true}>
+          <SettingsProvider>
+            <SettingsModal open={true} onClose={() => {}} />
+          </SettingsProvider>
+        </PresenterModeProvider>,
+      );
+      const rich = screen.getByTestId(
+        "settings-modal-notes-default-mode-rich",
+      );
+      const radioGroup = rich.closest('[role="group"]');
+      expect(radioGroup).not.toBeNull();
+      // Horizontal layout: NOT self-stretch.
+      expect(radioGroup!.className).not.toMatch(/self-stretch/);
+      const row = radioGroup!.parentElement!;
+      expect(row.className).not.toMatch(/flex-col/);
+      // Buttons should NOT be flex-1 in horizontal mode (they sit
+      // at their content size).
+      expect(rich.className).not.toMatch(/flex-1/);
+    });
   });
 });

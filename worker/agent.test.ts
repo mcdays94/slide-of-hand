@@ -72,6 +72,7 @@ import {
   DeckAuthorAgent,
   resolveAiAssistantModel,
   AI_ASSISTANT_MODEL_IDS,
+  AI_GATEWAY_ID,
   buildSystemPrompt,
   type AgentEnv,
 } from "./agent";
@@ -509,5 +510,22 @@ describe("buildSystemPrompt", () => {
     ]) {
       expect(prompt).toContain(tool);
     }
+  });
+});
+
+// ─── AI Gateway integration ──────────────────────────────────────────
+//
+// All Workers AI calls go through Cloudflare AI Gateway for free
+// observability + caching + budget. The slug is exported so we can
+// pin it via a test — if it changes, the user's dashboard view of the
+// agent's traffic will move to a new bucket.
+
+describe("AI_GATEWAY_ID", () => {
+  it("pins the gateway slug for the agent's Workers AI calls", () => {
+    // Auto-provisioned on first request. If we ever rename, the
+    // dashboard's AI Gateway tab will show a NEW gateway with the
+    // new name — old logs/budgets won't follow. Keep an explicit
+    // test so the rename is visible in code review.
+    expect(AI_GATEWAY_ID).toBe("slide-of-hand-agent");
   });
 });

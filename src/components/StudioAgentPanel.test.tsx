@@ -165,6 +165,96 @@ describe("<StudioAgentPanel>", () => {
     expect(screen.queryByTestId("studio-agent-empty")).toBeNull();
   });
 
+  // Markdown rendering on assistant messages — fix from 2026-05-11.
+  // Before: assistant output like `**bold**` rendered as literal
+  // asterisks. Now: render markdown via react-markdown so the user
+  // sees formatted prose.
+  it("renders assistant text via react-markdown (bold + list + code)", () => {
+    setupHooks({
+      messages: [
+        {
+          id: "1",
+          role: "assistant",
+          parts: [
+            {
+              type: "text",
+              text: "This is **bold** and `code`.\n\n1. First\n2. Second",
+            },
+          ],
+        },
+      ],
+    });
+    render(<StudioAgentPanel deckSlug="hello" onClose={vi.fn()} />);
+    const md = screen.getByTestId("studio-agent-markdown");
+    // Bold → <strong>, NOT literal `**` in the text.
+    const strong = md.querySelector("strong");
+    expect(strong).not.toBeNull();
+    expect(strong!.textContent).toBe("bold");
+    expect(md.textContent).not.toMatch(/\*\*bold\*\*/);
+    // Inline code → <code>.
+    const code = md.querySelector("code");
+    expect(code).not.toBeNull();
+    expect(code!.textContent).toBe("code");
+    // Ordered list → <ol> with <li>s.
+    const ol = md.querySelector("ol");
+    expect(ol).not.toBeNull();
+    expect(ol!.querySelectorAll("li")).toHaveLength(2);
+  });
+
+  it("renders assistant markdown LINKS as target=_blank with rel=noopener", () => {
+    // Links in assistant output (e.g. PR URLs from proposeSourceEdit)
+    // should open in a new tab — clicking inside the chat panel
+    // shouldn't navigate the studio away from the deck.
+    setupHooks({
+      messages: [
+        {
+          id: "1",
+          role: "assistant",
+          parts: [
+            {
+              type: "text",
+              text: "Opened a PR: [#999](https://github.com/x/y/pull/999)",
+            },
+          ],
+        },
+      ],
+    });
+    render(<StudioAgentPanel deckSlug="hello" onClose={vi.fn()} />);
+    const link = screen
+      .getByTestId("studio-agent-markdown")
+      .querySelector("a");
+    expect(link).not.toBeNull();
+    expect(link!.getAttribute("href")).toBe(
+      "https://github.com/x/y/pull/999",
+    );
+    expect(link!.getAttribute("target")).toBe("_blank");
+    expect(link!.getAttribute("rel")).toMatch(/noopener/);
+  });
+
+  it("renders USER text as plain (not markdown — preserves their literal input)", () => {
+    // Users don't write markdown; if they happen to type `**` we
+    // want it to show as-is, not be silently rendered. Easier to
+    // explain to the user + protects against accidental
+    // formatting-via-typo.
+    setupHooks({
+      messages: [
+        {
+          id: "1",
+          role: "user",
+          parts: [{ type: "text", text: "what about **bold** here?" }],
+        },
+      ],
+    });
+    render(<StudioAgentPanel deckSlug="hello" onClose={vi.fn()} />);
+    const userBubble = screen.getByTestId("studio-agent-text");
+    // Literal asterisks survive (no react-markdown processing).
+    expect(userBubble.textContent).toMatch(/\*\*bold\*\*/);
+    // And no markdown container in a user bubble.
+    expect(
+      screen.queryByTestId("studio-agent-markdown"),
+    ).toBeNull();
+  });
+
   it("calls sendMessage with the trimmed input on submit + clears the input", () => {
     setupHooks();
     render(<StudioAgentPanel deckSlug="hello" onClose={vi.fn()} />);
