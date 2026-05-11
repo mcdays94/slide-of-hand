@@ -70,6 +70,10 @@ function makeEnv(): AgentEnv {
     // tests never invoke the tools (the SDK delegation point is
     // mocked), so a stub is enough.
     DECKS: {} as KVNamespace,
+    // Phase 3a/3b: agent tools also need GITHUB_TOKENS for the
+    // per-user OAuth token lookup. Same routing-test reasoning —
+    // unused at the SDK delegation point, but required by the type.
+    GITHUB_TOKENS: {} as KVNamespace,
   };
 }
 

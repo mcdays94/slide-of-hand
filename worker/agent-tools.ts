@@ -44,18 +44,51 @@
  */
 
 import { tool } from "ai";
+import { getCurrentAgent } from "agents";
 import { z } from "zod";
 import {
   validateDataDeck,
   type DataDeck,
 } from "../src/lib/deck-record";
+import { getAccessUserEmail } from "./access-auth";
+import { getStoredGitHubToken } from "./github-oauth";
+import {
+  dataDeckPath,
+  listContents,
+  putFileContents,
+  readFileContents,
+  TARGET_REPO,
+  type GitHubError,
+} from "./github-client";
 
 /** Subset of the Worker env the tools need. */
 export interface AgentToolsEnv {
   DECKS: KVNamespace;
+  GITHUB_TOKENS: KVNamespace;
 }
 
 const KV_DECK = (slug: string) => `deck:${slug}`;
+
+/**
+ * Pull the authenticated user's email from the current execution
+ * context. Tools that hit GitHub need this to look up the per-user
+ * OAuth token in `GITHUB_TOKENS` KV.
+ *
+ * Wrapped + exported so it can be stubbed in tests. The Agents SDK's
+ * `getCurrentAgent()` returns `{ agent, connection, request, email }`
+ * — we use `request` because Access populates the email header on
+ * every authenticated request (interactive flows AND service tokens
+ * carry the JWT header that satisfies our `requireAccessAuth`).
+ */
+export function currentUserEmail(): string | null {
+  try {
+    const ctx = getCurrentAgent();
+    if (!ctx.request) return null;
+    return getAccessUserEmail(ctx.request);
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Result shape of `readDeck`. Returned as plain JSON so it serialises
@@ -73,6 +106,43 @@ export type ReadDeckResult =
 export type ProposePatchResult =
   | { ok: true; dryRun: DataDeck }
   | { ok: false; errors: string[] }
+  | { ok: false; error: string };
+
+/**
+ * Result shape of `commitPatch`. KV write is the primary side-effect;
+ * the GitHub commit is best-effort backup/audit and surfaces its own
+ * outcome separately.
+ */
+export type CommitPatchResult =
+  | {
+      ok: true;
+      persistedToKv: true;
+      githubCommit:
+        | { ok: true; commitSha: string; commitHtmlUrl: string; path: string }
+        | { ok: false; reason: string };
+      deck: DataDeck;
+    }
+  | { ok: false; errors: string[] }
+  | { ok: false; error: string };
+
+export type ListSourceTreeResult =
+  | {
+      ok: true;
+      path: string;
+      ref: string;
+      items: Array<{ name: string; path: string; type: string; size: number }>;
+    }
+  | { ok: false; error: string };
+
+export type ReadSourceResult =
+  | {
+      ok: true;
+      path: string;
+      ref: string;
+      content: string;
+      size: number;
+      sha: string;
+    }
   | { ok: false; error: string };
 
 /**
@@ -143,8 +213,7 @@ export function buildTools(env: AgentToolsEnv, slug: string) {
         "Propose a change to the current deck. Returns a DRY-RUN of " +
         "the resulting deck — this does NOT persist anything to " +
         "storage. The user must separately confirm before changes " +
-        "ship (that confirmation flow is the next phase; for now, " +
-        "describe the proposed change and ask if it looks right). " +
+        "ship via `commitPatch`. " +
         "The `patch` is shallow-merged: `patch.meta` fields override " +
         "the corresponding fields on the current deck's meta, and " +
         "`patch.slides`, if provided, REPLACES the slides array " +
@@ -157,55 +226,336 @@ export function buildTools(env: AgentToolsEnv, slug: string) {
         }),
       }),
       execute: async ({ patch }): Promise<ProposePatchResult> => {
-        try {
-          const stored = await env.DECKS.get(KV_DECK(slug), "json");
-          if (!stored) {
-            return {
-              ok: false,
-              error:
-                "No KV-backed deck found for this slug. " +
-                "`proposePatch` can only be used on data decks.",
-            };
-          }
-          const currentValidation = validateDataDeck(stored);
-          if (!currentValidation.ok) {
-            return {
-              ok: false,
-              errors: [
-                "Stored deck failed validation before patching:",
-                ...currentValidation.errors,
-              ],
-            };
-          }
-          const current = currentValidation.value;
+        return runProposePatch(env, slug, patch);
+      },
+    }),
 
-          // Shallow-merge meta; replace slides wholesale if provided.
-          // Construct a plain `Record<string, unknown>` so the result
-          // can be re-validated as if it were freshly arrived JSON.
-          const mergedMeta = {
-            ...(current.meta as unknown as Record<string, unknown>),
-            ...(patch.meta ?? {}),
-          };
-          const merged: Record<string, unknown> = {
-            meta: mergedMeta,
-            slides: patch.slides ?? current.slides,
-          };
+    commitPatch: tool({
+      description:
+        "Persist a previously-proposed patch to storage. Re-validates " +
+        "the patch (defence in depth), writes the merged deck to KV " +
+        "(the live source of truth), and ALSO best-effort commits the " +
+        "deck JSON to `data-decks/<slug>.json` in the configured " +
+        "GitHub repo as a version-controlled backup. " +
+        "ONLY call this AFTER the user has explicitly confirmed they " +
+        "want the change applied — never call commitPatch off the back " +
+        "of `proposePatch` alone. If the user hasn't seen and approved " +
+        "the dry-run, stop and ask them. " +
+        "The GitHub commit requires the user to have connected their " +
+        "GitHub account (Settings → GitHub → Connect). If they haven't, " +
+        "the KV write still succeeds and the result tells the user how " +
+        "to connect for full audit trail.",
+      inputSchema: z.object({
+        patch: z.object({
+          meta: z.record(z.string(), z.unknown()).optional(),
+          slides: z.array(z.unknown()).optional(),
+        }),
+        commitMessage: z
+          .string()
+          .optional()
+          .describe(
+            "Short one-line message describing this change. Used as the " +
+              "GitHub commit subject. Default: 'Update deck via in-Studio AI agent'.",
+          ),
+      }),
+      execute: async ({ patch, commitMessage }): Promise<CommitPatchResult> => {
+        return runCommitPatch(env, slug, patch, commitMessage);
+      },
+    }),
 
-          const validation = validateDataDeck(merged);
-          if (!validation.ok) {
-            return { ok: false, errors: validation.errors };
-          }
-          return { ok: true, dryRun: validation.value };
-        } catch (err) {
-          return {
-            ok: false,
-            error:
-              err instanceof Error
-                ? err.message
-                : "Unknown error proposing patch",
-          };
-        }
+    listSourceTree: tool({
+      description:
+        "List files and directories at a given path in the Slide of " +
+        `Hand source repo (${TARGET_REPO.owner}/${TARGET_REPO.repo}). ` +
+        "Useful for exploring build-time JSX decks under " +
+        "`src/decks/public/<slug>/`, the framework primitives, or any " +
+        "other source file the user wants to reason about. " +
+        "Requires the user to have connected GitHub (Settings → GitHub " +
+        "→ Connect). " +
+        "Pass an empty string for `path` to list the repo root. " +
+        "Files are listed by name; directories by name with `type: " +
+        "'dir'`. Use `readSource` to fetch a specific file's contents.",
+      inputSchema: z.object({
+        path: z
+          .string()
+          .describe(
+            "Path inside the repo (e.g. `src/decks/public/cf-zt-ai`). " +
+              "Empty string lists the root.",
+          ),
+        ref: z
+          .string()
+          .optional()
+          .describe(
+            "Optional branch/tag/commit. Defaults to `main`.",
+          ),
+      }),
+      execute: async ({ path, ref }): Promise<ListSourceTreeResult> => {
+        return runListSourceTree(env, path, ref);
+      },
+    }),
+
+    readSource: tool({
+      description:
+        "Read a single source file from the Slide of Hand repo " +
+        `(${TARGET_REPO.owner}/${TARGET_REPO.repo}). ` +
+        "Returns the UTF-8 contents — use this to examine build-time " +
+        "deck source, framework code, or configuration files. " +
+        "Requires the user to have connected GitHub. " +
+        "Binary files return an error (use the listing tool to inspect " +
+        "asset names instead).",
+      inputSchema: z.object({
+        path: z
+          .string()
+          .describe(
+            "Path to the file (e.g. `src/decks/public/hello/01-title.tsx`).",
+          ),
+        ref: z
+          .string()
+          .optional()
+          .describe(
+            "Optional branch/tag/commit. Defaults to `main`.",
+          ),
+      }),
+      execute: async ({ path, ref }): Promise<ReadSourceResult> => {
+        return runReadSource(env, path, ref);
       },
     }),
   };
+}
+
+// ── Tool implementations, factored out so unit tests can call them
+//    directly with mocked env / mocked getCurrentAgent context. ──────
+
+export async function runProposePatch(
+  env: AgentToolsEnv,
+  slug: string,
+  patch: { meta?: Record<string, unknown>; slides?: unknown[] },
+): Promise<ProposePatchResult> {
+  try {
+    const stored = await env.DECKS.get(KV_DECK(slug), "json");
+    if (!stored) {
+      return {
+        ok: false,
+        error:
+          "No KV-backed deck found for this slug. " +
+          "`proposePatch` can only be used on data decks.",
+      };
+    }
+    const currentValidation = validateDataDeck(stored);
+    if (!currentValidation.ok) {
+      return {
+        ok: false,
+        errors: [
+          "Stored deck failed validation before patching:",
+          ...currentValidation.errors,
+        ],
+      };
+    }
+    const current = currentValidation.value;
+    const mergedMeta = {
+      ...(current.meta as unknown as Record<string, unknown>),
+      ...(patch.meta ?? {}),
+    };
+    const merged: Record<string, unknown> = {
+      meta: mergedMeta,
+      slides: patch.slides ?? current.slides,
+    };
+    const validation = validateDataDeck(merged);
+    if (!validation.ok) {
+      return { ok: false, errors: validation.errors };
+    }
+    return { ok: true, dryRun: validation.value };
+  } catch (err) {
+    return {
+      ok: false,
+      error:
+        err instanceof Error
+          ? err.message
+          : "Unknown error proposing patch",
+    };
+  }
+}
+
+export async function runCommitPatch(
+  env: AgentToolsEnv,
+  slug: string,
+  patch: { meta?: Record<string, unknown>; slides?: unknown[] },
+  commitMessage?: string,
+  /**
+   * Override hook for tests — defaults to reading the current request
+   * context. Real callers don't pass this.
+   */
+  emailOverride?: string | null,
+): Promise<CommitPatchResult> {
+  // Re-run the proposePatch path to get a validated dry-run. This is
+  // defence in depth: even if the model invokes commitPatch with a
+  // patch that wasn't previously proposed, the same validator runs.
+  const dry = await runProposePatch(env, slug, patch);
+  if (!dry.ok) return dry;
+
+  // Persist to KV — the primary side-effect.
+  try {
+    await env.DECKS.put(KV_DECK(slug), JSON.stringify(dry.dryRun));
+  } catch (err) {
+    return {
+      ok: false,
+      error: `KV write failed: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+
+  // GitHub commit is best-effort. If the user hasn't connected GitHub,
+  // we report that on the result so the user knows + can connect for
+  // audit trail.
+  const email =
+    emailOverride !== undefined ? emailOverride : currentUserEmail();
+  if (!email) {
+    return {
+      ok: true,
+      persistedToKv: true,
+      githubCommit: {
+        ok: false,
+        reason:
+          "No interactive user identity available (service-token context). " +
+          "KV is updated; GitHub backup skipped.",
+      },
+      deck: dry.dryRun,
+    };
+  }
+
+  const stored = await getStoredGitHubToken(env, email);
+  if (!stored) {
+    return {
+      ok: true,
+      persistedToKv: true,
+      githubCommit: {
+        ok: false,
+        reason:
+          "GitHub not connected. Open Settings → GitHub → Connect to " +
+          "enable version-controlled backups of deck edits.",
+      },
+      deck: dry.dryRun,
+    };
+  }
+
+  const result = await putFileContents(stored.token, {
+    path: dataDeckPath(slug),
+    content: JSON.stringify(dry.dryRun, null, 2) + "\n",
+    message:
+      commitMessage?.trim() ||
+      `Update deck "${dry.dryRun.meta.title}" via in-Studio AI agent`,
+    committer: stored.username
+      ? {
+          name: stored.username,
+          // GitHub requires email; OAuth tokens from `public_repo` don't
+          // give us the user's verified email reliably, so fall back to
+          // the noreply form which GitHub displays correctly.
+          email: `${stored.userId}+${stored.username}@users.noreply.github.com`,
+        }
+      : undefined,
+  });
+
+  if (!result.ok) {
+    return {
+      ok: true,
+      persistedToKv: true,
+      githubCommit: { ok: false, reason: ghErrorMessage(result) },
+      deck: dry.dryRun,
+    };
+  }
+
+  return {
+    ok: true,
+    persistedToKv: true,
+    githubCommit: {
+      ok: true,
+      commitSha: result.result.commitSha,
+      commitHtmlUrl: result.result.commitHtmlUrl,
+      path: result.result.path,
+    },
+    deck: dry.dryRun,
+  };
+}
+
+export async function runListSourceTree(
+  env: AgentToolsEnv,
+  path: string,
+  ref?: string,
+  emailOverride?: string | null,
+): Promise<ListSourceTreeResult> {
+  const tokenLookup = await resolveToken(env, emailOverride);
+  if (!tokenLookup.ok) return { ok: false, error: tokenLookup.error };
+
+  const cleanRef = ref?.trim() || "main";
+  const result = await listContents(tokenLookup.token, path, cleanRef);
+  if (!result.ok) return { ok: false, error: ghErrorMessage(result) };
+
+  return {
+    ok: true,
+    path,
+    ref: cleanRef,
+    items: result.items.map((it) => ({
+      name: it.name,
+      path: it.path,
+      type: it.type,
+      size: it.size,
+    })),
+  };
+}
+
+export async function runReadSource(
+  env: AgentToolsEnv,
+  path: string,
+  ref?: string,
+  emailOverride?: string | null,
+): Promise<ReadSourceResult> {
+  const tokenLookup = await resolveToken(env, emailOverride);
+  if (!tokenLookup.ok) return { ok: false, error: tokenLookup.error };
+
+  const cleanRef = ref?.trim() || "main";
+  const result = await readFileContents(tokenLookup.token, path, cleanRef);
+  if (!result.ok) return { ok: false, error: ghErrorMessage(result) };
+
+  return {
+    ok: true,
+    path: result.result.path,
+    ref: cleanRef,
+    content: result.result.content,
+    size: result.result.size,
+    sha: result.result.sha,
+  };
+}
+
+/**
+ * Resolve a GitHub token for the current execution context, with a
+ * test override hook. Returns either the token or a structured error
+ * the tool can surface to the model.
+ */
+async function resolveToken(
+  env: AgentToolsEnv,
+  emailOverride: string | null | undefined,
+): Promise<{ ok: true; token: string } | { ok: false; error: string }> {
+  const email =
+    emailOverride !== undefined ? emailOverride : currentUserEmail();
+  if (!email) {
+    return {
+      ok: false,
+      error:
+        "Source-tree access requires an authenticated user. Service-token " +
+        "contexts have no user identity to look up a GitHub connection for.",
+    };
+  }
+  const stored = await getStoredGitHubToken(env, email);
+  if (!stored) {
+    return {
+      ok: false,
+      error:
+        "GitHub not connected. Ask the user to open Settings → GitHub → " +
+        "Connect, then retry.",
+    };
+  }
+  return { ok: true, token: stored.token };
+}
+
+function ghErrorMessage(err: GitHubError): string {
+  return err.message;
 }
