@@ -184,19 +184,32 @@ function PanelInner({ deckSlug, onRequestClose }: PanelInnerProps) {
     <>
       {/* Backdrop — light dimming so the panel reads as modal-ish
           without blocking the deck preview entirely. Clicking the
-          backdrop closes the panel. */}
+          backdrop closes the panel.
+
+          `data-no-advance` opts the backdrop out of the viewer's
+          click-to-advance handler in `Deck.tsx`. Without it, clicking
+          the backdrop would BOTH close the panel AND advance the
+          slide in one gesture. See issue #131 item C. */}
       <motion.div
         {...backdropMotion}
         data-testid="studio-agent-backdrop"
+        data-no-advance
         className="fixed inset-0 z-40 bg-cf-text/10"
         onClick={onRequestClose}
         aria-hidden="true"
       />
+      {/* Panel root — `data-no-advance` blankets the entire chat
+          surface so any click inside (including the tool-card
+          `<details>` / `<summary>` expanders, which the viewer's
+          suppressor selector does not list natively) is opted out
+          of slide advance. Broad-and-stable beats sprinkling
+          `data-interactive` on every future control we add here. */}
       <motion.aside
         {...panelMotion}
         role="dialog"
         aria-label="AI assistant"
         data-testid="studio-agent-panel"
+        data-no-advance
         className="fixed right-0 top-0 z-50 flex h-screen w-full max-w-[400px] flex-col border-l border-cf-border bg-cf-bg-100 text-cf-text shadow-xl"
       >
         {/* Header */}
