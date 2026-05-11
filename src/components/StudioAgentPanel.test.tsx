@@ -17,13 +17,19 @@ import {
 } from "@testing-library/react";
 
 // Hoisted spies so `vi.mock` factories can reference them.
-const { useAgentMock, useAgentChatMock, sendMessageMock, clearHistoryMock } =
-  vi.hoisted(() => ({
-    useAgentMock: vi.fn(),
-    useAgentChatMock: vi.fn(),
-    sendMessageMock: vi.fn(),
-    clearHistoryMock: vi.fn(),
-  }));
+const {
+  useAgentMock,
+  useAgentChatMock,
+  sendMessageMock,
+  clearHistoryMock,
+  useAccessAuthMock,
+} = vi.hoisted(() => ({
+  useAgentMock: vi.fn(),
+  useAgentChatMock: vi.fn(),
+  sendMessageMock: vi.fn(),
+  clearHistoryMock: vi.fn(),
+  useAccessAuthMock: vi.fn(),
+}));
 
 vi.mock("agents/react", () => ({
   useAgent: useAgentMock,
@@ -31,6 +37,14 @@ vi.mock("agents/react", () => ({
 
 vi.mock("@cloudflare/ai-chat/react", () => ({
   useAgentChat: useAgentChatMock,
+}));
+
+// The panel probes `/api/admin/auth-status` via `useAccessAuth` on
+// mount (issue: silent blank panel when the CF_Authorization cookie
+// has expired, surfaced 2026-05-11). The real hook fires a `fetch`;
+// we mock it here so every test controls the auth state directly.
+vi.mock("@/lib/use-access-auth", () => ({
+  useAccessAuth: useAccessAuthMock,
 }));
 
 import { StudioAgentPanel } from "./StudioAgentPanel";
@@ -68,6 +82,10 @@ function setupHooks({
     isServerStreaming: false,
     isToolContinuation: false,
   });
+  // Default to authenticated so existing tests don't see the
+  // session-expired banner. Individual tests override this to
+  // exercise the "checking" / "unauthenticated" branches.
+  useAccessAuthMock.mockReturnValue("authenticated");
 }
 
 afterEach(() => {
@@ -76,6 +94,7 @@ afterEach(() => {
   useAgentChatMock.mockReset();
   sendMessageMock.mockReset();
   clearHistoryMock.mockReset();
+  useAccessAuthMock.mockReset();
 });
 
 describe("<StudioAgentPanel>", () => {
@@ -349,6 +368,100 @@ describe("<StudioAgentPanel>", () => {
     render(<StudioAgentPanel deckSlug="hello" onClose={vi.fn()} />);
     const backdrop = screen.getByTestId("studio-agent-backdrop");
     expect(backdrop.hasAttribute("data-no-advance")).toBe(true);
+  });
+
+  // Access session-expiry detection — addresses the "silent blank
+  // panel after CF_Authorization cookie expires" symptom the user
+  // hit in their browser on 2026-05-11. The panel probes
+  // /api/admin/auth-status via useAccessAuth on mount; when the
+  // probe surfaces an unauthenticated state we render a banner with
+  // a Reload action and lock down the composer so users can't queue
+  // messages that would just silently fail at the WebSocket layer.
+  it("does NOT show the auth-expired banner when the user is authenticated", () => {
+    setupHooks(); // defaults to authenticated
+    render(<StudioAgentPanel deckSlug="hello" onClose={vi.fn()} />);
+    expect(screen.queryByTestId("studio-agent-auth-expired")).toBeNull();
+  });
+
+  it("does NOT show the auth-expired banner during the initial 'checking' probe (avoids flash)", () => {
+    // The hook starts in "checking" before fetch resolves. A banner
+    // here would flash on every mount even for authenticated users.
+    setupHooks();
+    useAccessAuthMock.mockReturnValue("checking");
+    render(<StudioAgentPanel deckSlug="hello" onClose={vi.fn()} />);
+    expect(screen.queryByTestId("studio-agent-auth-expired")).toBeNull();
+  });
+
+  it("shows the auth-expired banner with a Reload button when the session has expired", () => {
+    setupHooks();
+    useAccessAuthMock.mockReturnValue("unauthenticated");
+    render(<StudioAgentPanel deckSlug="hello" onClose={vi.fn()} />);
+    const banner = screen.getByTestId("studio-agent-auth-expired");
+    expect(banner.textContent).toMatch(/session/i);
+    expect(banner.textContent).toMatch(/reload/i);
+    // The Reload action lives inside the banner.
+    const reload = screen.getByTestId("studio-agent-auth-reload");
+    expect(reload).toBeDefined();
+    // role=alert lets screen readers announce the expiry without
+    // requiring the user to focus the banner.
+    expect(banner.getAttribute("role")).toBe("alert");
+  });
+
+  it("clicking the Reload button calls window.location.reload", () => {
+    setupHooks();
+    useAccessAuthMock.mockReturnValue("unauthenticated");
+    const reloadSpy = vi.fn();
+    // happy-dom's `window.location` is read-only on the property
+    // descriptor by default; redefine `reload` for this test only.
+    const originalDescriptor = Object.getOwnPropertyDescriptor(
+      window.location,
+      "reload",
+    );
+    Object.defineProperty(window.location, "reload", {
+      configurable: true,
+      value: reloadSpy,
+    });
+    try {
+      render(<StudioAgentPanel deckSlug="hello" onClose={vi.fn()} />);
+      fireEvent.click(screen.getByTestId("studio-agent-auth-reload"));
+      expect(reloadSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      if (originalDescriptor) {
+        Object.defineProperty(
+          window.location,
+          "reload",
+          originalDescriptor,
+        );
+      }
+    }
+  });
+
+  it("disables the composer (textarea + send) when the session has expired", () => {
+    setupHooks();
+    useAccessAuthMock.mockReturnValue("unauthenticated");
+    render(<StudioAgentPanel deckSlug="hello" onClose={vi.fn()} />);
+    const input = screen.getByTestId(
+      "studio-agent-input",
+    ) as HTMLTextAreaElement;
+    const send = screen.getByTestId(
+      "studio-agent-send",
+    ) as HTMLButtonElement;
+    expect(input.disabled).toBe(true);
+    expect(send.disabled).toBe(true);
+  });
+
+  it("does NOT call sendMessage on submit when the session has expired", () => {
+    // Belt + braces: the textarea is disabled (the browser blocks
+    // user input), but `fireEvent.submit` bypasses that and
+    // `handleSubmit` also gates on the auth status. This pins the
+    // second line of defense.
+    setupHooks();
+    useAccessAuthMock.mockReturnValue("unauthenticated");
+    render(<StudioAgentPanel deckSlug="hello" onClose={vi.fn()} />);
+    const input = screen.getByTestId("studio-agent-input");
+    fireEvent.change(input, { target: { value: "hello?" } });
+    fireEvent.submit(screen.getByTestId("studio-agent-form"));
+    expect(sendMessageMock).not.toHaveBeenCalled();
   });
 });
 
