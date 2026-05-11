@@ -1,0 +1,25 @@
+worker/mcp-tools.ts
+  85f7457536dbc2bd 1-143
+worker/mcp-tools.test.ts
+  85f7457536dbc2bd 1-315
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "025c2552ec7bd47c5e907feae601d2168e121403",
+  "prompts": {
+    "85f7457536dbc2bd": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_1e76456b1ffe2GxuWTwlD5b5f7",
+        "model": "anthropic/claude-opus-4-7"
+      },
+      "human_author": "mcdays94",
+      "messages": [],
+      "total_additions": 458,
+      "total_deletions": 0,
+      "accepted_lines": 458,
+      "overriden_lines": 0
+    }
+  }
+}
