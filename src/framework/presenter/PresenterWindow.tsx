@@ -33,6 +33,7 @@ import { resolveInitialCursor } from "@/framework/viewer/useDeckState";
 import { PhaseProvider } from "@/framework/viewer/PhaseContext";
 import { SettingsModal } from "@/framework/viewer/SettingsModal";
 import { SettingsProvider, useSettings } from "@/framework/viewer/useSettings";
+import { useAccessAuth } from "@/lib/use-access-auth";
 import { useDeckBroadcast } from "./broadcast";
 import { SpeakerNotes } from "./SpeakerNotes";
 import { PhaseDots } from "./PhaseDots";
@@ -416,7 +417,95 @@ function SlideThumbnail({
   );
 }
 
-function PresenterWindowInner({ deck }: PresenterWindowProps) {
+/**
+ * Brief loading splash shown while the Access auth probe is in flight.
+ * The probe is single-shot per mount via `useAccessAuth`'s
+ * `/api/admin/auth-status` GET, so this state is short-lived (sub-second
+ * on a warm network). Rendering audience chrome here would flash UI we'd
+ * then have to swap to the sign-in landing if the probe returns
+ * unauthenticated — the splash avoids that flash.
+ */
+function PresenterAuthChecking() {
+  return (
+    <main
+      data-testid="presenter-auth-checking"
+      className="flex min-h-screen flex-col items-center justify-center gap-4 bg-cf-bg-100 px-6 text-center"
+    >
+      <p className="cf-tag">Presenter</p>
+      <p className="text-sm text-cf-text-muted">Checking session…</p>
+    </main>
+  );
+}
+
+/**
+ * Sign-in landing shown when `useAccessAuth()` returns `unauthenticated`.
+ * The presenter window exposes speaker notes (which often contain
+ * author-private cues), pacing, and slide-jump controls — none of which
+ * should be visible to non-Access visitors. The Reload button kicks the
+ * browser back through Cloudflare Access's SSO redirect; the "View deck"
+ * link drops to the audience-side viewer (same slug, no `?presenter=1`).
+ */
+function PresenterAuthRequired({ deckSlug }: { deckSlug: string }) {
+  return (
+    <main
+      role="alert"
+      data-testid="presenter-auth-required"
+      className="flex min-h-screen flex-col items-center justify-center gap-5 bg-cf-bg-100 px-6 text-center"
+    >
+      <p className="cf-tag">Presenter</p>
+      <h1 className="text-2xl font-medium tracking-[-0.025em] text-cf-text">
+        Sign in required
+      </h1>
+      <p className="max-w-md text-sm text-cf-text-muted">
+        This view shows speaker notes, pacing, and slide controls reserved
+        for the deck's author. Sign in via Cloudflare Access to use it.
+      </p>
+      <div className="flex items-center gap-3">
+        <button
+          type="button"
+          data-testid="presenter-auth-reload"
+          onClick={() => window.location.reload()}
+          className="cf-btn-primary"
+        >
+          Sign in via Access
+        </button>
+        <a
+          href={`/decks/${encodeURIComponent(deckSlug)}`}
+          data-testid="presenter-auth-view-deck"
+          className="cf-btn-ghost"
+        >
+          View deck
+        </a>
+      </div>
+    </main>
+  );
+}
+
+/**
+ * Auth gate for the presenter window. Defense in depth — the public
+ * deck route at `/decks/<slug>` already wraps in
+ * `<PresenterModeProvider enabled={authStatus === "authenticated"}>`,
+ * but the `?presenter=1` URL bypasses that wrapper entirely (the route
+ * renders `<PresenterWindow>` directly without a presenter-mode wrap).
+ * Without this gate, anyone with the URL could read the deck's speaker
+ * notes and use the pacing tools.
+ *
+ * The heavy side-effecting hooks (BroadcastChannel listener, document
+ * title rewrite, URL/sessionStorage cursor sync) are moved into
+ * `PresenterWindowAuthenticated`, which only mounts when the user is
+ * authenticated — unauthenticated visitors never touch those side
+ * effects.
+ */
+function PresenterWindowInner(props: PresenterWindowProps) {
+  const authStatus = useAccessAuth();
+  if (authStatus === "checking") return <PresenterAuthChecking />;
+  if (authStatus !== "authenticated") {
+    return <PresenterAuthRequired deckSlug={props.deck.meta.slug} />;
+  }
+  return <PresenterWindowAuthenticated {...props} />;
+}
+
+function PresenterWindowAuthenticated({ deck }: PresenterWindowProps) {
   const { settings } = useSettings();
   const [settingsOpen, setSettingsOpen] = useState(false);
 

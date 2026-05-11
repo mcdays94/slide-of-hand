@@ -1,36 +1,21 @@
 /**
- * Deck viewer route — `/decks/<slug>`.
+ * Presenter affordances (laser, magnifier, marker, P-key window trigger,
+ * TopToolbar admin buttons, Theme / Inspect / Slides / Analytics / AI,
+ * EditMode, StudioBadge, the admin-only Settings rows) are gated by
+ * `<PresenterModeProvider>`. On this PUBLIC route the provider's
+ * `enabled` is driven by `useAccessAuth()` — only callers with a valid
+ * Cloudflare Access session (i.e. authenticated admins viewing their
+ * own deck on the public URL) see the author UI. Unauthenticated
+ * visitors get the audience-side chrome only.
  *
- * Resolution order (Slice 5 / #61):
- *   1. Build-time registry (`hasBuildTimeDeck` / `loadDeckBySlug`). If the
- *      slug matches a build-time deck → lazy-load the deck's chunk and
- *      render `<Deck>` once it resolves. Wrapped in a `<Suspense>` so the
- *      visitor sees a brief loading splash rather than a blank screen.
- *   2. KV-backed deck (`useDataDeck`). If found → render `<DataDeck>`.
- *   3. Both miss → 404 page.
- *
- * Lazy split (issue #105): build-time decks are fetched as their own
- * chunk only when this route mounts with a matching slug. Three.js,
- * topojson, react-three-fiber, etc. live inside heavy decks
- * (cf-code-mode's globe slide, cf-dynamic-workers' globe-app sub-app)
- * and never enter the main bundle.
- *
- * Build-time wins precedence on slug collision (see `decks-registry.ts`
- * top-of-file comment for why). The KV fetch only fires when build-time
- * misses — saves a round-trip on the common path.
- *
- * Slice #5 query parameters:
- *
- *   - `?presenter=1` — swaps the live `<Deck>` for `<PresenterWindow>`. This
- *     is what the spawned popup tab loads when the author presses `P`.
- *     Works for both build-time decks and KV-backed (`<DataDeck>`) decks
- *     — the latter via the `dataDeckToDeck()` adapter (#61 follow-up).
- *
- * Presenter affordances (laser, magnifier, marker, P-key window trigger)
- * are now ALWAYS on for public deck routes. Earlier this was gated behind
- * `?presenter-mode=1` per the original Slice #5 cautionary scope, but the
- * decision (2026-05-10) is to expose these tools globally so anyone
- * presenting a deck doesn't need to know about a magic URL flag.
+ * Earlier (2026-05-10) we expanded the affordances "globally" so any
+ * presenter could use them without a magic URL flag — but `enabled={true}`
+ * leaked admin UI (Settings rows for AI model, GitHub, speaker notes,
+ * deck card hover; the AI sparkle button; the P-key presenter trigger;
+ * Theme / Inspect / Analytics buttons) to anyone hitting `/decks/<slug>`
+ * on the public web. Auth-gating the provider on this route restores
+ * the intended split: admins-in-public-viewer still get their tools;
+ * audience members see only viewing controls.
  */
 
 import { Suspense, useMemo } from "react";
@@ -44,6 +29,7 @@ import {
 } from "@/lib/decks-registry";
 import { PresenterModeProvider } from "@/framework/presenter/mode";
 import { PresenterWindow } from "@/framework/presenter/PresenterWindow";
+import { useAccessAuth } from "@/lib/use-access-auth";
 
 /**
  * Suspense fallback for the lazy build-time deck load. Matches the design
@@ -62,13 +48,22 @@ function DeckLoadingFallback() {
 interface BuildTimeDeckProps {
   slug: string;
   presenter: boolean;
+  /**
+   * Driven by `useAccessAuth()` in the parent. When `false` we render
+   * the deck with no admin affordances — public visitors get a clean
+   * viewer with no Theme / Inspect / AI / Slides / Analytics buttons,
+   * no Settings rows for admin-only preferences, no presenter-window
+   * trigger on the P key. The PresenterWindow itself has its own
+   * defense-in-depth auth check (see `PresenterWindow.tsx`).
+   */
+  isAdmin: boolean;
 }
 
 /**
  * Reads the lazy-loaded `Deck` resource and renders the appropriate viewer.
  * Suspends (throws the load promise) until the deck's chunk is fetched.
  */
-function BuildTimeDeck({ slug, presenter }: BuildTimeDeckProps) {
+function BuildTimeDeck({ slug, presenter, isAdmin }: BuildTimeDeckProps) {
   const resource = useMemo(() => getDeckResource(slug), [slug]);
   const deck = resource.read();
   if (!deck) {
@@ -81,7 +76,7 @@ function BuildTimeDeck({ slug, presenter }: BuildTimeDeckProps) {
     return <PresenterWindow deck={deck} />;
   }
   return (
-    <PresenterModeProvider enabled={true}>
+    <PresenterModeProvider enabled={isAdmin}>
       <Deck slug={deck.meta.slug} title={deck.meta.title} slides={deck.slides} />
     </PresenterModeProvider>
   );
@@ -113,11 +108,21 @@ export default function DeckRoute() {
 
   const presenter = search.get("presenter") === "1";
 
+  // The gate for showing admin affordances (Theme / Inspect / AI / etc.)
+  // in the viewer chrome. Driven by Cloudflare Access status — non-Access
+  // visitors get the audience view; signed-in admins viewing their own
+  // deck via the public URL still get their tools. Probe fires once per
+  // mount via `useAccessAuth`'s `/api/admin/auth-status` call. While
+  // `status === "checking"` we render audience chrome (conservative —
+  // never flash admin UI then hide it).
+  const authStatus = useAccessAuth();
+  const isAdmin = authStatus === "authenticated";
+
   // ── 1. Build-time hit ─────────────────────────────────────────────────
   if (isBuildTime && slug) {
     return (
       <Suspense fallback={<DeckLoadingFallback />}>
-        <BuildTimeDeck slug={slug} presenter={presenter} />
+        <BuildTimeDeck slug={slug} presenter={presenter} isAdmin={isAdmin} />
       </Suspense>
     );
   }
@@ -132,7 +137,7 @@ export default function DeckRoute() {
       return <PresenterWindow deck={dataDeckToDeck(kvResult.deck)} />;
     }
     return (
-      <PresenterModeProvider enabled={true}>
+      <PresenterModeProvider enabled={isAdmin}>
         <DataDeck deck={kvResult.deck} />
       </PresenterModeProvider>
     );
