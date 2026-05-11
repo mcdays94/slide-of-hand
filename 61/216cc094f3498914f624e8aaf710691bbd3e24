@@ -1,0 +1,25 @@
+worker/mcp-servers.test.ts
+  85f7457536dbc2bd 1-509
+worker/mcp-servers.ts
+  85f7457536dbc2bd 3,5,8-9,16,20-23,25-29,33-39,41-45,49-54,57-59,61-62,68-94,98-288,292,295-476
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "61216cc094f3498914f624e8aaf710691bbd3e24",
+  "prompts": {
+    "85f7457536dbc2bd": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_1e76456b1ffe2GxuWTwlD5b5f7",
+        "model": "anthropic/claude-opus-4-7"
+      },
+      "human_author": "mcdays94",
+      "messages": [],
+      "total_additions": 951,
+      "total_deletions": 61,
+      "accepted_lines": 951,
+      "overriden_lines": 0
+    }
+  }
+}
