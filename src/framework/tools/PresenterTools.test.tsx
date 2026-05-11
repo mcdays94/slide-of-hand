@@ -1,18 +1,19 @@
 /**
- * Tests for PresenterTools composition gating.
+ * Tests for `<PresenterTools>` — the laser / magnifier / marker /
+ * auto-hide composition.
  *
- * - Returns null when presenter mode is off and no URL override
- * - Mounts the toolset when presenter mode is on
- * - Detects the `?presenter-mode=1` URL override
+ * After 2026-05-11 these tools are audience-side aids — always
+ * available on every deck viewer, regardless of authentication or
+ * presenter-mode context. They live OUTSIDE `<PresenterAffordances>`
+ * (which is auth-gated and now hosts only the P-key presenter window
+ * trigger). Tests pin the always-on behavior + the per-tool key
+ * handlers + the `data-tool-active` attribute mirror.
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { act, cleanup, render } from "@testing-library/react";
 import { PresenterModeProvider } from "@/framework/presenter/mode";
-import {
-  PresenterTools,
-  readPresenterModeOverride,
-} from "./PresenterTools";
+import { PresenterTools } from "./PresenterTools";
 import { __resetCursorPositionForTest } from "./useCursorPosition";
 
 describe("PresenterTools", () => {
@@ -22,27 +23,46 @@ describe("PresenterTools", () => {
   });
   afterEach(() => cleanup());
 
-  it("renders nothing when presenter mode is disabled", () => {
-    const { container } = render(
+  it("mounts the toolset even when presenter mode is DISABLED (audience-side aid)", () => {
+    // Before 2026-05-11 this returned null. The new contract: the
+    // tools are audience-side and always mount, so a presenter on
+    // the public `/decks/<slug>` route (no auth) can still use
+    // Q/W/E. The auth gate now sits only on author-only surfaces
+    // (P-key presenter window trigger, TopToolbar admin buttons,
+    // admin Settings rows, admin routes).
+    render(
       <PresenterModeProvider enabled={false}>
         <PresenterTools />
       </PresenterModeProvider>,
     );
-    expect(container.querySelector("canvas")).toBeNull();
+    // AutoHideChrome sets the idle attribute on the deck root, which
+    // confirms the toolset mounted.
+    const root = document.querySelector("[data-deck-slug]");
+    expect(root?.getAttribute("data-presenter-idle")).toBe("false");
   });
 
-  it("mounts the toolset when presenter mode is enabled", () => {
+  it("mounts the toolset when presenter mode is enabled (admin viewer)", () => {
     render(
       <PresenterModeProvider enabled={true}>
         <PresenterTools />
       </PresenterModeProvider>,
     );
-    // AutoHideChrome should set the idle attribute on the root.
     const root = document.querySelector("[data-deck-slug]");
     expect(root?.getAttribute("data-presenter-idle")).toBe("false");
   });
 
-  it("mirrors the active tool to data-tool-active and renders the pill", () => {
+  it("mounts the toolset with no PresenterModeProvider at all (the public-viewer-unauth case)", () => {
+    // The public deck route now wraps in `<PresenterModeProvider
+    // enabled={authStatus === 'authenticated'}>`. For unauthenticated
+    // visitors the provider exists with enabled=false. For tests, we
+    // can also render with NO provider at all — same outcome: the
+    // tools must mount.
+    render(<PresenterTools />);
+    const root = document.querySelector("[data-deck-slug]");
+    expect(root?.getAttribute("data-presenter-idle")).toBe("false");
+  });
+
+  it("mirrors the active tool to data-tool-active and renders the pill (Q = laser)", () => {
     __resetCursorPositionForTest();
     // Provide a slide-shell so Magnifier can resolve a clone target if
     // engaged (not exercised here but makes the harness symmetric with
@@ -64,11 +84,7 @@ describe("PresenterTools", () => {
       }) as DOMRect;
     document.body.appendChild(slide);
 
-    const { queryByTestId } = render(
-      <PresenterModeProvider enabled={true}>
-        <PresenterTools />
-      </PresenterModeProvider>,
-    );
+    const { queryByTestId } = render(<PresenterTools />);
 
     const root = document.querySelector("[data-deck-slug]");
     // No tool engaged → no attribute, no pill.
@@ -110,11 +126,7 @@ describe("PresenterTools", () => {
       }) as DOMRect;
     document.body.appendChild(slide);
 
-    const { queryByTestId } = render(
-      <PresenterModeProvider enabled={true}>
-        <PresenterTools />
-      </PresenterModeProvider>,
-    );
+    const { queryByTestId } = render(<PresenterTools />);
 
     const root = document.querySelector("[data-deck-slug]");
     // Press E (hold).
@@ -132,43 +144,65 @@ describe("PresenterTools", () => {
     expect(root?.getAttribute("data-tool-active")).toBeNull();
     expect(root?.getAttribute("data-marker-active")).toBeNull();
   });
-});
 
-describe("readPresenterModeOverride", () => {
-  const originalLocation = window.location;
+  it("Q/W/E keys all work on the public unauthenticated viewer (no PresenterModeProvider)", () => {
+    // Belt + braces: the audience-side use case explicitly pins
+    // that all three keyboard shortcuts engage their respective
+    // tools without any provider context. If a future refactor
+    // reintroduces an accidental gate, this catches it.
+    __resetCursorPositionForTest();
+    const slide = document.createElement("section");
+    slide.setAttribute("data-testid", "slide-shell");
+    slide.setAttribute("data-slide-index", "0");
+    slide.getBoundingClientRect = () =>
+      ({
+        left: 0,
+        top: 0,
+        width: 1920,
+        height: 1080,
+        right: 1920,
+        bottom: 1080,
+        x: 0,
+        y: 0,
+        toJSON: () => "",
+      }) as DOMRect;
+    document.body.appendChild(slide);
 
-  function setSearch(search: string) {
-    // happy-dom permits replacing location.
-    Object.defineProperty(window, "location", {
-      configurable: true,
-      value: { ...originalLocation, search },
+    const { queryByTestId } = render(<PresenterTools />);
+    const root = document.querySelector("[data-deck-slug]");
+
+    // Laser (Q).
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "q" }));
     });
-  }
-
-  afterEach(() => {
-    Object.defineProperty(window, "location", {
-      configurable: true,
-      value: originalLocation,
+    expect(root?.getAttribute("data-tool-active")).toBe("laser");
+    expect(queryByTestId("tool-active-pill")?.textContent).toMatch(/LASER/);
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keyup", { key: "q" }));
     });
-  });
 
-  it("returns false when no query string is present", () => {
-    setSearch("");
-    expect(readPresenterModeOverride()).toBe(false);
-  });
+    // Marker (E).
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "e" }));
+    });
+    expect(root?.getAttribute("data-tool-active")).toBe("marker");
+    expect(queryByTestId("tool-active-pill")?.textContent).toMatch(/MARKER/);
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keyup", { key: "e" }));
+    });
 
-  it("returns true for ?presenter-mode=1", () => {
-    setSearch("?presenter-mode=1");
-    expect(readPresenterModeOverride()).toBe(true);
-  });
-
-  it("returns true for ?presenter (bare flag)", () => {
-    setSearch("?presenter");
-    expect(readPresenterModeOverride()).toBe(true);
-  });
-
-  it("returns false for ?presenter-mode=0", () => {
-    setSearch("?presenter-mode=0");
-    expect(readPresenterModeOverride()).toBe(false);
+    // Magnifier (W) — needs a held key + cursor in viewport. The
+    // tool sets up the data-tool-active="magnifier" attribute on
+    // keydown.
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "w" }));
+    });
+    expect(root?.getAttribute("data-tool-active")).toBe("magnifier");
+    expect(queryByTestId("tool-active-pill")?.textContent).toMatch(
+      /MAGNIFY/,
+    );
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keyup", { key: "w" }));
+    });
   });
 });

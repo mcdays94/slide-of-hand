@@ -1,41 +1,40 @@
 /**
- * Presenter affordances composition point.
+ * Auth-gated presenter affordances.
  *
- * Each Wave 3 slice plugs into this single component instead of editing
- * <Deck> directly. That keeps three parallel workers' diffs landing on
- * DISTINCT slot markers within this file, so cherry-pick auto-merges
- * cleanly at integration time.
+ * Hosts admin-only presenter affordances that should NOT be available
+ * to unauthenticated visitors on the public deck route. Currently:
  *
- * Slots:
- *   - Slice #5 (presenter window) → SLICE_5_*
- *   - Slice #6 (presentation tools) → SLICE_6_*
+ *   - `<PresenterWindowTrigger>` — the `P`-key handler that opens the
+ *     presenter window. Speaker notes live behind authentication, so
+ *     non-authenticated visitors should not be able to pop the window.
  *
- * The component returns null when `usePresenterMode()` is false (i.e., on
- * the public `/decks/<slug>` route). Slice #7 wraps the admin viewer in
- * `<PresenterModeProvider enabled={true}>` to activate everything below.
+ * Audience-side aids (laser, magnifier, marker) used to mount here
+ * too, but they're audience tools — a presenter giving a talk on the
+ * public URL needs Q/W/E to work without signing in. As of
+ * 2026-05-11 those tools live OUTSIDE this gate, mounted directly by
+ * `<Deck>` via `<PresenterTools>`.
  *
- * Each slice's component is responsible for its own keyboard listeners,
- * its own broadcast channel sends, and its own DOM. <Deck> doesn't know
- * about presenter affordances beyond mounting this single component.
+ * Gating: `usePresenterMode()`. On the public `/decks/<slug>` route
+ * the provider's `enabled` is driven by `useAccessAuth()` (see
+ * `src/routes/deck.$slug.tsx`) — so this component renders its
+ * children only for authenticated admins. On `/admin/decks/<slug>`
+ * the provider is hardcoded `enabled={true}` (the admin route is
+ * Access-gated at the edge AND wrapped in `<RequireAdminAccess>`,
+ * so every caller reaching here is authenticated).
+ *
+ * Each child component is responsible for its own keyboard listeners
+ * and broadcast channel sends; `<Deck>` doesn't need to know about
+ * presenter affordances beyond mounting this component.
  */
 import { Fragment } from "react";
 import { usePresenterMode } from "./mode";
-
-// >>> SLICE_5_IMPORTS — slice #5 worker adds:
 import { PresenterWindowTrigger } from "./PresenterWindowTrigger";
-
-// >>> SLICE_6_IMPORTS — slice #6 worker adds:
-import { PresenterTools } from "@/framework/tools/PresenterTools";
 
 export function PresenterAffordances() {
   if (!usePresenterMode()) return null;
   return (
     <Fragment>
-      {/* >>> SLICE_5_MOUNT — slice #5 worker adds <PresenterWindowTrigger /> below: */}
       <PresenterWindowTrigger />
-
-      {/* >>> SLICE_6_MOUNT — slice #6 worker adds <PresenterTools /> below: */}
-      <PresenterTools />
     </Fragment>
   );
 }
