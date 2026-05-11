@@ -1,0 +1,53 @@
+# Cloudflare Sandbox container build context (issue #131 phase 3c).
+#
+# Wrangler builds the Sandbox image from the repo root. Most of the
+# repo isn't needed inside the image (the Sandbox base image already
+# contains Node + git + bash), so we exclude everything that bloats
+# the build context. The build only needs the Dockerfile itself.
+
+# Node + build artifacts
+node_modules
+dist
+.wrangler
+
+# Source code — the Sandbox is its own runtime, not a packaged copy
+# of this app. The phase 3c flow clones the repo fresh inside the
+# sandbox from GitHub.
+src
+worker
+public
+scripts
+tests
+e2e
+
+# Per-project tooling
+.git
+.github
+.vscode
+.idea
+.opencode
+.husky
+.cache
+.scratch
+
+# Local-only data + secrets
+.dev.vars
+.env
+.env.*
+
+# Build outputs / logs
+*.log
+coverage
+playwright-report
+test-results
+
+# Docs + meta — not needed at runtime
+AGENTS.md
+CLAUDE.md
+README.md
+RESUME.md
+LICENSE
+*.md
+docs
+plans
+skill-observations

@@ -203,8 +203,9 @@
    */
   "ai": { "binding": "AI" },
   /**
-   * Durable Object backing the in-Studio AI agent (issue #131 phase 1).
+   * Durable Objects.
    *
+   * `DeckAuthorAgent` (issue #131 phase 1) — the in-Studio AI agent.
    * One DO instance per deck slug (the SDK addresses instances by
    * `name`, and we set `name = deck.meta.slug` from the client). All
    * editors of the same deck share the conversation history because
@@ -212,22 +213,71 @@
    * deliberate trade-off — a future phase will switch to
    * `<user-email>:<deck-slug>` once we wire the Access-issued email
    * through to the client useAgent call.
+   *
+   * `Sandbox` (issue #131 phase 3c) — re-exports the Sandbox class
+   * from `@cloudflare/sandbox`. Each Sandbox instance backs a
+   * Cloudflare Container (see the `containers` block below) where
+   * the in-Studio agent runs source-deck edits (`npm install`,
+   * `typecheck`, `test`, branch + PR) before opening a draft PR
+   * against the source repo. The Sandbox SDK requires this binding
+   * naming convention exactly — `class_name: "Sandbox"`,
+   * `name: "Sandbox"` — so `getSandbox(env.Sandbox, ...)` resolves
+   * inside the Worker.
    */
   "durable_objects": {
     "bindings": [
-      { "name": "DeckAuthorAgent", "class_name": "DeckAuthorAgent" }
+      { "name": "DeckAuthorAgent", "class_name": "DeckAuthorAgent" },
+      { "name": "Sandbox", "class_name": "Sandbox" }
     ]
   },
   /**
-   * SQLite-class migration for `DeckAuthorAgent`. The Agents SDK uses
-   * SQLite via DO for `AIChatAgent` message persistence — REQUIRED to
-   * be `new_sqlite_classes`, not `new_classes`.
+   * SQLite-class migrations.
    *
-   * Tag `v1-agent` is unique (the project had no prior DO migrations).
-   * NEVER edit historical migration tags — only add new ones.
+   * `v1-agent` (issue #131 phase 1) — `DeckAuthorAgent`. The Agents
+   * SDK uses SQLite via DO for `AIChatAgent` message persistence —
+   * REQUIRED to be `new_sqlite_classes`, not `new_classes`.
+   *
+   * `v2-sandbox` (issue #131 phase 3c) — `Sandbox`. The Sandbox SDK
+   * also persists per-instance state via SQLite. Same `new_sqlite_classes`
+   * requirement. Added as a new tag so we never edit the historical
+   * `v1-agent` migration — once an environment has applied a tag, it
+   * MUST stay byte-identical or the migration manifest contradicts
+   * the production state.
    */
   "migrations": [
-    { "tag": "v1-agent", "new_sqlite_classes": ["DeckAuthorAgent"] }
+    { "tag": "v1-agent", "new_sqlite_classes": ["DeckAuthorAgent"] },
+    { "tag": "v2-sandbox", "new_sqlite_classes": ["Sandbox"] }
+  ],
+  /**
+   * Cloudflare Containers — backs the `Sandbox` Durable Object
+   * (issue #131 phase 3c).
+   *
+   * The Sandbox SDK runs each Sandbox DO instance inside a container
+   * built from `./Dockerfile`. Wrangler handles the build + push to
+   * Cloudflare's Container Registry on `wrangler dev` and `wrangler
+   * deploy` — no manual `docker push` needed.
+   *
+   *   - `instance_type: "lite"` — the smallest available container
+   *     size. Phase 3c's workload (one-shot `npm install` + test gate
+   *     per chat turn) doesn't need anything heavier; we can bump to
+   *     `basic` / `standard` if we find ourselves OOM-ing.
+   *   - `max_instances: 1` — single instance at a time. Phase 3c
+   *     spawns one sandbox per `proposeSourceEdit` invocation, runs
+   *     the test gate, opens a PR, and tears down. Concurrency comes
+   *     when multiple users edit different decks simultaneously — at
+   *     that point bump this and revisit billing.
+   *
+   * Local dev (`wrangler dev`) requires Docker running on the host.
+   * See the Dockerfile header for the version-sync rule between the
+   * `FROM` tag and the `@cloudflare/sandbox` npm version.
+   */
+  "containers": [
+    {
+      "class_name": "Sandbox",
+      "image": "./Dockerfile",
+      "instance_type": "lite",
+      "max_instances": 1
+    }
   ],
   /**
    * Per-deck analytics (issue #19 / Bucket C3).

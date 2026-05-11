@@ -37,12 +37,20 @@ import { handleImages, type ImagesEnv } from "./images";
 import { handleAuthStatus, type AuthStatusEnv } from "./auth-status";
 import { handleAgent, type AgentEnv } from "./agent";
 import { handleGitHubOAuth, type GitHubOAuthEnv } from "./github-oauth";
+import { handleSandboxSmoke, type SandboxSmokeEnv } from "./sandbox-smoke";
 import { applyCacheControl } from "./cache-control";
 
 // Re-export the agent DO class so wrangler can find it from the same
 // module as the default handler. Cloudflare requires the Durable
 // Object class to be exported from the Worker entry point.
 export { DeckAuthorAgent } from "./agent";
+
+// Re-export the Sandbox class (issue #131 phase 3c). The Sandbox SDK
+// requires its `Sandbox` DO class to be exported from the Worker
+// entry point so the Cloudflare runtime can resolve the binding
+// declared in `wrangler.jsonc`. The class itself is defined inside
+// `@cloudflare/sandbox` — we just re-surface it.
+export { Sandbox } from "@cloudflare/sandbox";
 
 export interface Env
   extends ThemesEnv,
@@ -53,7 +61,8 @@ export interface Env
     ImagesEnv,
     AuthStatusEnv,
     AgentEnv,
-    GitHubOAuthEnv {
+    GitHubOAuthEnv,
+    SandboxSmokeEnv {
   ASSETS: Fetcher;
 }
 
@@ -86,6 +95,12 @@ export default {
     // `worker/github-oauth.ts` for the trust model.
     const githubOAuthResponse = await handleGitHubOAuth(request, env);
     if (githubOAuthResponse) return githubOAuthResponse;
+    // Sandbox smoke endpoint (issue #131 phase 3c). Access-gated
+    // diagnostic for the Cloudflare Sandbox infrastructure — see
+    // `worker/sandbox-smoke.ts` for why this lives as a permanent
+    // endpoint rather than a one-off bring-up script.
+    const sandboxSmokeResponse = await handleSandboxSmoke(request, env);
+    if (sandboxSmokeResponse) return sandboxSmokeResponse;
 
     // All non-API paths fall through to the Static Assets binding.
     // The binding's `not_found_handling: single-page-application`

@@ -1,0 +1,28 @@
+# Cloudflare Sandbox container image — issue #131 phase 3c.
+#
+# The Sandbox SDK runs each Sandbox Durable Object instance inside a
+# container. Wrangler builds this image automatically (`wrangler dev`
+# and `wrangler deploy`) and pushes it to Cloudflare's Container
+# Registry on deploy. We don't need to docker build / docker push by
+# hand.
+#
+# Base image:
+#   * `docker.io/cloudflare/sandbox:<version>` — lean image with
+#     Node.js 24 and Bun. Default (no `-python` suffix) because the
+#     phase 3c workload is a Node.js test gate (npm install / typecheck
+#     / vitest / vite build), not Python.
+#
+# **Version sync (required).** The image tag MUST match the
+# `@cloudflare/sandbox` npm package version in `package.json`. The
+# SDK queries the container's reported version on startup and logs a
+# warning if they diverge; on a wide-enough divergence, features stop
+# working. When bumping `@cloudflare/sandbox`, bump this tag in lock-
+# step. See:
+# https://developers.cloudflare.com/sandbox/concepts/sandboxes/#version-compatibility
+FROM docker.io/cloudflare/sandbox:0.10.0
+
+# No extra packages today — the lean base has everything phase 3c
+# needs (git for cloning the source repo; node + npm for the test
+# gate; bash + curl for misc). If a future slice needs more (e.g.
+# Playwright system libs for an e2e gate), add the `apt-get install`
+# block here as a new layer so the existing layers stay cache-warm.
