@@ -1,0 +1,39 @@
+wrangler.jsonc
+  cffec469c55b2ea3 153-173
+src/framework/viewer/SettingsModal.tsx
+  cffec469c55b2ea3 31-32,349-354,450
+worker/github-oauth.ts
+  cffec469c55b2ea3 1-556
+src/lib/use-github-oauth.ts
+  cffec469c55b2ea3 1-156
+src/components/GitHubConnectRow.tsx
+  cffec469c55b2ea3 1-145
+worker/github-oauth.test.ts
+  cffec469c55b2ea3 1-625
+src/lib/use-github-oauth.test.tsx
+  cffec469c55b2ea3 1-182
+worker/index.ts
+  cffec469c55b2ea3 39,55-56,84-88
+src/components/GitHubConnectRow.test.tsx
+  cffec469c55b2ea3 1-153
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "aec5b6652afc6f37adb87e192985bbfb6983dfda",
+  "prompts": {
+    "cffec469c55b2ea3": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_1ecbcb427ffeCpoSFySZNrLWSF",
+        "model": "anthropic/claude-opus-4-7"
+      },
+      "human_author": "mcdays94",
+      "messages": [],
+      "total_additions": 1855,
+      "total_deletions": 1,
+      "accepted_lines": 1855,
+      "overriden_lines": 0
+    }
+  }
+}
