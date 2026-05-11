@@ -49,6 +49,7 @@ import { useAgentChat } from "@cloudflare/ai-chat/react";
 import ReactMarkdown from "react-markdown";
 import { easeEntrance, easeStandard } from "@/lib/motion";
 import { useSettings } from "@/framework/viewer/useSettings";
+import { useAccessAuth } from "@/lib/use-access-auth";
 
 export interface StudioAgentPanelProps {
   /** Slug of the deck this conversation belongs to. */
@@ -162,6 +163,26 @@ function PanelInner({ deckSlug, onRequestClose }: PanelInnerProps) {
   // forward whatever the user has selected.
   const { settings } = useSettings();
 
+  // Probe Cloudflare Access on mount so we can detect a stale
+  // CF_Authorization cookie BEFORE the user types a message into a
+  // chat surface that silently won't work. Symptom we're guarding
+  // against (hit in the browser on 2026-05-11): the user opens the
+  // panel after their interactive Access session has expired, the
+  // WebSocket upgrade gets intercepted by Access's 302 to login (or
+  // CORS-blocked from `useAgentChat`'s history fetch), and the panel
+  // renders with no messages and no error — just a blank empty
+  // state. Reuses the same hook as NotesEditor's edit-gate (issue
+  // #120); single-shot per mount, no SWR cache, returns
+  // "checking" | "authenticated" | "unauthenticated".
+  //
+  // Mid-session expiry (cookie expires WHILE the panel is open) is
+  // out of scope for this fix — the hook only probes once. Adding a
+  // re-probe on `useAgentChat` error transitions is a worthwhile
+  // follow-up; for now the mount-time probe addresses the actual
+  // observed symptom.
+  const authStatus = useAccessAuth();
+  const sessionExpired = authStatus === "unauthenticated";
+
   const { messages, sendMessage, status, clearHistory } = useAgentChat({
     agent,
     // `body` is forwarded to `onChatMessage`'s `options.body` on the
@@ -186,6 +207,11 @@ function PanelInner({ deckSlug, onRequestClose }: PanelInnerProps) {
 
   const handleSubmit = (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+    // Second line of defense — the textarea is disabled when the
+    // session has expired, but Enter-to-submit could still fire if
+    // the disabled attribute is bypassed (e.g. by a test, or by a
+    // browser quirk). Gate the dispatch as well.
+    if (sessionExpired) return;
     const trimmed = input.trim();
     if (!trimmed) return;
     sendMessage({ text: trimmed });
@@ -193,6 +219,11 @@ function PanelInner({ deckSlug, onRequestClose }: PanelInnerProps) {
   };
 
   const isBusy = status === "submitted" || status === "streaming";
+  // The composer is locked down both during a turn and when the
+  // Access session has expired — a queued message would just fail at
+  // the WebSocket layer, and the user would see the same silent
+  // empty state that motivated this banner in the first place.
+  const composerDisabled = isBusy || sessionExpired;
 
   return (
     <>
@@ -266,6 +297,43 @@ function PanelInner({ deckSlug, onRequestClose }: PanelInnerProps) {
           </div>
         </header>
 
+        {/* Access session-expiry banner. Mounted between the header
+            and the message list so it never overlaps the chat content
+            and is impossible to miss. Modeled after the tool-error
+            card in `ToolPartCard` for visual consistency with other
+            red-bordered alerts in this panel.
+
+            `role=alert` lets screen readers announce the expiry
+            without the user having to focus the banner. The Reload
+            button does the simplest thing that works: a full page
+            reload bounces the user back through Cloudflare Access's
+            SSO redirect, which mints a fresh CF_Authorization cookie
+            and brings them back to the same admin route. */}
+        {sessionExpired && (
+          <div
+            role="alert"
+            data-testid="studio-agent-auth-expired"
+            className="flex flex-shrink-0 flex-col items-start gap-2 border-b border-red-500/40 bg-red-500/5 px-5 py-3"
+          >
+            <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-red-500">
+              Session expired
+            </p>
+            <p className="text-sm text-cf-text">
+              Your Cloudflare Access session may have expired. Reload to
+              sign in again.
+            </p>
+            <button
+              type="button"
+              data-interactive
+              data-testid="studio-agent-auth-reload"
+              onClick={() => window.location.reload()}
+              className="rounded border border-red-500/40 bg-red-500/5 px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.2em] text-red-500 transition-colors hover:border-dashed hover:bg-red-500/10"
+            >
+              Reload page
+            </button>
+          </div>
+        )}
+
         {/* Message list */}
         <div
           ref={messageListRef}
@@ -309,19 +377,23 @@ function PanelInner({ deckSlug, onRequestClose }: PanelInnerProps) {
             }}
             placeholder="Ask anything about your deck…"
             rows={2}
-            disabled={isBusy}
+            disabled={composerDisabled}
             aria-label="Message"
             className="resize-none rounded border border-cf-border bg-cf-bg-100 px-3 py-2 text-sm text-cf-text placeholder:text-cf-text-subtle focus:border-cf-orange focus:outline-none disabled:opacity-50"
           />
           <div className="flex items-center justify-between gap-2">
             <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-cf-text-subtle">
-              {isBusy ? "Thinking…" : "Enter to send · Shift+Enter for newline"}
+              {sessionExpired
+                ? "Reload to sign in"
+                : isBusy
+                  ? "Thinking…"
+                  : "Enter to send · Shift+Enter for newline"}
             </p>
             <button
               type="submit"
               data-interactive
               data-testid="studio-agent-send"
-              disabled={isBusy || input.trim().length === 0}
+              disabled={composerDisabled || input.trim().length === 0}
               className="cf-btn-primary disabled:opacity-40"
             >
               Send
