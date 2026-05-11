@@ -126,6 +126,16 @@ interface SettingsSegmentedRowProps<T extends string> {
  * border + filled style used for similar toggles in the presenter
  * window. Visually distinct from `<SettingsRow>` so the user reads
  * "this is one of N choices, not on/off".
+ *
+ * Layout:
+ *   - **2 options**: horizontal — label left, buttons right. Works
+ *     because 2-option labels (Rich/Markdown) fit comfortably
+ *     alongside the description column.
+ *   - **3+ options**: stack vertically — label + description on top,
+ *     buttons below as a full-width segmented control. Without this,
+ *     long option labels (e.g. "GPT-OSS 120B" + "LLAMA 4 SCOUT" +
+ *     "KIMI K2.6") squeeze the description column to ~8 chars/line.
+ *     Issue surfaced 2026-05-11 on the AI model picker.
  */
 function SettingsSegmentedRow<T extends string>({
   label,
@@ -135,16 +145,23 @@ function SettingsSegmentedRow<T extends string>({
   onChange,
   testIdPrefix,
 }: SettingsSegmentedRowProps<T>) {
+  const stack = options.length > 2;
   return (
-    <div className="flex items-start justify-between gap-6 py-4">
-      <div className="flex-1">
+    <div
+      className={
+        stack
+          ? "flex flex-col gap-3 py-4"
+          : "flex items-start justify-between gap-6 py-4"
+      }
+    >
+      <div className={stack ? "" : "flex-1"}>
         <p className="block text-sm font-medium text-cf-text">{label}</p>
         <p className="mt-1 text-xs text-cf-text-muted">{description}</p>
       </div>
       <div
         role="group"
         aria-label={label}
-        className="flex shrink-0 items-center gap-1 rounded-md border border-cf-border bg-cf-bg-200 p-0.5"
+        className={`flex shrink-0 items-center gap-1 rounded-md border border-cf-border bg-cf-bg-200 p-0.5 ${stack ? "self-stretch" : ""}`}
       >
         {options.map((opt) => {
           const isActive = opt.value === value;
@@ -160,6 +177,8 @@ function SettingsSegmentedRow<T extends string>({
               }
               onClick={() => onChange(opt.value)}
               className={`rounded px-3 py-1 font-mono text-[10px] uppercase tracking-[0.2em] transition-colors ${
+                stack ? "flex-1" : ""
+              } ${
                 isActive
                   ? "bg-cf-orange text-cf-bg-100"
                   : "text-cf-text-muted hover:text-cf-text"

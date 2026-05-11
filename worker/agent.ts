@@ -94,6 +94,32 @@ export interface AgentEnv {
 }
 
 /**
+ * Cloudflare AI Gateway slug. Every Workers AI call from the agent
+ * is routed through this gateway so we get:
+ *
+ *   - **Free observability** — request/response logs in the
+ *     Cloudflare dashboard's AI Gateway tab (latency, cost, error
+ *     rates, prompt + response capture).
+ *   - **Caching** — identical requests within a TTL can be served
+ *     from cache instead of re-billed.
+ *   - **Budget + rate limiting** — configurable in the dashboard.
+ *   - **Retries + fallbacks** — gateway-level reliability layer.
+ *
+ * AI Gateway is FREE for Workers AI requests (you only pay the
+ * underlying Workers AI cost). First request with this gateway ID
+ * auto-creates the gateway entry in the dashboard — no wrangler
+ * config or manual provisioning needed.
+ *
+ * The slug is hardcoded for now. If we ever need different gateways
+ * per environment (preview vs prod) or want to expose this as a
+ * Worker secret, lift it into a wrangler var. For v1, one gateway
+ * for the whole agent is fine.
+ *
+ * Docs: https://developers.cloudflare.com/ai-gateway/
+ */
+export const AI_GATEWAY_ID = "slide-of-hand-agent";
+
+/**
  * Mapping from the friendly AI-assistant model key (the stable
  * contract with persisted client settings — see `src/lib/settings.ts`)
  * to the current Workers AI catalog ID. Issue #131 item A.
@@ -322,7 +348,14 @@ export class DeckAuthorAgent extends AIChatAgent<AgentEnv> {
     onFinish: Parameters<AIChatAgent<AgentEnv>["onChatMessage"]>[0],
     options: Parameters<AIChatAgent<AgentEnv>["onChatMessage"]>[1],
   ) {
-    const workersai = createWorkersAI({ binding: this.env.AI });
+    // Route the model call through Cloudflare AI Gateway for
+    // observability + caching + budget controls. Free for Workers
+    // AI; gateway auto-provisions on first request. See
+    // `AI_GATEWAY_ID` above for rationale.
+    const workersai = createWorkersAI({
+      binding: this.env.AI,
+      gateway: { id: AI_GATEWAY_ID },
+    });
     // `this.name` is the agent instance name — for phase 1/2 we key
     // the instance by deck slug (see header for why per-deck, not
     // per-(user, deck), is fine for phase 2). The tools close over

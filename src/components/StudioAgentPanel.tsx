@@ -43,9 +43,10 @@ import {
   motion,
   type HTMLMotionProps,
 } from "framer-motion";
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useAgent } from "agents/react";
 import { useAgentChat } from "@cloudflare/ai-chat/react";
+import ReactMarkdown from "react-markdown";
 import { easeEntrance, easeStandard } from "@/lib/motion";
 import { useSettings } from "@/framework/viewer/useSettings";
 
@@ -459,13 +460,19 @@ function MessageBubble({ message }: { message: UiMessageLike }) {
       {text && (
         <div
           data-testid="studio-agent-text"
-          className={`max-w-[90%] whitespace-pre-wrap rounded-md border px-3 py-2 text-sm leading-relaxed ${
+          className={`max-w-[90%] rounded-md border px-3 py-2 text-sm leading-relaxed ${
             isUser
-              ? "border-cf-orange/30 bg-cf-orange/5 text-cf-text"
+              ? "whitespace-pre-wrap border-cf-orange/30 bg-cf-orange/5 text-cf-text"
               : "border-cf-border bg-cf-bg-200 text-cf-text"
           }`}
         >
-          {text}
+          {/* User input is plain text — they don't write markdown,
+              and `whitespace-pre-wrap` preserves any newlines they
+              inserted with Shift+Enter. Assistant output is markdown
+              from the model (bold, lists, code spans, etc.) and gets
+              rendered as styled HTML so `**bold**` doesn't show as
+              literal asterisks. See issue surfaced 2026-05-11. */}
+          {isUser ? text : <MarkdownContent text={text} />}
         </div>
       )}
       {toolParts.length > 0 && (
@@ -821,6 +828,103 @@ function summariseToolOutput(
     }
   }
   return { icon: "🔧", label: "Tool result" };
+}
+
+/**
+ * Render assistant message text as styled markdown.
+ *
+ * The model emits markdown — bold, ordered/unordered lists, inline
+ * code, fenced code blocks, links, headings. Without this component
+ * those would render as literal `**bold**` / `1. item` etc. (visible
+ * in the chat panel until 2026-05-11).
+ *
+ * Why explicit component overrides instead of a `prose` class:
+ *   - Tailwind v4 + this project don't ship `@tailwindcss/typography`.
+ *   - The chat bubble's own padding + colors are already set; we
+ *     only need to style the INNER markdown elements (paragraph
+ *     spacing, list indents, code spans, links).
+ *   - Explicit overrides also let us pin link safety
+ *     (`rel="noopener noreferrer"` + `target="_blank"`) and inherit
+ *     the bubble's text color rather than ReactMarkdown's defaults.
+ *
+ * No `rehype-raw` — react-markdown's default config escapes raw HTML
+ * which is the right posture for model output we don't fully control.
+ */
+function MarkdownContent({ text }: { text: string }) {
+  return (
+    <div data-testid="studio-agent-markdown" className="space-y-2">
+      <ReactMarkdown
+        components={{
+          p: ({ children }: { children?: ReactNode }) => (
+            <p className="leading-relaxed last:mb-0">{children}</p>
+          ),
+          strong: ({ children }: { children?: ReactNode }) => (
+            <strong className="font-semibold text-cf-text">{children}</strong>
+          ),
+          em: ({ children }: { children?: ReactNode }) => (
+            <em className="italic">{children}</em>
+          ),
+          ol: ({ children }: { children?: ReactNode }) => (
+            <ol className="ml-4 list-decimal space-y-1">{children}</ol>
+          ),
+          ul: ({ children }: { children?: ReactNode }) => (
+            <ul className="ml-4 list-disc space-y-1">{children}</ul>
+          ),
+          li: ({ children }: { children?: ReactNode }) => (
+            <li className="pl-1">{children}</li>
+          ),
+          code: ({ children }: { children?: ReactNode }) => (
+            <code className="rounded bg-cf-bg-100 px-1 py-0.5 font-mono text-[12px]">
+              {children}
+            </code>
+          ),
+          pre: ({ children }: { children?: ReactNode }) => (
+            <pre className="overflow-auto rounded bg-cf-bg-100 px-2 py-1.5 font-mono text-[12px] leading-snug">
+              {children}
+            </pre>
+          ),
+          a: ({
+            children,
+            href,
+          }: {
+            children?: ReactNode;
+            href?: string;
+          }) => (
+            // target=_blank because the chat panel is anchored inside
+            // the deck viewer — navigating away inside the same tab
+            // would close the conversation. rel=noopener for opener
+            // security on cross-origin links.
+            <a
+              href={href}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-cf-orange underline decoration-cf-orange/40 hover:decoration-cf-orange"
+            >
+              {children}
+            </a>
+          ),
+          h1: ({ children }: { children?: ReactNode }) => (
+            <p className="mt-2 font-semibold tracking-[-0.01em] text-cf-text">
+              {children}
+            </p>
+          ),
+          h2: ({ children }: { children?: ReactNode }) => (
+            <p className="mt-2 font-semibold tracking-[-0.01em] text-cf-text">
+              {children}
+            </p>
+          ),
+          h3: ({ children }: { children?: ReactNode }) => (
+            <p className="mt-2 font-medium tracking-[-0.01em] text-cf-text">
+              {children}
+            </p>
+          ),
+          hr: () => <hr className="my-2 border-cf-border" />,
+        }}
+      >
+        {text}
+      </ReactMarkdown>
+    </div>
+  );
 }
 
 /** Format byte counts as B / KB / MB. */
