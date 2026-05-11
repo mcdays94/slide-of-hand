@@ -43,6 +43,7 @@ import {
   useAdminDataDeck,
 } from "@/lib/decks-registry";
 import { EditMode } from "@/framework/editor/EditMode";
+import { RequireAdminAccess } from "@/components/RequireAdminAccess";
 
 function DeckLoadingFallback() {
   return (
@@ -92,7 +93,28 @@ function NotFound({ slug }: { slug: string | undefined }) {
   );
 }
 
+/**
+ * Client-side route guard wrapper. `<AdminDeckRoute>` is NOT nested
+ * under `<AdminLayout>` (see App.tsx — the deck viewer fills the full
+ * viewport, no chrome strip), so it does not inherit the layout's
+ * `<RequireAdminAccess>` gate. Wrap explicitly here so an
+ * unauthenticated visitor that navigates to `/admin/decks/<slug>` via
+ * client-side React Router nav (which bypasses Cloudflare Access at
+ * the edge) gets the sign-in landing instead of the admin chrome.
+ *
+ * The inner hooks (`useAdminDataDeck`, etc.) only mount when the
+ * guard resolves to authenticated — so we don't fire wasted KV
+ * fetches for visitors who shouldn't be here in the first place.
+ */
 export default function AdminDeckRoute() {
+  return (
+    <RequireAdminAccess>
+      <AdminDeckRouteInner />
+    </RequireAdminAccess>
+  );
+}
+
+function AdminDeckRouteInner() {
   const { slug } = useParams<{ slug: string }>();
   const [search] = useSearchParams();
   const editMode = search.get("edit") === "1";

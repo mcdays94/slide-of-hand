@@ -3,8 +3,16 @@
  * (kicker + Settings + link back to the public index). Nested routes render
  * via `<Outlet />`.
  *
- * Authentication is NOT enforced here — Cloudflare Access gates `/admin/*`
- * at the edge before any of this code runs.
+ * ## Authentication
+ *
+ * Cloudflare Access gates `/admin/*` and `/api/admin/*` at the edge,
+ * but ONLY for full HTTP requests. Client-side React Router navigation
+ * from `/` (public) to `/admin` does NOT make an HTTP request, so the
+ * edge never sees it. To stop unauthenticated visitors from reaching
+ * admin chrome via in-app navigation, the layout wraps every render in
+ * `<RequireAdminAccess>` — a client-side guard that probes
+ * `/api/admin/auth-status` and renders a sign-in landing if the
+ * visitor has no Access session. Surfaced 2026-05-11.
  *
  * ## Why this layout owns Settings
  *
@@ -30,6 +38,11 @@
  * Wrapping the entire admin shell ensures the row appears regardless
  * of which admin sub-route the user is on. (Inside `<Deck>`, the
  * per-route `<PresenterModeProvider>` does the same job already.)
+ *
+ * Note: this provider is INSIDE `<RequireAdminAccess>`, so it only
+ * mounts when the user is authenticated. `enabled={true}` is safe
+ * because by the time we reach this line, the auth gate has already
+ * resolved the user as authenticated.
  */
 
 import { Settings as SettingsIcon } from "lucide-react";
@@ -37,42 +50,45 @@ import { useState } from "react";
 import { Link, Outlet } from "react-router-dom";
 import { SettingsModal } from "@/framework/viewer/SettingsModal";
 import { PresenterModeProvider } from "@/framework/presenter/mode";
+import { RequireAdminAccess } from "@/components/RequireAdminAccess";
 
 export default function AdminLayout() {
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   return (
-    <PresenterModeProvider enabled={true}>
-      <div className="flex min-h-screen flex-col bg-cf-bg-100 text-cf-text">
-        <header className="flex items-center justify-between border-b border-cf-border px-6 py-4">
-          <div className="flex items-center gap-3">
-            <Link to="/admin" className="cf-tag no-underline">
-              Slide of Hand · Admin
-            </Link>
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => setSettingsOpen(true)}
-              className="cf-btn-ghost inline-flex items-center gap-1.5"
-              data-testid="admin-header-settings"
-              aria-label="Open settings"
-              title="Settings"
-            >
-              <SettingsIcon size={14} aria-hidden="true" />
-              <span>Settings</span>
-            </button>
-            <Link to="/" className="cf-btn-ghost no-underline">
-              Public site
-            </Link>
-          </div>
-        </header>
-        <Outlet />
-        <SettingsModal
-          open={settingsOpen}
-          onClose={() => setSettingsOpen(false)}
-        />
-      </div>
-    </PresenterModeProvider>
+    <RequireAdminAccess>
+      <PresenterModeProvider enabled={true}>
+        <div className="flex min-h-screen flex-col bg-cf-bg-100 text-cf-text">
+          <header className="flex items-center justify-between border-b border-cf-border px-6 py-4">
+            <div className="flex items-center gap-3">
+              <Link to="/admin" className="cf-tag no-underline">
+                Slide of Hand · Admin
+              </Link>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setSettingsOpen(true)}
+                className="cf-btn-ghost inline-flex items-center gap-1.5"
+                data-testid="admin-header-settings"
+                aria-label="Open settings"
+                title="Settings"
+              >
+                <SettingsIcon size={14} aria-hidden="true" />
+                <span>Settings</span>
+              </button>
+              <Link to="/" className="cf-btn-ghost no-underline">
+                Public site
+              </Link>
+            </div>
+          </header>
+          <Outlet />
+          <SettingsModal
+            open={settingsOpen}
+            onClose={() => setSettingsOpen(false)}
+          />
+        </div>
+      </PresenterModeProvider>
+    </RequireAdminAccess>
   );
 }
