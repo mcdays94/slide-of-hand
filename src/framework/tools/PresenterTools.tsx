@@ -2,17 +2,21 @@
  * Presenter-tools composition wrapper.
  *
  * Mounts laser, magnifier, marker, and the auto-hide chrome controller as
- * a single bundle. Internally gated by `usePresenterMode()` PLUS a
- * `?presenter-mode=1` URL override (so this slice can be probed before the
- * admin route from slice #7 lands). When neither gate is on, this renders
- * `null` and no listeners are attached.
+ * a single bundle. **Audience-side presentation aids — available on every
+ * deck viewer regardless of authentication.** A presenter giving a talk on
+ * the public URL needs `Q` (laser) / `W` (magnifier) / `E` (marker) to
+ * highlight content; gating these on Cloudflare Access would force them
+ * to sign in before opening their own public deck.
  *
- * Override mechanism: when the URL carries `?presenter-mode=1`, we ALSO
- * install a module-level auto-mount that injects a fresh `<PresenterTools />`
- * onto `document.body`. This is needed because `<PresenterAffordances />`
- * gates on `usePresenterMode()` and would otherwise short-circuit before
- * <PresenterTools /> ever rendered. The auto-mount path is purely for local
- * probing and does nothing in normal admin flow.
+ * Originally (slice #6) this gated on `usePresenterMode()` so the public
+ * viewer at `/decks/<slug>` showed audience-only chrome. The 2026-05-10
+ * "tools globally available" decision flipped `<PresenterModeProvider>`
+ * to `enabled={true}` on the public route — which then doubled as an
+ * accidental admin-chrome gate (fixed in PRs #164/#165). The route's
+ * `enabled` is now `auth-driven` again, BUT the tools themselves should
+ * stay always-on. They live OUTSIDE `<PresenterAffordances>` now (which
+ * is auth-gated; it still hosts the P-key presenter-window trigger),
+ * mounted directly by `<Deck>`.
  *
  * Active-tool surface area (issue #10):
  *   - Each tool reports its active state via `onActiveChange`.
@@ -25,38 +29,14 @@
  *   - A `<ToolActivePill />` is rendered top-right whenever a tool is on.
  */
 
-import { useEffect, useMemo, useState } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { usePresenterMode } from "@/framework/presenter/mode";
+import { useEffect, useState } from "react";
 import { Laser } from "./Laser";
 import { Magnifier } from "./Magnifier";
 import { Marker } from "./Marker";
 import { AutoHideChrome } from "./AutoHideChrome";
 import { ToolActivePill, type ActiveTool } from "./ToolActivePill";
 
-/**
- * Read the override from `location.search`. Exported for tests / probes.
- *
- * Returns `true` when the URL carries `?presenter-mode=1` (or `?presenter`),
- * `false` otherwise. SSR-safe: returns `false` when `window` is missing.
- */
-export function readPresenterModeOverride(): boolean {
-  if (typeof window === "undefined") return false;
-  try {
-    const params = new URLSearchParams(window.location.search);
-    const v = params.get("presenter-mode");
-    if (v === "1" || v === "true") return true;
-    return params.has("presenter");
-  } catch {
-    return false;
-  }
-}
-
 export function PresenterTools() {
-  const presenterMode = usePresenterMode();
-  const override = useMemo(() => readPresenterModeOverride(), []);
-  const enabled = presenterMode || override;
-
   const [laserActive, setLaserActive] = useState(false);
   const [magnifierActive, setMagnifierActive] = useState(false);
   const [markerActive, setMarkerActive] = useState(false);
@@ -75,7 +55,6 @@ export function PresenterTools() {
   // Mirror activeTool + legacy markerActive flag onto the deck root so CSS
   // can scope cursor visibility.
   useEffect(() => {
-    if (!enabled) return;
     const root = document.querySelector<HTMLElement>("[data-deck-slug]");
     if (!root) return;
     if (activeTool) {
@@ -92,15 +71,13 @@ export function PresenterTools() {
       root.removeAttribute("data-tool-active");
       root.removeAttribute("data-marker-active");
     };
-  }, [enabled, activeTool, markerActive]);
+  }, [activeTool, markerActive]);
 
   // Resolve slug for tool broadcasts (Laser / Magnifier / Marker).
   // The slug source is the `[data-deck-slug]` attribute on the host's deck
-  // root (or PresenterWindow). When this PresenterTools instance was
-  // mounted via the URL-override auto-mount, the React main tree may not
-  // have committed yet, so the attribute can be temporarily missing. Poll
-  // for up to ~1s and store in state so children re-render with the slug
-  // once it's available.
+  // root (or PresenterWindow). On first paint the attribute may not have
+  // committed yet — poll for up to ~1s and store in state so children
+  // re-render with the slug once it's available.
   const [slug, setSlug] = useState<string | undefined>(() => {
     if (typeof document === "undefined") return undefined;
     const root = document.querySelector<HTMLElement>("[data-deck-slug]");
@@ -127,9 +104,7 @@ export function PresenterTools() {
     return () => {
       cancelled = true;
     };
-  }, [slug, enabled]);
-
-  if (!enabled) return null;
+  }, [slug]);
 
   return (
     <>
@@ -140,37 +115,4 @@ export function PresenterTools() {
       <ToolActivePill tool={activeTool} />
     </>
   );
-}
-
-// ──────────────────────────────────────────────────────────────────────────
-// URL-override auto-mount.
-//
-// `<PresenterAffordances />` early-returns null when `usePresenterMode()` is
-// false, so embedded `<PresenterTools />` never renders. To support a
-// `?presenter-mode=1` probing override (used for visual verification before
-// slice #7's admin route lands), we attach a sibling root at body level. The
-// child copy reads the same URL override and renders the toolset directly.
-// ──────────────────────────────────────────────────────────────────────────
-
-const AUTO_MOUNT_HOST_ID = "slide-of-hand-presenter-tools-override";
-let autoMountRoot: Root | null = null;
-
-function ensureAutoMount() {
-  if (typeof window === "undefined" || typeof document === "undefined") return;
-  if (!readPresenterModeOverride()) return;
-  if (document.getElementById(AUTO_MOUNT_HOST_ID)) return;
-  const host = document.createElement("div");
-  host.id = AUTO_MOUNT_HOST_ID;
-  document.body.appendChild(host);
-  autoMountRoot = createRoot(host);
-  autoMountRoot.render(<PresenterTools />);
-}
-
-if (typeof window !== "undefined" && typeof document !== "undefined") {
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", ensureAutoMount, { once: true });
-  } else {
-    // Defer to next tick so React's main root has finished mounting first.
-    setTimeout(ensureAutoMount, 0);
-  }
 }

@@ -54,6 +54,7 @@ import { computeSelector, fingerprint, findBySelector } from "@/lib/element-sele
 import { mergeSlides } from "@/lib/manifest-merge";
 import { usePresenterMode } from "@/framework/presenter/mode";
 import { PresenterAffordances } from "@/framework/presenter/PresenterAffordances";
+import { PresenterTools } from "@/framework/tools/PresenterTools";
 import { AudienceToolMirror } from "@/framework/tools/AudienceToolMirror";
 import { slideTransition } from "@/lib/motion";
 
@@ -1006,6 +1007,13 @@ export function Deck({ slug, title, slides }: DeckProps) {
           />
         )}
         <PresenterAffordances />
+        {/* Presenter tools (laser / magnifier / marker / auto-hide
+            chrome) are audience-side aids — a presenter on the public
+            URL needs Q/W/E without an Access session. Mount directly
+            (NOT inside <PresenterAffordances>, which is auth-gated)
+            so they're available on every deck viewer regardless of
+            authentication. 2026-05-11. */}
+        <PresenterTools />
         {/* Item F (#111): on the AUDIENCE-facing deck (i.e. NOT the
             presenter window — distinguished by the `?presenter=1` URL
             param being absent), subscribe to broadcast tool cursors so
