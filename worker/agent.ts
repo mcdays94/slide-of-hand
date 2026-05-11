@@ -64,6 +64,10 @@ import { createWorkersAI } from "workers-ai-provider";
 import { streamText, convertToModelMessages, stepCountIs } from "ai";
 import { requireAccessAuth, getAccessUserEmail } from "./access-auth";
 import { buildTools } from "./agent-tools";
+import {
+  AI_ASSISTANT_MODELS,
+  type AiAssistantModel,
+} from "../src/lib/ai-models";
 
 /**
  * Env subset the agent needs. Composed into the main `Env` interface
@@ -82,16 +86,69 @@ export interface AgentEnv {
 }
 
 /**
- * Workers AI model used for chat completions in phase 1. Hardcoded —
- * the model picker / settings entry lands with the AI Gateway phase.
+ * Mapping from the friendly AI-assistant model key (the stable
+ * contract with persisted client settings — see `src/lib/settings.ts`)
+ * to the current Workers AI catalog ID. Issue #131 item A.
  *
- * Using `kimi-k2.6` (current Moonshot frontier model on Workers AI:
- * 1T params, 262.1k context, function calling, reasoning, vision).
- * The catalog also lists `kimi-k2.5` (deprecating). Earlier drafts of
- * this PR used `kimi-k2-instruct` — that ID is from an older catalog
- * snapshot and returns error 5018 on current Workers AI.
+ * **Why this mapping exists.** Workers AI model IDs drift
+ * (kimi-k2.5 → kimi-k2.6 deprecation, llama-3.x → llama-4 family,
+ * etc.). The friendly key is the stable contract for everything
+ * client-side: the persisted setting, the segmented-row labels, the
+ * URL of any future analytics. The catalog ID is the server-side
+ * concern that can change independently.
+ *
+ * **Why this mapping is the allow-list.** Defence in depth — the
+ * client sends a friendly key on every chat turn (via `useAgentChat`'s
+ * `body` option), and the server re-checks it against `Object.keys`
+ * of this mapping before passing the resolved catalog ID into
+ * `streamText`. A stale client, a tampered localStorage, or any
+ * arbitrary `body.model` value cannot escape this allow-list to
+ * invoke a model we haven't approved.
+ *
+ * **Catalog IDs verified 2026-05-11 via `npx wrangler ai models`.**
+ * If any of these IDs is later renamed or deprecated, the user-visible
+ * change is at MOST a single picker option breaking — the others
+ * still work, and the per-user persisted setting (a friendly key) is
+ * unaffected.
  */
-const MODEL_ID = "@cf/moonshotai/kimi-k2.6";
+export const AI_ASSISTANT_MODEL_IDS: Record<AiAssistantModel, string> = {
+  "kimi-k2.6": "@cf/moonshotai/kimi-k2.6",
+  "llama-4-scout": "@cf/meta/llama-4-scout-17b-16e-instruct",
+  "gpt-oss-120b": "@cf/openai/gpt-oss-120b",
+};
+
+/**
+ * Default model key when the client doesn't send one, or sends one
+ * that fails the allow-list check. Matches `DEFAULT_SETTINGS.aiAssistantModel`
+ * in `src/lib/settings.ts` — the two MUST stay in sync.
+ */
+const DEFAULT_AI_ASSISTANT_MODEL: AiAssistantModel = "kimi-k2.6";
+
+/**
+ * Validate the client-supplied model key against the allow-list and
+ * resolve it to a Workers AI catalog ID. Returns the default catalog
+ * ID when:
+ *
+ *   - `body` is undefined (no per-turn override)
+ *   - `body.model` is missing
+ *   - `body.model` is not a string
+ *   - `body.model` is not in the friendly-key allow-list
+ *
+ * This is the single source of truth for "what model does the agent
+ * actually invoke?". `onChatMessage` calls it once per turn.
+ */
+export function resolveAiAssistantModel(
+  body: Record<string, unknown> | undefined,
+): string {
+  const candidate = body?.model;
+  if (
+    typeof candidate === "string" &&
+    (AI_ASSISTANT_MODELS as readonly string[]).includes(candidate)
+  ) {
+    return AI_ASSISTANT_MODEL_IDS[candidate as AiAssistantModel];
+  }
+  return AI_ASSISTANT_MODEL_IDS[DEFAULT_AI_ASSISTANT_MODEL];
+}
 
 /**
  * System prompt. Updated for phase 3a + 3b (issue #131) — the agent
@@ -233,13 +290,19 @@ export class DeckAuthorAgent extends AIChatAgent<AgentEnv> {
     // it so `readDeck`/`proposePatch` always operate on the deck the
     // user is actually editing.
     const tools = buildTools(this.env, this.name);
+    // Resolve the model on every turn (issue #131 item A). The client
+    // sends a friendly key via `useAgentChat({ body: { model } })`;
+    // `resolveAiAssistantModel` allow-list-validates and resolves to
+    // the current Workers AI catalog ID. Falls back to the default
+    // (Kimi K2.6) for missing / unknown / tampered values.
+    const modelId = resolveAiAssistantModel(options?.body);
     const result = streamText({
-      // `workersai(MODEL_ID)` returns the AI-SDK provider for the
+      // `workersai(modelId)` returns the AI-SDK provider for the
       // chosen Workers AI model. Cast through `any` because the SDK's
       // model ID union is narrower than the catalog (Kimi K2 is in the
       // catalog but the TS type sometimes lags behind).
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      model: workersai(MODEL_ID as any),
+      model: workersai(modelId as any),
       system: SYSTEM_PROMPT,
       messages: await convertToModelMessages(this.messages),
       tools,

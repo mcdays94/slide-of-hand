@@ -16,6 +16,7 @@ import { act, cleanup, render, screen } from "@testing-library/react";
 import { STORAGE_KEY } from "@/lib/settings";
 import { SettingsModal } from "./SettingsModal";
 import { SettingsProvider } from "./useSettings";
+import { PresenterModeProvider } from "@/framework/presenter/mode";
 
 afterEach(() => {
   cleanup();
@@ -170,6 +171,7 @@ describe("<SettingsModal>", () => {
       presenterNextSlideShowsFinalPhase: false,
       notesDefaultMode: "rich",
       deckCardHoverAnimation: { enabled: true, slideCount: 3 },
+      aiAssistantModel: "kimi-k2.6",
     });
 
     // Toggling again flips it back ON.
@@ -182,6 +184,7 @@ describe("<SettingsModal>", () => {
       presenterNextSlideShowsFinalPhase: false,
       notesDefaultMode: "rich",
       deckCardHoverAnimation: { enabled: true, slideCount: 3 },
+      aiAssistantModel: "kimi-k2.6",
     });
   });
 
@@ -289,6 +292,100 @@ describe("<SettingsModal>", () => {
           ),
         ).toBeTruthy();
       }
+    });
+  });
+
+  // ─── AI assistant model picker (issue #131 item A) ─────────────────
+  //
+  // Three friendly keys, presenter-mode-only (the picker only makes
+  // sense for the in-Studio AI agent, which only lives behind the
+  // admin route). Mirrors the existing `<GitHubConnectRow>` gating
+  // pattern.
+  describe("aiAssistantModel picker (issue #131 item A)", () => {
+    it("renders the picker when presenter mode is enabled", () => {
+      render(
+        <PresenterModeProvider enabled={true}>
+          <SettingsProvider>
+            <SettingsModal open={true} onClose={() => {}} />
+          </SettingsProvider>
+        </PresenterModeProvider>,
+      );
+      // The picker uses the segmented-row primitive with the
+      // testIdPrefix "settings-modal-ai-assistant-model" so each
+      // option becomes `…-{key}`.
+      expect(
+        screen.getByTestId("settings-modal-ai-assistant-model-kimi-k2.6"),
+      ).toBeTruthy();
+      expect(
+        screen.getByTestId("settings-modal-ai-assistant-model-llama-4-scout"),
+      ).toBeTruthy();
+      expect(
+        screen.getByTestId("settings-modal-ai-assistant-model-gpt-oss-120b"),
+      ).toBeTruthy();
+    });
+
+    it("does NOT render the picker when presenter mode is disabled (public viewer)", () => {
+      // No `<PresenterModeProvider>` → default is `false` → picker
+      // is hidden. The picker is an admin-only concept (it
+      // configures the in-Studio agent), so leaking it into the
+      // public viewer's settings modal would be confusing.
+      render(
+        <SettingsProvider>
+          <SettingsModal open={true} onClose={() => {}} />
+        </SettingsProvider>,
+      );
+      expect(
+        screen.queryByTestId("settings-modal-ai-assistant-model-kimi-k2.6"),
+      ).toBeNull();
+    });
+
+    it("defaults to the kimi-k2.6 option (aria-checked=true)", () => {
+      render(
+        <PresenterModeProvider enabled={true}>
+          <SettingsProvider>
+            <SettingsModal open={true} onClose={() => {}} />
+          </SettingsProvider>
+        </PresenterModeProvider>,
+      );
+      const kimi = screen.getByTestId(
+        "settings-modal-ai-assistant-model-kimi-k2.6",
+      );
+      expect(kimi.getAttribute("aria-checked")).toBe("true");
+      // The other two are inactive.
+      const llama = screen.getByTestId(
+        "settings-modal-ai-assistant-model-llama-4-scout",
+      );
+      expect(llama.getAttribute("aria-checked")).toBe("false");
+      const gpt = screen.getByTestId(
+        "settings-modal-ai-assistant-model-gpt-oss-120b",
+      );
+      expect(gpt.getAttribute("aria-checked")).toBe("false");
+    });
+
+    it("clicking an option flips the active state and persists the choice", () => {
+      render(
+        <PresenterModeProvider enabled={true}>
+          <SettingsProvider>
+            <SettingsModal open={true} onClose={() => {}} />
+          </SettingsProvider>
+        </PresenterModeProvider>,
+      );
+      const gpt = screen.getByTestId(
+        "settings-modal-ai-assistant-model-gpt-oss-120b",
+      );
+      act(() => {
+        gpt.click();
+      });
+      expect(gpt.getAttribute("aria-checked")).toBe("true");
+      const kimi = screen.getByTestId(
+        "settings-modal-ai-assistant-model-kimi-k2.6",
+      );
+      expect(kimi.getAttribute("aria-checked")).toBe("false");
+
+      const persisted = JSON.parse(
+        window.localStorage.getItem(STORAGE_KEY)!,
+      ) as { aiAssistantModel: string };
+      expect(persisted.aiAssistantModel).toBe("gpt-oss-120b");
     });
   });
 });

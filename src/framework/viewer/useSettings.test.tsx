@@ -88,6 +88,7 @@ describe("<SettingsProvider> + useSettings()", () => {
       presenterNextSlideShowsFinalPhase: false,
       notesDefaultMode: "rich",
       deckCardHoverAnimation: { enabled: true, slideCount: 3 },
+      aiAssistantModel: "kimi-k2.6",
     });
   });
 
@@ -159,6 +160,7 @@ describe("<SettingsProvider> + useSettings()", () => {
           presenterNextSlideShowsFinalPhase: false,
           notesDefaultMode: "rich",
           deckCardHoverAnimation: { enabled: true, slideCount: 3 },
+          aiAssistantModel: "kimi-k2.6",
         }}
       >
         <Probe />

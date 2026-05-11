@@ -28,6 +28,28 @@ export const STORAGE_KEY = "slide-of-hand-settings";
 export type NotesDefaultMode = "rich" | "markdown";
 
 /**
+ * In-Studio AI assistant model picker (issue #131 item A). The friendly
+ * keys + type + type-guard live in their own DOM-free module so the
+ * worker can import them without dragging in this file's localStorage
+ * glue. We re-export here so existing client-side imports keep
+ * working.
+ *
+ *   - **kimi-k2.6** (default) — Moonshot frontier 1T-parameter model,
+ *     262.1k context, multi-turn tool calling.
+ *   - **llama-4-scout** — Meta Llama 4 Scout, multimodal, 17B/16E.
+ *   - **gpt-oss-120b** — OpenAI's open-weight reasoning model, 120B.
+ *
+ * See `src/lib/ai-models.ts` for the canonical declaration.
+ */
+export {
+  AI_ASSISTANT_MODELS,
+  isAiAssistantModel,
+  type AiAssistantModel,
+} from "./ai-models";
+import { isAiAssistantModel } from "./ai-models";
+import type { AiAssistantModel } from "./ai-models";
+
+/**
  * Hover-preview animation settings (issue #128). When `enabled` is true
  * and the homepage / admin grid renders a `<DeckCard>` in `view="grid"`
  * mode, hovering the card cycles through the first `slideCount` slide
@@ -99,6 +121,13 @@ export interface Settings {
    * `slideCount = 3`.
    */
   deckCardHoverAnimation: DeckCardHoverAnimationSettings;
+  /**
+   * The model the in-Studio AI agent uses for chat completions
+   * (issue #131 item A). One of three friendly keys; the server
+   * maps the chosen key to the current Workers AI catalog ID. See
+   * `AiAssistantModel` above for the per-option rationale.
+   */
+  aiAssistantModel: AiAssistantModel;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -106,6 +135,7 @@ export const DEFAULT_SETTINGS: Settings = {
   presenterNextSlideShowsFinalPhase: false,
   notesDefaultMode: "rich",
   deckCardHoverAnimation: { enabled: true, slideCount: 3 },
+  aiAssistantModel: "kimi-k2.6",
 };
 
 /**
@@ -176,6 +206,9 @@ export function readSettings(): Settings {
       deckCardHoverAnimation: parseDeckCardHoverAnimation(
         partial.deckCardHoverAnimation,
       ),
+      aiAssistantModel: isAiAssistantModel(partial.aiAssistantModel)
+        ? partial.aiAssistantModel
+        : DEFAULT_SETTINGS.aiAssistantModel,
     };
   } catch {
     return { ...DEFAULT_SETTINGS };
