@@ -569,6 +569,24 @@ function ToolPartCard({ part }: { part: ToolPart }) {
       {summary.detail && (
         <p className="mt-1 text-cf-text">{summary.detail}</p>
       )}
+      {summary.href && (
+        // The "View →" link is for tools whose result includes a
+        // canonical URL the user wants to follow (issue #131 phase
+        // 3c: `proposeSourceEdit` returns a PR URL). `data-interactive`
+        // keeps it from triggering slide advance via Deck's click-to-
+        // advance handler; `target=_blank` because the chat panel is
+        // inside the deck viewer and we don't want to navigate away.
+        <a
+          data-interactive
+          data-testid="studio-agent-tool-link"
+          href={summary.href}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="mt-2 inline-flex items-center gap-1 font-mono text-[10px] uppercase tracking-[0.2em] text-cf-orange transition-colors hover:text-cf-text"
+        >
+          View →
+        </a>
+      )}
       <details className="mt-2">
         <summary className="cursor-pointer font-mono text-[10px] uppercase tracking-[0.2em] text-cf-text-subtle">
           Show JSON
@@ -605,11 +623,16 @@ function ToolPartCard({ part }: { part: ToolPart }) {
  * Friendly one-line summary for each known tool's result. Falls back
  * to a generic "Result" pill for unknown tools (so a future MCP tool
  * renders sensibly without code changes here).
+ *
+ * The optional `href` field is for tools whose result includes a
+ * canonical URL (e.g. `proposeSourceEdit` returns a PR URL). The
+ * card renders it as a small "View →" button so the user doesn't
+ * have to dig into the JSON to find the link.
  */
 function summariseToolOutput(
   toolName: string,
   output: unknown,
-): { icon: string; label: string; detail?: string } {
+): { icon: string; label: string; detail?: string; href?: string } {
   if (toolName === "readDeck" && output && typeof output === "object") {
     const o = output as {
       found?: boolean;
@@ -739,6 +762,62 @@ function summariseToolOutput(
         label: "Read failed",
         detail: o.error ?? "Could not read file.",
       };
+    }
+  }
+  if (
+    toolName === "proposeSourceEdit" &&
+    output &&
+    typeof output === "object"
+  ) {
+    // Issue #131 phase 3c. Discriminated union — the success branch
+    // carries the PR URL, the failure branch carries a `phase` that
+    // explains where in the pipeline we stopped.
+    const o = output as {
+      ok?: boolean;
+      prNumber?: number;
+      prHtmlUrl?: string;
+      branch?: string;
+      phase?: string;
+      error?: string;
+      noEffectiveChanges?: boolean;
+      failedTestGatePhase?: string;
+      failedPath?: string;
+    };
+    if (
+      o.ok === true &&
+      typeof o.prNumber === "number" &&
+      typeof o.prHtmlUrl === "string"
+    ) {
+      return {
+        icon: "🚀",
+        label: "Opened draft PR",
+        detail: `#${o.prNumber}${o.branch ? ` · ${o.branch}` : ""}`,
+        href: o.prHtmlUrl,
+      };
+    }
+    if (o.ok === false) {
+      // Phase-aware error labels so the user (and the model) can
+      // tell at a glance whether this is recoverable (typecheck red)
+      // or terminal (no GitHub connection).
+      const reasonByPhase: Record<string, string> = {
+        auth: "Auth missing",
+        github_token: "GitHub not connected",
+        clone: "Clone failed",
+        apply: "File edit rejected",
+        test_gate: "Test gate failed",
+        commit_push: o.noEffectiveChanges
+          ? "No effective changes"
+          : "Commit/push failed",
+        open_pr: "PR open failed",
+      };
+      const phaseLabel = reasonByPhase[o.phase ?? ""] ?? "Source edit failed";
+      const detail =
+        o.failedTestGatePhase
+          ? `${o.error ?? ""}${o.error ? " · " : ""}Failed phase: ${o.failedTestGatePhase}`
+          : o.failedPath
+            ? `${o.error ?? ""}${o.error ? " · " : ""}Path: ${o.failedPath}`
+            : o.error;
+      return { icon: "⚠️", label: phaseLabel, detail };
     }
   }
   return { icon: "🔧", label: "Tool result" };

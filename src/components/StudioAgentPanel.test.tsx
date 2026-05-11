@@ -682,3 +682,170 @@ describe("<StudioAgentPanel> — phase 3 tool-call rendering", () => {
     expect(pill.textContent).toMatch(/Settings/);
   });
 });
+
+// ─── proposeSourceEdit summary card (issue #131 phase 3c) ───────────
+
+describe("<StudioAgentPanel> — proposeSourceEdit tool-call rendering", () => {
+  it("renders the success card with PR number, branch, and a 'View →' link", () => {
+    setupHooks({
+      messages: [
+        {
+          id: "a1",
+          role: "assistant",
+          parts: [
+            {
+              type: "tool-proposeSourceEdit",
+              toolCallId: "call-1",
+              state: "output-available",
+              input: {
+                files: [{ path: "src/decks/public/hello/01.tsx", content: "..." }],
+                summary: "tighten title slide copy",
+              },
+              output: {
+                ok: true,
+                prNumber: 999,
+                prHtmlUrl: "https://github.com/mcdays94/slide-of-hand/pull/999",
+                branch: "agent/hello-1715425200000",
+                commitSha: "abcdef0123456789abcdef0123456789abcdef01",
+                testGatePhases: [],
+              },
+            },
+          ],
+        },
+      ],
+    });
+    render(<StudioAgentPanel deckSlug="hello" onClose={vi.fn()} />);
+    const pill = screen.getByTestId("studio-agent-tool-part");
+    expect(pill.dataset.tool).toBe("proposeSourceEdit");
+    expect(pill.textContent).toMatch(/opened draft pr/i);
+    expect(pill.textContent).toMatch(/#999/);
+    expect(pill.textContent).toMatch(/agent\/hello-/);
+    // The View → link points at the PR URL and opens in a new tab.
+    const link = screen.getByTestId("studio-agent-tool-link");
+    expect(link.getAttribute("href")).toBe(
+      "https://github.com/mcdays94/slide-of-hand/pull/999",
+    );
+    expect(link.getAttribute("target")).toBe("_blank");
+    expect(link.getAttribute("rel")).toMatch(/noopener/);
+    // `data-interactive` so clicking it doesn't bubble to <Deck>'s
+    // click-to-advance handler.
+    expect(link.hasAttribute("data-interactive")).toBe(true);
+  });
+
+  it("renders the test-gate failure card with the failed phase surfaced", () => {
+    setupHooks({
+      messages: [
+        {
+          id: "a1",
+          role: "assistant",
+          parts: [
+            {
+              type: "tool-proposeSourceEdit",
+              toolCallId: "call-1",
+              state: "output-available",
+              input: { files: [], summary: "x" },
+              output: {
+                ok: false,
+                phase: "test_gate",
+                failedTestGatePhase: "typecheck",
+                testGatePhases: [],
+                error: "Test gate failed at the `typecheck` phase.",
+              },
+            },
+          ],
+        },
+      ],
+    });
+    render(<StudioAgentPanel deckSlug="hello" onClose={vi.fn()} />);
+    const pill = screen.getByTestId("studio-agent-tool-part");
+    expect(pill.textContent).toMatch(/test gate failed/i);
+    expect(pill.textContent).toMatch(/typecheck/);
+    // No "View →" link on failure cards.
+    expect(screen.queryByTestId("studio-agent-tool-link")).toBeNull();
+  });
+
+  it("renders the apply-phase failure with the failedPath surfaced", () => {
+    setupHooks({
+      messages: [
+        {
+          id: "a1",
+          role: "assistant",
+          parts: [
+            {
+              type: "tool-proposeSourceEdit",
+              toolCallId: "call-1",
+              state: "output-available",
+              input: { files: [], summary: "x" },
+              output: {
+                ok: false,
+                phase: "apply",
+                failedPath: "/etc/passwd",
+                error: "Path must be relative (no leading '/')",
+              },
+            },
+          ],
+        },
+      ],
+    });
+    render(<StudioAgentPanel deckSlug="hello" onClose={vi.fn()} />);
+    const pill = screen.getByTestId("studio-agent-tool-part");
+    expect(pill.textContent).toMatch(/file edit rejected/i);
+    expect(pill.textContent).toMatch(/\/etc\/passwd/);
+  });
+
+  it("renders the no-effective-changes branch with a distinct label", () => {
+    setupHooks({
+      messages: [
+        {
+          id: "a1",
+          role: "assistant",
+          parts: [
+            {
+              type: "tool-proposeSourceEdit",
+              toolCallId: "call-1",
+              state: "output-available",
+              input: { files: [], summary: "x" },
+              output: {
+                ok: false,
+                phase: "commit_push",
+                noEffectiveChanges: true,
+                error: "No effective changes to commit.",
+              },
+            },
+          ],
+        },
+      ],
+    });
+    render(<StudioAgentPanel deckSlug="hello" onClose={vi.fn()} />);
+    const pill = screen.getByTestId("studio-agent-tool-part");
+    expect(pill.textContent).toMatch(/no effective changes/i);
+  });
+
+  it("renders the github-not-connected branch with a friendly label", () => {
+    setupHooks({
+      messages: [
+        {
+          id: "a1",
+          role: "assistant",
+          parts: [
+            {
+              type: "tool-proposeSourceEdit",
+              toolCallId: "call-1",
+              state: "output-available",
+              input: { files: [], summary: "x" },
+              output: {
+                ok: false,
+                phase: "github_token",
+                error: "GitHub not connected. Open Settings → GitHub → Connect.",
+              },
+            },
+          ],
+        },
+      ],
+    });
+    render(<StudioAgentPanel deckSlug="hello" onClose={vi.fn()} />);
+    const pill = screen.getByTestId("studio-agent-tool-part");
+    expect(pill.textContent).toMatch(/github not connected/i);
+    expect(pill.textContent).toMatch(/Settings/);
+  });
+});
