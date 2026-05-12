@@ -70,6 +70,14 @@ const githubClientMock = vi.hoisted(() => ({
   TARGET_REPO: { owner: "mcdays94", repo: "slide-of-hand" },
   DEFAULT_BRANCH: "main",
   dataDeckPath: (slug: string) => `data-decks/${slug}.json`,
+  // Mirror the production constant so consumers that import it
+  // (e.g. `runCommitPatch` for the committer identity) get the same
+  // shape under test. See `worker/github-client.ts` for the
+  // "Cutindah" post-mortem.
+  SLIDE_OF_HAND_COMMIT_IDENTITY: {
+    name: "mcdays94",
+    email: "amtccdias@gmail.com",
+  },
 }));
 vi.mock("./github-client", () => githubClientMock);
 
@@ -493,8 +501,11 @@ describe("commitPatch", () => {
     expect(options.path).toBe("data-decks/test-deck.json");
     expect(options.message).toBe("Custom commit message");
     expect(JSON.parse(options.content).meta.title).toBe("Updated");
-    // Uses noreply email when only username + userId available.
-    expect(options.committer?.email).toContain("users.noreply.github.com");
+    // Committer is PINNED to the project owner — see
+    // `SLIDE_OF_HAND_COMMIT_IDENTITY` in `worker/github-client.ts`
+    // for the "Cutindah" post-mortem.
+    expect(options.committer?.name).toBe("mcdays94");
+    expect(options.committer?.email).toBe("amtccdias@gmail.com");
   });
 
   it("falls back to a default commit message when none is provided", async () => {
@@ -1102,8 +1113,11 @@ describe("runProposeSourceEdit — happy path", () => {
       sandboxStub,
       expect.objectContaining({
         commitMessage: goodInput.summary,
-        authorName: "alice",
-        authorEmail: "12345+alice@users.noreply.github.com",
+        // Author is PINNED to the project owner regardless of who's
+        // driving the agent — see `SLIDE_OF_HAND_COMMIT_IDENTITY` in
+        // `worker/github-client.ts` for the "Cutindah" post-mortem.
+        authorName: "mcdays94",
+        authorEmail: "amtccdias@gmail.com",
       }),
       "/workspace/repo",
     );

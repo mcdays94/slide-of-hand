@@ -73,15 +73,19 @@ export async function handleDeckStarterSetup(
   try {
     const result = await ensureDeckStarterRepo(env.ARTIFACTS);
     if (result.kind === "existed") {
+      // Cloudflare Artifacts SDK quirk (observed 2026-05-12 in
+      // production): `Artifacts.get(name)` returns a handle whose
+      // metadata properties (id, name, remote, defaultBranch) don't
+      // reliably surface via `JSON.stringify`. The handle's methods
+      // (fork, createToken) work fine, and the metadata IS exposed
+      // on `Artifacts.create()`'s result — but for the "existed"
+      // branch we don't have that to lean on. Return a minimal
+      // response that callers can act on without depending on
+      // serializable repo info.
       return Response.json({
         ok: true,
         kind: "existed",
-        repo: {
-          id: result.repo.id,
-          name: result.repo.name,
-          remote: result.repo.remote,
-          defaultBranch: result.repo.defaultBranch,
-        },
+        name: "deck-starter",
       });
     }
     // kind === "created"

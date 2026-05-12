@@ -1,5 +1,5 @@
 /**
- * Tests for `worker/skill-composer.ts` — the `/api/skills/cloudflare-deck-template`
+ * Tests for `worker/skill-composer.ts` — the `/api/admin/skills/cloudflare-deck-template`
  * endpoint (issue #168 Wave 4 — Worker D).
  *
  * Split into two layers:
@@ -145,7 +145,7 @@ describe("composeSkillMarkdown — pure function", () => {
 });
 
 describe("handleSkills — path matching", () => {
-  it("returns null for paths outside /api/skills/cloudflare-deck-template", async () => {
+  it("returns null for paths outside /api/admin/skills/cloudflare-deck-template", async () => {
     const req = adminRequest(
       "https://example.com/api/admin/decks",
     );
@@ -168,7 +168,7 @@ describe("handleSkills — path matching", () => {
 describe("handleSkills — method gate", () => {
   it("rejects POST with 405", async () => {
     const req = adminRequest(
-      "https://example.com/api/skills/cloudflare-deck-template",
+      "https://example.com/api/admin/skills/cloudflare-deck-template",
       { method: "POST" },
     );
     const res = await handleSkills(req, makeEnv());
@@ -178,7 +178,7 @@ describe("handleSkills — method gate", () => {
 
   it("rejects DELETE with 405", async () => {
     const req = adminRequest(
-      "https://example.com/api/skills/cloudflare-deck-template",
+      "https://example.com/api/admin/skills/cloudflare-deck-template",
       { method: "DELETE" },
     );
     const res = await handleSkills(req, makeEnv());
@@ -190,7 +190,7 @@ describe("handleSkills — method gate", () => {
 describe("handleSkills — auth gate", () => {
   it("returns 403 when no access headers are present", async () => {
     const req = new Request(
-      "https://example.com/api/skills/cloudflare-deck-template",
+      "https://example.com/api/admin/skills/cloudflare-deck-template",
     );
     const res = await handleSkills(req, makeEnv());
     expect(res).not.toBeNull();
@@ -203,7 +203,7 @@ describe("handleSkills — auth gate", () => {
     // these clients so external harnesses (curling with a service
     // token) can read the skill.
     const req = new Request(
-      "https://example.com/api/skills/cloudflare-deck-template",
+      "https://example.com/api/admin/skills/cloudflare-deck-template",
       {
         headers: { "cf-access-jwt-assertion": "stub-jwt" },
       },
@@ -215,7 +215,7 @@ describe("handleSkills — auth gate", () => {
 
   it("accepts a request authenticated via the interactive email header", async () => {
     const req = adminRequest(
-      "https://example.com/api/skills/cloudflare-deck-template",
+      "https://example.com/api/admin/skills/cloudflare-deck-template",
     );
     const res = await handleSkills(req, makeEnv());
     expect(res!.status).toBe(200);
@@ -230,7 +230,7 @@ describe("handleSkills — happy path", () => {
 
   it("returns 200 with text/markdown content-type", async () => {
     const req = adminRequest(
-      "https://example.com/api/skills/cloudflare-deck-template",
+      "https://example.com/api/admin/skills/cloudflare-deck-template",
     );
     const res = await handleSkills(req, makeEnv());
     expect(res!.status).toBe(200);
@@ -241,7 +241,7 @@ describe("handleSkills — happy path", () => {
     // The skill is admin-gated. Caching publicly would leak the
     // composed deck list. Per-browser short TTL is fine.
     const req = adminRequest(
-      "https://example.com/api/skills/cloudflare-deck-template",
+      "https://example.com/api/admin/skills/cloudflare-deck-template",
     );
     const res = await handleSkills(req, makeEnv());
     const cc = res!.headers.get("cache-control") ?? "";
@@ -252,7 +252,7 @@ describe("handleSkills — happy path", () => {
 
   it("returns the composed Markdown body verbatim", async () => {
     const req = adminRequest(
-      "https://example.com/api/skills/cloudflare-deck-template",
+      "https://example.com/api/admin/skills/cloudflare-deck-template",
     );
     const res = await handleSkills(req, makeEnv());
     const body = await res!.text();
@@ -265,7 +265,7 @@ describe("handleSkills — happy path", () => {
     // if this test breaks the spec evolves, that's fine. For now
     // GET-only is the documented surface.
     const req = adminRequest(
-      "https://example.com/api/skills/cloudflare-deck-template",
+      "https://example.com/api/admin/skills/cloudflare-deck-template",
       { method: "HEAD" },
     );
     const res = await handleSkills(req, makeEnv());

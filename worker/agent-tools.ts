@@ -59,6 +59,7 @@ import {
   openPullRequest,
   putFileContents,
   readFileContents,
+  SLIDE_OF_HAND_COMMIT_IDENTITY,
   TARGET_REPO,
   type GitHubError,
 } from "./github-client";
@@ -724,15 +725,15 @@ export async function runCommitPatch(
     message:
       commitMessage?.trim() ||
       `Update deck "${dry.dryRun.meta.title}" via in-Studio AI agent`,
-    committer: stored.username
-      ? {
-          name: stored.username,
-          // GitHub requires email; OAuth tokens from `public_repo` don't
-          // give us the user's verified email reliably, so fall back to
-          // the noreply form which GitHub displays correctly.
-          email: `${stored.userId}+${stored.username}@users.noreply.github.com`,
-        }
-      : undefined,
+    // Commit identity is PINNED to the project owner — see
+    // `SLIDE_OF_HAND_COMMIT_IDENTITY` in `worker/github-client.ts`
+    // for the rationale. Deriving the committer from OAuth-stored
+    // state per-call previously caused mis-attribution ("Cutindah"
+    // surfaced as a contributor after a transient OAuth state was
+    // cached against a different account). The token itself is
+    // still per-user (so authorisation is correctly scoped), only
+    // the attribution is constant.
+    committer: { ...SLIDE_OF_HAND_COMMIT_IDENTITY },
   });
 
   if (!result.ok) {
@@ -965,10 +966,14 @@ export async function runProposeSourceEdit(
 
   // 6. Commit + push a fresh branch.
   const branchName = `agent/${slug}-${Date.now()}`;
-  const authorName = stored.username ?? "slide-of-hand-agent";
-  const authorEmail = stored.username
-    ? `${stored.userId}+${stored.username}@users.noreply.github.com`
-    : "agent@slide-of-hand.local";
+  // Commit identity is PINNED to the project owner — see
+  // `SLIDE_OF_HAND_COMMIT_IDENTITY` in `worker/github-client.ts` for
+  // the "Cutindah" post-mortem. Deriving the author from OAuth state
+  // caused mis-attribution after a transient bad-account cache. The
+  // token (`stored.token`) is still per-user, so commit
+  // authorisation is correctly scoped.
+  const authorName = SLIDE_OF_HAND_COMMIT_IDENTITY.name;
+  const authorEmail = SLIDE_OF_HAND_COMMIT_IDENTITY.email;
   const commitResult = await commitAndPushInSandbox(
     sandbox,
     {

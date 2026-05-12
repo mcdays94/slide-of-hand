@@ -1,6 +1,6 @@
 # Skill: cloudflare-deck-template
 
-Build typed JSX decks for [Slide of Hand](https://slideofhand.lusostreams.com), a self-hosted deck platform on Cloudflare Workers + Static Assets. Use this skill when authoring a deck — by hand, via the in-Studio AI agent, or via an external harness (Opencode / Claude Code / Codex) pointed at <https://slideofhand.lusostreams.com/api/skills/cloudflare-deck-template>.
+Build typed JSX decks for [Slide of Hand](https://slideofhand.lusostreams.com), a self-hosted deck platform on Cloudflare Workers + Static Assets. Use this skill when authoring a deck — by hand, via the in-Studio AI agent, or via an external harness (Opencode / Claude Code / Codex) pointed at <https://slideofhand.lusostreams.com/api/admin/skills/cloudflare-deck-template>.
 
 Every deck is a TypeScript folder under `src/decks/public/<slug>/`. There is no markdown layer, no directive registry, no descriptor schema — slides are React components and decks are typed objects. The audience of this authoring layer is "people (or agents) who write React."
 

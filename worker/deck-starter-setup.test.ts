@@ -116,11 +116,14 @@ describe("handleDeckStarterSetup — happy paths", () => {
     const body = (await res!.json()) as {
       ok: boolean;
       kind: string;
-      repo: { name: string };
+      name: string;
     };
     expect(body.ok).toBe(true);
     expect(body.kind).toBe("existed");
-    expect(body.repo.name).toBe("deck-starter");
+    // We return only `name` on the existed branch (the SDK's repo
+    // handle doesn't serialize the metadata fields reliably — see
+    // the implementation comment).
+    expect(body.name).toBe("deck-starter");
   });
 
   it("returns kind:created when the baseline did not exist yet", async () => {

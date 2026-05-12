@@ -1,5 +1,5 @@
 /**
- * `/api/skills/cloudflare-deck-template` — Wave 4 of issue #168.
+ * `/api/admin/skills/cloudflare-deck-template` — Wave 4 of issue #168.
  *
  * Composes a Markdown "skill" describing how to author a Slide of Hand
  * deck. Consumed by:
@@ -95,7 +95,18 @@ export interface DeckSnapshot {
 // eslint-disable-next-line @typescript-eslint/no-empty-object-type
 export interface SkillsEnv {}
 
-const ENDPOINT_PATH = "/api/skills/cloudflare-deck-template";
+// Route lives under `/api/admin/*` so the Cloudflare Access app's
+// existing `self_hosted_domains` coverage gates it at the edge. The
+// Worker's `requireAccessAuth` is belt-and-braces on top.
+//
+// History: an earlier version of this file used `/api/skills/...`
+// which was OUTSIDE the Access app's coverage. The Worker still
+// accepted client-id headers via `requireAccessAuth`, but those
+// headers passed through Cloudflare unvalidated (Access only strips
+// client-set `cf-access-*` headers on paths it gates). Result: a
+// forged `CF-Access-Client-Id: anything` got 200. Fixed 2026-05-12
+// by moving under /api/admin so Access enforces.
+const ENDPOINT_PATH = "/api/admin/skills/cloudflare-deck-template";
 const GITHUB_SOURCE_BASE =
   "https://github.com/mcdays94/slide-of-hand/tree/main/src/decks/public";
 const PUBLIC_DECK_BASE = "https://slideofhand.lusostreams.com/decks";

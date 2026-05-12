@@ -21,7 +21,7 @@
  *     with a tighter prompt or surface the error to the user.
  *
  * The system prompt is a condensed version of the cloudflare-deck-template
- * skill (we don't fetch from `/api/skills/cloudflare-deck-template`
+ * skill (we don't fetch from `/api/admin/skills/cloudflare-deck-template`
  * — keeping the prompt local + small saves a same-Worker round trip
  * and keeps the prompt focused on JSX generation rather than the
  * full skill body).
