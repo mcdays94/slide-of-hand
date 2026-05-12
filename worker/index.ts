@@ -38,6 +38,10 @@ import { handleAuthStatus, type AuthStatusEnv } from "./auth-status";
 import { handleAgent, type AgentEnv } from "./agent";
 import { handleGitHubOAuth, type GitHubOAuthEnv } from "./github-oauth";
 import { handleSandboxSmoke, type SandboxSmokeEnv } from "./sandbox-smoke";
+import {
+  handleDiagArtifacts,
+  type DiagArtifactsEnv,
+} from "./diag-artifacts";
 import { handleSkills, type SkillsEnv } from "./skill-composer";
 import { handleMcpServers, type McpServersEnv } from "./mcp-servers";
 import { handlePreview, type PreviewEnv } from "./preview-route";
@@ -73,7 +77,8 @@ export interface Env
     SkillsEnv,
     McpServersEnv,
     PreviewEnv,
-    DeckStarterSetupEnv {
+    DeckStarterSetupEnv,
+    DiagArtifactsEnv {
   ASSETS: Fetcher;
 }
 
@@ -130,6 +135,12 @@ export default {
     // `worker/deck-starter-setup.ts`.
     const deckStarterResponse = await handleDeckStarterSetup(request, env);
     if (deckStarterResponse) return deckStarterResponse;
+    // Artifacts diagnostic endpoint (post-#180 verification). Tests
+    // the ARTIFACTS binding directly — bypasses our orchestration —
+    // so we can deterministically tell which Artifacts call fails
+    // when something goes wrong. See `worker/diag-artifacts.ts`.
+    const diagArtifactsResponse = await handleDiagArtifacts(request, env);
+    if (diagArtifactsResponse) return diagArtifactsResponse;
     // Draft deck preview route (issue #168 Wave 1). Serves preview
     // bundles from Cloudflare Artifacts draft repos so the Studio can
     // iframe each commit's output. STUB — returns 501 until Worker A
