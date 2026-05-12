@@ -75,10 +75,14 @@ import {
 import {
   runCreateDeckDraft,
   runIterateOnDeckDraft,
-  type DeckCreationSnapshot,
   type DeckDraftError,
   type DeckDraftResult,
 } from "./sandbox-deck-creation";
+// Pulled from the shared types module rather than from
+// `./sandbox-deck-creation` so type-only imports through this file
+// don't transitively drag Cloudflare ambient types (Artifacts, Ai,
+// ...) into frontend code that consumes `DeckDraftToolStreamItem`.
+import type { DeckDraftToolStreamItem as SharedDeckDraftToolStreamItem } from "../src/lib/deck-creation-snapshot";
 
 /** Subset of the Worker env the tools need. */
 export interface AgentToolsEnv {
@@ -1050,8 +1054,15 @@ export type DeckDraftToolResult = DeckDraftResult | DeckDraftError;
  * and observes the LAST yield as the tool's final output (the
  * generator's `return` value is intentionally ignored). So we yield
  * the lean shape last to keep the model's context budget tight.
+ *
+ * Defined in `src/lib/deck-creation-snapshot.ts` and re-exported
+ * here. The shared module shape uses `DeckDraftToolResult` (a
+ * lighter-weight twin of `DeckDraftToolResult` from this file) so
+ * frontend consumers don't pull in Cloudflare ambient types — the
+ * worker-side type still resolves correctly because the two shapes
+ * are structurally identical.
  */
-export type DeckDraftToolStreamItem = DeckCreationSnapshot | DeckDraftToolResult;
+export type DeckDraftToolStreamItem = SharedDeckDraftToolStreamItem;
 
 /**
  * Tool runner for `createDeckDraft`. Resolves the user's email from

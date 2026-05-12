@@ -63,6 +63,7 @@ import {
 } from "./sandbox-artifacts";
 import { applyFilesIntoSandbox } from "./sandbox-source-edit";
 import { streamDeckFiles, type DeckGenPartial } from "./ai-deck-gen";
+import type { DeckCreationSnapshot } from "../src/lib/deck-creation-snapshot";
 
 export interface SandboxDeckCreationEnv {
   Sandbox: DurableObjectNamespace<Sandbox>;
@@ -158,57 +159,15 @@ export interface DeckDraftError {
 }
 
 /**
- * Streaming snapshot yielded by `runCreateDeckDraft` and
- * `runIterateOnDeckDraft` at every phase boundary AND for each
- * partial yielded by `streamDeckFiles` during `ai_gen`.
- *
- * Consumed by the canvas UI on `/admin/decks/new` (via the agent
- * tool's `execute` async generator — see `worker/agent-tools.ts`)
- * to drive the phase strip, file tree, and streaming-content panel.
- *
- * Verbose by design: carries the full file contents on every frame.
- * The final value the model sees as a tool-result is the lean
- * `DeckDraftResult | DeckDraftError` returned by the generator, NOT
- * the snapshot — see ADR 0002 for why this asymmetry exists.
- *
- * Issue #178 sub-pieces (1) + (3).
+ * Re-export `DeckCreationSnapshot` from the shared types module. The
+ * shape lives in `src/lib/deck-creation-snapshot.ts` because both
+ * `tsconfig.app.json` (frontend) and `tsconfig.node.json` (worker)
+ * need to type-check against it, and pulling it out of `worker/`
+ * avoids transitively dragging Cloudflare ambient types (`Artifacts`,
+ * `Ai`, ...) into the frontend type-check. See ADR 0002.
  */
-export interface DeckCreationSnapshot {
-  /**
-   * Pipeline phase the orchestrator is currently in (or transitioning
-   * into). `done` and `error` are terminal.
-   */
-  phase:
-    | "fork"
-    | "clone"
-    | "ai_gen"
-    | "apply"
-    | "commit"
-    | "push"
-    | "done"
-    | "error";
-  /**
-   * The files the orchestrator has seen the AI emit so far. During
-   * `ai_gen`, the last file is `"writing"`. From `apply` onwards, all
-   * files are `"done"`. Empty until `ai_gen` produces its first
-   * partial.
-   */
-  files: Array<{ path: string; content: string; state: "writing" | "done" }>;
-  /** Path of the file currently being written (== last `"writing"` entry in `files`). */
-  currentFile?: string;
-  /** Commit message — populated as soon as the model emits it. */
-  commitMessage?: string;
-  /** Commit SHA — only populated on the terminal `done` snapshot. */
-  commitSha?: string;
-  /**
-   * Stable per-user-per-slug draft id, populated from the `clone`
-   * snapshot onwards. Lets the UI link to the draft preview before
-   * the commit lands.
-   */
-  draftId?: string;
-  /** Set on `phase: "error"` snapshots. Human-readable summary. */
-  error?: string;
-}
+export type { DeckCreationSnapshot } from "../src/lib/deck-creation-snapshot";
+export type { DeckGenPartial } from "../src/lib/deck-creation-snapshot";
 
 export type GetSandboxFn = (
   namespace: DurableObjectNamespace<Sandbox>,
@@ -340,7 +299,7 @@ export async function* runCreateDeckDraft(
     }
   } catch (err) {
     const errorMsg = `Failed to fork deck-starter: ${err instanceof Error ? err.message : String(err)}`;
-    yield { phase: "error", files: [], error: errorMsg };
+    yield { phase: "error", files: [], error: errorMsg, failedPhase: "fork" };
     return { ok: false, phase: "fork", error: errorMsg };
   }
 
@@ -349,7 +308,11 @@ export async function* runCreateDeckDraft(
     authenticatedUrl = buildAuthenticatedRemoteUrl(remoteUrl, token);
   } catch (err) {
     const errorMsg = `Failed to build authenticated URL: ${err instanceof Error ? err.message : String(err)}`;
-    yield { phase: "error", files: [], error: errorMsg };
+    // `token` is a DeckDraftError phase but not a canvas phase — the
+    // strip's "fork" chip is the closest visible step (token-build
+    // happens right after fork success). Marking it red is honest
+    // enough for the user.
+    yield { phase: "error", files: [], error: errorMsg, failedPhase: "fork" };
     return { ok: false, phase: "token", error: errorMsg };
   }
 
@@ -363,7 +326,13 @@ export async function* runCreateDeckDraft(
     authenticatedUrl,
   });
   if (!clone.ok) {
-    yield { phase: "error", files: [], error: clone.error, draftId };
+    yield {
+      phase: "error",
+      files: [],
+      error: clone.error,
+      draftId,
+      failedPhase: "clone",
+    };
     return { ok: false, phase: "clone", error: clone.error };
   }
 
@@ -402,6 +371,7 @@ export async function* runCreateDeckDraft(
       files: [],
       error: aiResult.error,
       draftId,
+      failedPhase: "ai_gen",
     };
     return {
       ok: false,
@@ -437,6 +407,7 @@ export async function* runCreateDeckDraft(
       files: doneFiles,
       error: errorMsg,
       draftId,
+      failedPhase: "apply",
     };
     return { ok: false, phase: "apply_files", error: errorMsg };
   }
@@ -468,6 +439,7 @@ export async function* runCreateDeckDraft(
       files: doneFiles,
       error: commitResult.error,
       draftId,
+      failedPhase: "commit",
     };
     return { ok: false, phase: "commit_push", error: commitResult.error };
   }
@@ -563,7 +535,7 @@ export async function* runIterateOnDeckDraft(
     token = fresh.plaintext;
   } catch (err) {
     const errorMsg = `Draft not found for slug "${input.slug}". Use createDeckDraft first. (${err instanceof Error ? err.message : String(err)})`;
-    yield { phase: "error", files: [], error: errorMsg };
+    yield { phase: "error", files: [], error: errorMsg, failedPhase: "fork" };
     return { ok: false, phase: "fork", error: errorMsg };
   }
 
@@ -572,7 +544,7 @@ export async function* runIterateOnDeckDraft(
     authenticatedUrl = buildAuthenticatedRemoteUrl(remoteUrl, token);
   } catch (err) {
     const errorMsg = `Failed to build authenticated URL: ${err instanceof Error ? err.message : String(err)}`;
-    yield { phase: "error", files: [], error: errorMsg };
+    yield { phase: "error", files: [], error: errorMsg, failedPhase: "fork" };
     return { ok: false, phase: "token", error: errorMsg };
   }
 
@@ -586,7 +558,13 @@ export async function* runIterateOnDeckDraft(
     authenticatedUrl,
   });
   if (!clone.ok) {
-    yield { phase: "error", files: [], error: clone.error, draftId };
+    yield {
+      phase: "error",
+      files: [],
+      error: clone.error,
+      draftId,
+      failedPhase: "clone",
+    };
     return { ok: false, phase: "clone", error: clone.error };
   }
 
@@ -625,6 +603,7 @@ export async function* runIterateOnDeckDraft(
       files: [],
       error: aiResult.error,
       draftId,
+      failedPhase: "ai_gen",
     };
     return {
       ok: false,
@@ -658,6 +637,7 @@ export async function* runIterateOnDeckDraft(
       files: doneFiles,
       error: errorMsg,
       draftId,
+      failedPhase: "apply",
     };
     return { ok: false, phase: "apply_files", error: errorMsg };
   }
@@ -689,6 +669,7 @@ export async function* runIterateOnDeckDraft(
       files: doneFiles,
       error: commitResult.error,
       draftId,
+      failedPhase: "commit",
     };
     return { ok: false, phase: "commit_push", error: commitResult.error };
   }

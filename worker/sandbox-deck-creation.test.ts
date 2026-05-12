@@ -456,6 +456,83 @@ describe("runCreateDeckDraft — yields", () => {
     const last = snapshots[snapshots.length - 1];
     expect(last?.phase).toBe("error");
     expect(last?.error).toMatch(/artifacts down/);
+    // The canvas's phase strip needs to know WHICH chip to mark red
+    // even when the canvas mounts after the error (refresh + chat
+    // history hydration). Snapshot carries this on `failedPhase`.
+    expect(last?.failedPhase).toBe("fork");
+  });
+
+  it("populates failedPhase on every error branch", async () => {
+    // One scenario per failure point to pin the mapping. The exact
+    // error messages aren't asserted (covered by the existing
+    // failure-modes block); the focus is the failedPhase value.
+
+    // ai_gen
+    streamDeckFilesMock.mockReturnValueOnce(
+      fakeStreamDeckFiles([], {
+        ok: false,
+        phase: "model_error",
+        error: "rate limit",
+      }),
+    );
+    const aiGenRun = await runGen(
+      runCreateDeckDraft(makeEnv(), {
+        userEmail: "alice@example.com",
+        slug: "my",
+        prompt: "x",
+      }),
+    );
+    expect(
+      aiGenRun.snapshots[aiGenRun.snapshots.length - 1]?.failedPhase,
+    ).toBe("ai_gen");
+
+    // clone
+    cloneArtifactsRepoIntoSandboxMock.mockResolvedValueOnce({
+      ok: false,
+      error: "auth failed",
+    });
+    const cloneRun = await runGen(
+      runCreateDeckDraft(makeEnv(), {
+        userEmail: "alice@example.com",
+        slug: "my",
+        prompt: "x",
+      }),
+    );
+    expect(
+      cloneRun.snapshots[cloneRun.snapshots.length - 1]?.failedPhase,
+    ).toBe("clone");
+
+    // apply
+    applyFilesIntoSandboxMock.mockResolvedValueOnce({
+      ok: false,
+      error: "disk full",
+    });
+    const applyRun = await runGen(
+      runCreateDeckDraft(makeEnv(), {
+        userEmail: "alice@example.com",
+        slug: "my",
+        prompt: "x",
+      }),
+    );
+    expect(
+      applyRun.snapshots[applyRun.snapshots.length - 1]?.failedPhase,
+    ).toBe("apply");
+
+    // commit
+    commitAndPushToArtifactsInSandboxMock.mockResolvedValueOnce({
+      ok: false,
+      error: "push rejected",
+    });
+    const commitRun = await runGen(
+      runCreateDeckDraft(makeEnv(), {
+        userEmail: "alice@example.com",
+        slug: "my",
+        prompt: "x",
+      }),
+    );
+    expect(
+      commitRun.snapshots[commitRun.snapshots.length - 1]?.failedPhase,
+    ).toBe("commit");
   });
 });
 

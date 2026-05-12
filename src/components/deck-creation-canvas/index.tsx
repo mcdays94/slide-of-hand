@@ -1,0 +1,149 @@
+/**
+ * Deck-creation canvas — the left-pane visualization on
+ * `/admin/decks/new` once a `createDeckDraft` or `iterateOnDeckDraft`
+ * tool-call lands. Shows:
+ *
+ *   - A six-chip phase strip (fork → clone → ai_gen → apply → commit → push)
+ *   - A growing file tree as the model emits each file
+ *   - The currently-writing file's content streaming in
+ *   - An error overlay when a snapshot lands with `phase: "error"`
+ *
+ * Consumes `messages` from `useAgentChat` (or any compatible message
+ * shape — see `extractLatestCall.ts` for the loose type). Self-
+ * contained: the route just mounts this with messages and an optional
+ * `onRetry` callback; everything else is internal.
+ *
+ * Issue #178 sub-pieces (1) + (3).
+ */
+
+import {
+  extractLatestDeckCreationCall,
+  isDeckCreationSnapshot,
+  isDeckDraftToolResult,
+  type DeckCreationMessage,
+} from "./extractLatestCall";
+import { PhaseStrip } from "./PhaseStrip";
+import { FileTree } from "./FileTree";
+import { FileContent } from "./FileContent";
+import { ErrorOverlay } from "./ErrorOverlay";
+
+export interface DeckCreationCanvasProps {
+  messages: ReadonlyArray<DeckCreationMessage>;
+  /** Deck slug — used to strip the repo prefix from displayed paths. */
+  slug?: string;
+  /**
+   * Called when the user clicks "Retry" on the error overlay. Hidden
+   * when undefined. Typically wired to `sendMessage(<lastUserPrompt>)`
+   * from the route's `useAgentChat`.
+   */
+  onRetry?: () => void;
+}
+
+export function DeckCreationCanvas({
+  messages,
+  slug,
+  onRetry,
+}: DeckCreationCanvasProps) {
+  const call = extractLatestDeckCreationCall(messages);
+
+  // Pre-call / pre-output state: tool hasn't emitted any yields yet
+  // (still input-streaming or input-available). The route only mounts
+  // this component once a tool-call lands, so this branch shows a
+  // brief "warming up" state.
+  if (!call || call.output === undefined) {
+    return (
+      <div
+        data-testid="deck-creation-canvas"
+        data-state="warming-up"
+        className="flex h-full flex-col items-center justify-center gap-2 text-sm text-cf-text-muted"
+      >
+        <span className="font-mono text-xs uppercase tracking-wider animate-pulse">
+          Starting…
+        </span>
+      </div>
+    );
+  }
+
+  // Lean final tool result — model-facing, doesn't carry verbose
+  // file content. Render the most-recently-known snapshot fields we
+  // CAN derive (commit SHA, success/failure). The error state here
+  // is for the rare case where the orchestrator yielded a final
+  // DeckDraftToolResult without an intermediate "done" snapshot —
+  // shouldn't happen in practice, but the component is robust to it.
+  if (isDeckDraftToolResult(call.output)) {
+    if (call.output.ok) {
+      return (
+        <div
+          data-testid="deck-creation-canvas"
+          data-state="done"
+          className="flex h-full flex-col items-center justify-center gap-3 text-sm text-cf-text"
+        >
+          <span className="text-3xl">✓</span>
+          <p className="text-cf-text">
+            Deck created. Commit{" "}
+            <code className="font-mono text-xs">
+              {call.output.commitSha.slice(0, 7)}
+            </code>
+            .
+          </p>
+        </div>
+      );
+    }
+    return (
+      <div
+        data-testid="deck-creation-canvas"
+        data-state="error"
+        className="flex h-full flex-col gap-4 p-6"
+      >
+        <ErrorOverlay
+          message={call.output.error}
+          {...(onRetry ? { onRetry } : {})}
+        />
+      </div>
+    );
+  }
+
+  // The common case: an in-flight or terminal DeckCreationSnapshot.
+  const snapshot = call.output;
+  if (!isDeckCreationSnapshot(snapshot)) {
+    // Unreachable — kept for exhaustive narrowing.
+    return null;
+  }
+
+  const activeFile = snapshot.files.find((f) => f.state === "writing");
+  const lastFile = snapshot.files[snapshot.files.length - 1];
+  const fileToShow = activeFile ?? lastFile;
+  const isErrored = snapshot.phase === "error";
+
+  return (
+    <div
+      data-testid="deck-creation-canvas"
+      data-state={snapshot.phase}
+      className="flex h-full flex-col gap-4 p-6"
+    >
+      <PhaseStrip
+        currentPhase={snapshot.phase}
+        {...(snapshot.failedPhase ? { failedPhase: snapshot.failedPhase } : {})}
+      />
+      {isErrored ? (
+        <ErrorOverlay
+          message={snapshot.error ?? "An error occurred."}
+          {...(snapshot.failedPhase ? { failedPhase: snapshot.failedPhase } : {})}
+          {...(onRetry ? { onRetry } : {})}
+        />
+      ) : null}
+      <div className="grid flex-1 grid-cols-[minmax(180px,_240px)_1fr] gap-4 overflow-hidden">
+        <aside className="overflow-y-auto rounded-lg border border-cf-text/10 bg-cf-bg-100 p-2">
+          <FileTree
+            files={snapshot.files}
+            slug={slug}
+            {...(activeFile?.path ? { activePath: activeFile.path } : {})}
+          />
+        </aside>
+        <section className="overflow-hidden rounded-lg border border-cf-text/10 bg-cf-bg-100">
+          <FileContent file={fileToShow} slug={slug} />
+        </section>
+      </div>
+    </div>
+  );
+}
