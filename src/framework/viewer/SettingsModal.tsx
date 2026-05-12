@@ -31,6 +31,7 @@ import type {
 } from "@/lib/settings";
 import { usePresenterMode } from "@/framework/presenter/mode";
 import { GitHubConnectRow } from "@/components/GitHubConnectRow";
+import { McpServersSection } from "@/components/McpServersSection";
 import {
   DECK_CARD_HOVER_SLIDE_COUNT_MAX,
   DECK_CARD_HOVER_SLIDE_COUNT_MIN,
@@ -524,6 +525,11 @@ function SettingsModalContent({
                 testId="settings-modal-toggle-show-assistant-reasoning"
               />
               <GitHubConnectRow />
+              {/* Per-user MCP server registry (issue #168 Wave 6).
+                  Lets admins add Streamable-HTTP MCP servers whose
+                  tools the in-Studio AI assistant can call alongside
+                  its built-ins. */}
+              <McpServersSection />
             </>
           )}
         </div>
