@@ -29,6 +29,7 @@
 
 import { generateObject } from "ai";
 import { createWorkersAI } from "workers-ai-provider";
+import { buildAiGatewayHeaders } from "./ai-gateway";
 import { z } from "zod";
 
 /**
@@ -290,6 +291,20 @@ export interface GenerateDeckFilesOptions {
   /** Override the model id (e.g. when the user picked a different one). */
   modelId?: string;
   /**
+   * AI Gateway authentication token (Worker secret
+   * `CF_AI_GATEWAY_TOKEN`). When set, threaded through the
+   * `cf-aig-authorization: Bearer <token>` header on every Workers
+   * AI call so the Authenticated Gateway accepts the request. When
+   * unset (e.g. test fixtures) no auth header is sent — fine for
+   * unauthenticated gateways and for tests that mock the model.
+   *
+   * Owned by the calling site (`worker/sandbox-deck-creation.ts`'s
+   * `runCreateDeckDraft` / `runIterateOnDeckDraft`); pulled off
+   * `env.CF_AI_GATEWAY_TOKEN` and passed through to here so this
+   * leaf module stays env-free.
+   */
+  gatewayToken?: string;
+  /**
    * Test seam: by default the helper builds its own Workers AI provider
    * via `createWorkersAI({ binding, gateway })`. Tests can pass a pre-
    * built model factory to bypass that wiring.
@@ -308,6 +323,11 @@ export async function generateDeckFiles(
   options: GenerateDeckFilesOptions = {},
 ): Promise<AiDeckGenResult> {
   const modelId = options.modelId ?? DEFAULT_DECK_GEN_MODEL_ID;
+  // AI Gateway auth header (only sent when the gateway is configured
+  // as Authenticated and the token has been provisioned). Returns
+  // `undefined` when the token isn't set so the spread below is a
+  // no-op against unauthenticated gateways.
+  const aiGatewayHeaders = buildAiGatewayHeaders(options.gatewayToken);
   const buildModel =
     options.buildModel ??
     ((binding: Ai, id: string) => {
@@ -315,7 +335,15 @@ export async function generateDeckFiles(
         binding,
         gateway: { id: AI_GATEWAY_ID },
       });
-      return workersai(id as Parameters<ReturnType<typeof createWorkersAI>>[0]);
+      // `workersai(modelId, settings)` accepts a second `settings`
+      // arg that becomes the per-call `extraHeaders` on the
+      // underlying `binding.run()`. See workers-ai-provider's
+      // `workersai-chat-language-model.ts:getRunOptions` for the
+      // wire path.
+      return workersai(
+        id as Parameters<ReturnType<typeof createWorkersAI>>[0],
+        aiGatewayHeaders ? { extraHeaders: aiGatewayHeaders } : {},
+      );
     });
 
   let object: z.infer<typeof deckGenSchema>;
