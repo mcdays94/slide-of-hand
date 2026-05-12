@@ -1,0 +1,25 @@
+worker/sandbox-source-edit.ts
+  85f7457536dbc2bd 323-327,331-334
+worker/sandbox-artifacts.ts
+  85f7457536dbc2bd 101-110
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "ddd3f059f81429c0e6899c94fc204decd9516bd6",
+  "prompts": {
+    "85f7457536dbc2bd": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_1e76456b1ffe2GxuWTwlD5b5f7",
+        "model": "anthropic/claude-opus-4-7"
+      },
+      "human_author": "mcdays94",
+      "messages": [],
+      "total_additions": 19,
+      "total_deletions": 9,
+      "accepted_lines": 19,
+      "overriden_lines": 0
+    }
+  }
+}
