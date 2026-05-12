@@ -4,9 +4,9 @@
  * cover image path, runtimeMinutes).
  *
  * Mounts inside `<EditMode>`, triggered by the "Settings" button in
- * the top toolbar. Parallels `<NewDeckModal>`'s "advanced settings"
- * section in shape — the modal is for creation; this panel is for
- * editing an existing deck.
+ * the top toolbar. This is the panel for EDITING an existing deck's
+ * metadata. New-deck creation is the separate AI-first creator at
+ * `/admin/decks/new` (issue #171).
  *
  * Mutations are dispatched through `useDeckEditor.updateMeta`, so
  * each keystroke flips `isDirty` and the actual save lifecycle stays

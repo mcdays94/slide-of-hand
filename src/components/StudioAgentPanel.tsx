@@ -56,6 +56,26 @@ export interface StudioAgentPanelProps {
   deckSlug: string;
   /** Called when the user dismisses the panel (Esc, X button, etc). */
   onClose: () => void;
+  /**
+   * Render variant. Default `side-panel` is the historic slide-out
+   * overlay used on `/admin/decks/<slug>` and `/decks/<slug>` — it
+   * has a backdrop + slide-in animation + fixed-positioning on the
+   * right edge. The `page` variant (issue #171) drops the backdrop +
+   * animation and renders inline as a card so the panel can BE the
+   * primary surface of a route (e.g. the new-deck creator), not
+   * just a side overlay. The Esc-to-close logic and `onClose`
+   * contract are the same in both variants; in `page` mode the
+   * route handler is expected to translate `onClose` into a
+   * navigation back to wherever makes sense.
+   */
+  variant?: "side-panel" | "page";
+  /**
+   * Optional override of the empty-state copy (issue #171 — the
+   * new-deck creator wants different language than the existing-
+   * deck side panel). When unset the panel uses the historic
+   * "Ask me anything about your deck" copy.
+   */
+  emptyState?: { title: string; description: string };
 }
 
 /**
@@ -90,17 +110,27 @@ const backdropMotion: HTMLMotionProps<"div"> = {
   transition: { duration: 0.15, ease: easeStandard },
 };
 
-export function StudioAgentPanel({ deckSlug, onClose }: StudioAgentPanelProps) {
-  // Mount-time animation gating — we want the slide-in / slide-out
-  // to play even though the parent renders us conditionally. So we
-  // mount in "visible=true" immediately, and rely on `<AnimatePresence>`
-  // around our own children for the closing animation. The parent
-  // unmounts us once `onClose` resolves.
+export function StudioAgentPanel({
+  deckSlug,
+  onClose,
+  variant = "side-panel",
+  emptyState,
+}: StudioAgentPanelProps) {
+  // Visibility state powers the slide-out exit animation in
+  // `side-panel` variant. In `page` variant the visibility is
+  // always true (the panel IS the page — there's nothing to
+  // animate out, the route just unmounts when the user navigates
+  // away).
   const [visible, setVisible] = useState(true);
 
-  // Esc closes the panel. Scoped to mount lifetime; cleaned up by
-  // the effect's return so re-mounts don't leak listeners.
+  // Esc closes the slide-out variant. In page variant Esc has no
+  // panel-close semantics — the page-level keydown belongs to the
+  // route handler, not us — so the listener is only registered when
+  // `variant === "side-panel"`. (The in-flight-cancel Esc handler
+  // inside PanelInner runs in either variant; it short-circuits
+  // before this effect's bubble-phase handler fires.)
   useEffect(() => {
+    if (variant !== "side-panel") return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.preventDefault();
@@ -109,13 +139,30 @@ export function StudioAgentPanel({ deckSlug, onClose }: StudioAgentPanelProps) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [variant]);
 
+  // `page` variant: render inner directly with no AnimatePresence
+  // wrapping. Esc still works (PanelInner's own capture-phase
+  // listener handles in-flight cancel; the route handler owns
+  // panel-close). No backdrop, no slide-in.
+  if (variant === "page") {
+    return (
+      <PanelInner
+        deckSlug={deckSlug}
+        onRequestClose={onClose}
+        variant="page"
+        emptyState={emptyState}
+      />
+    );
+  }
+
+  // `side-panel` (historic) variant: slide-out overlay with backdrop
+  // + slide-in/out animation. AnimatePresence's `onExitComplete`
+  // fires once the slide-out finishes so the parent can unmount us
+  // cleanly without clipping the animation.
   return (
     <AnimatePresence
       onExitComplete={() => {
-        // After the exit animation finishes, tell the parent to
-        // unmount us. Without this the close animation would clip.
         if (!visible) onClose();
       }}
     >
@@ -123,6 +170,8 @@ export function StudioAgentPanel({ deckSlug, onClose }: StudioAgentPanelProps) {
         <PanelInner
           deckSlug={deckSlug}
           onRequestClose={() => setVisible(false)}
+          variant="side-panel"
+          emptyState={emptyState}
         />
       )}
     </AnimatePresence>
@@ -132,9 +181,17 @@ export function StudioAgentPanel({ deckSlug, onClose }: StudioAgentPanelProps) {
 interface PanelInnerProps {
   deckSlug: string;
   onRequestClose: () => void;
+  variant: "side-panel" | "page";
+  emptyState?: { title: string; description: string };
 }
 
-function PanelInner({ deckSlug, onRequestClose }: PanelInnerProps) {
+function PanelInner({
+  deckSlug,
+  onRequestClose,
+  variant,
+  emptyState,
+}: PanelInnerProps) {
+  const isPageVariant = variant === "page";
   // `useAgent` opens the WebSocket. Setting `prefix` here lines up
   // with `routeAgentRequest({ prefix: "api/admin/agents" })` on the
   // worker side so the WebSocket reaches our Access-gated route.
@@ -253,6 +310,15 @@ function PanelInner({ deckSlug, onRequestClose }: PanelInnerProps) {
       window.removeEventListener("keydown", onKey, { capture: true });
   }, [isBusy, stop]);
 
+  // Page-variant root is a plain block-level element (no fixed
+  // positioning, no slide-in, no backdrop, no shadow). The
+  // surrounding route handler owns the viewport layout — we just
+  // claim the height it gave us via `h-full`. Side-panel variant is
+  // unchanged.
+  const panelClassName = isPageVariant
+    ? "flex h-full w-full max-w-3xl mx-auto flex-col bg-cf-bg-100 text-cf-text"
+    : "fixed right-0 top-0 z-50 flex h-screen w-full max-w-[400px] flex-col border-l border-cf-border bg-cf-bg-100 text-cf-text shadow-xl";
+
   return (
     <>
       {/* Backdrop — light dimming so the panel reads as modal-ish
@@ -262,28 +328,39 @@ function PanelInner({ deckSlug, onRequestClose }: PanelInnerProps) {
           `data-no-advance` opts the backdrop out of the viewer's
           click-to-advance handler in `Deck.tsx`. Without it, clicking
           the backdrop would BOTH close the panel AND advance the
-          slide in one gesture. See issue #131 item C. */}
-      <motion.div
-        {...backdropMotion}
-        data-testid="studio-agent-backdrop"
-        data-no-advance
-        className="fixed inset-0 z-40 bg-cf-text/10"
-        onClick={onRequestClose}
-        aria-hidden="true"
-      />
+          slide in one gesture. See issue #131 item C.
+
+          Backdrop is suppressed in `page` variant (issue #171) — the
+          panel IS the page surface, there's no underlying content
+          to dim. */}
+      {!isPageVariant && (
+        <motion.div
+          {...backdropMotion}
+          data-testid="studio-agent-backdrop"
+          data-no-advance
+          className="fixed inset-0 z-40 bg-cf-text/10"
+          onClick={onRequestClose}
+          aria-hidden="true"
+        />
+      )}
       {/* Panel root — `data-no-advance` blankets the entire chat
           surface so any click inside (including the tool-card
           `<details>` / `<summary>` expanders, which the viewer's
           suppressor selector does not list natively) is opted out
           of slide advance. Broad-and-stable beats sprinkling
-          `data-interactive` on every future control we add here. */}
+          `data-interactive` on every future control we add here.
+
+          In `page` variant we render an `<aside>` without
+          `motion.aside`'s slide-in animation — there's nothing to
+          slide in from when the panel IS the page. */}
       <motion.aside
-        {...panelMotion}
+        {...(isPageVariant ? {} : panelMotion)}
         role="dialog"
         aria-label="AI assistant"
         data-testid="studio-agent-panel"
+        data-variant={variant}
         data-no-advance
-        className="fixed right-0 top-0 z-50 flex h-screen w-full max-w-[400px] flex-col border-l border-cf-border bg-cf-bg-100 text-cf-text shadow-xl"
+        className={panelClassName}
       >
         {/* Header */}
         <header className="flex flex-shrink-0 items-center justify-between border-b border-cf-border px-5 py-3">
@@ -317,8 +394,8 @@ function PanelInner({ deckSlug, onRequestClose }: PanelInnerProps) {
               data-testid="studio-agent-close"
               onClick={onRequestClose}
               className="inline-flex h-7 w-7 items-center justify-center rounded border border-cf-border text-cf-text-muted transition-colors hover:border-dashed hover:text-cf-text"
-              aria-label="Close AI assistant"
-              title="Close (Esc)"
+              aria-label={isPageVariant ? "Back to admin" : "Close AI assistant"}
+              title={isPageVariant ? "Back to admin" : "Close (Esc)"}
             >
               <X size={14} aria-hidden="true" />
             </button>
@@ -369,7 +446,10 @@ function PanelInner({ deckSlug, onRequestClose }: PanelInnerProps) {
           className="flex flex-1 flex-col gap-3 overflow-y-auto px-5 py-4"
         >
           {messages.length === 0 ? (
-            <EmptyState />
+            <EmptyState
+              title={emptyState?.title}
+              description={emptyState?.description}
+            />
           ) : (
             // Cast through `UiMessageLike` because the SDK's full
             // `UIMessage` part union includes reasoning / source /
@@ -477,22 +557,26 @@ function PanelInner({ deckSlug, onRequestClose }: PanelInnerProps) {
  * what the agent can and can't do, so phase 1's scope honesty lives
  * in the UI as well as the system prompt.
  */
-function EmptyState() {
+function EmptyState({
+  title,
+  description,
+}: {
+  /** Override of the default heading. Defaults to "Ask me anything about your deck." */
+  title?: string;
+  /** Override of the default body text. */
+  description?: string;
+}) {
   return (
     <div
       data-testid="studio-agent-empty"
       className="flex flex-1 flex-col justify-center gap-3 text-sm text-cf-text-muted"
     >
       <p className="font-medium tracking-[-0.01em] text-cf-text">
-        Ask me anything about your deck.
+        {title ?? "Ask me anything about your deck."}
       </p>
       <p>
-        I can suggest copy, sketch slide structures, or talk through your
-        approach.
-      </p>
-      <p className="text-cf-text-subtle">
-        I can&rsquo;t read or edit the deck itself yet &mdash; that&rsquo;s
-        coming in a future phase.
+        {description ??
+          "I can suggest copy, sketch slide structures, or talk through your approach."}
       </p>
     </div>
   );

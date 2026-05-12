@@ -33,12 +33,12 @@
  */
 
 import { useCallback, useState } from "react";
+import { Link } from "react-router-dom";
 import {
   useAdminDataDeckList,
   type RegistryEntry,
 } from "@/lib/decks-registry";
 import { vscodeUrlForDeckSource } from "@/lib/vscode-url";
-import { NewDeckModal } from "@/framework/editor/NewDeckModal";
 import { adminWriteHeaders } from "@/lib/admin-fetch";
 import {
   DeckCardGrid,
@@ -47,7 +47,6 @@ import {
 
 export default function AdminIndex() {
   const { entries } = useAdminDataDeckList();
-  const [newDeckOpen, setNewDeckOpen] = useState(false);
   // Local-state list of KV slugs that have been deleted in this session.
   // We optimistically hide them while the admin list refetches via
   // `window.location.reload()` (which fully re-runs the hook). For the
@@ -133,21 +132,19 @@ export default function AdminIndex() {
               : `${visibleEntries.length} deck${visibleEntries.length === 1 ? "" : "s"} available · presenter mode active inside.`}
           </p>
         </div>
-        <button
-          type="button"
+        {/* Issue #171: New-deck creation is now a route (the
+            AI-first creator at /admin/decks/new) rather than a
+            modal. The button is a Link so it benefits from React
+            Router's client-side nav (no flash, no page reload). */}
+        <Link
+          to="/admin/decks/new"
           data-interactive
           data-testid="new-deck-button"
-          onClick={() => setNewDeckOpen(true)}
           className="cf-btn-primary"
         >
           New deck
-        </button>
+        </Link>
       </div>
-
-      <NewDeckModal
-        open={newDeckOpen}
-        onClose={() => setNewDeckOpen(false)}
-      />
 
       <DeckCardGrid
         surface="admin"

@@ -17,7 +17,8 @@
  *   - `destructive=true` flags the confirm button visually so the user
  *     reads it as an irreversible action.
  *
- * Visual language mirrors `<NewDeckModal>`:
+ * Visual language follows the standard modal pattern in this repo
+ * (warm cream surface, brown border, orange accent on destructive):
  *   - `bg-cf-text/30 backdrop-blur-sm` for the backdrop.
  *   - `border-cf-border bg-cf-bg-100` for the panel.
  *   - Destructive confirm uses the orange accent token (`cf-orange`),
