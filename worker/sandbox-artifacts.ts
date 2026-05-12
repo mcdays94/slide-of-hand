@@ -98,10 +98,16 @@ export interface CommitAndPushArtifactsOptions {
   branchName: string;
   commitMessage: string;
   /**
-   * Git author identity. The slide-of-hand convention is to commit as
-   * the Access-issued user (`<user>@users.noreply.github.com`-style),
-   * NOT as a fixed bot identity, so the Artifacts repo's history
-   * reflects who actually drove each iteration.
+   * Git author identity for the Artifacts commit. Per-user is
+   * INTENTIONAL here — Artifacts repos are per-user drafts named
+   * `${userEmail}-${slug}`, so the repo's history naturally
+   * reflects who drove each iteration. Use the user's Access-issued
+   * email directly.
+   *
+   * Note: this is DIFFERENT from GitHub-bound commits (e.g.
+   * `runProposeSourceEdit`), which pin to `SLIDE_OF_HAND_COMMIT_IDENTITY`
+   * (the project owner) regardless of who's authenticated. See
+   * `worker/github-client.ts` for the "Cutindah" post-mortem.
    */
   authorName: string;
   authorEmail: string;
