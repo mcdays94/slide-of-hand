@@ -410,10 +410,22 @@ function SettingsModalContent({
         role="dialog"
         aria-modal="true"
         aria-labelledby="settings-modal-title"
-        className="cf-card w-full max-w-md p-8"
+        // `max-w-xl` (was `max-w-md`) widens the panel ~29 % so the
+        // segmented-control rows have room to breathe and the modal
+        // grows less vertically. `flex flex-col` + `overflow-hidden` +
+        // an inner scrollable body lets the rows scroll INSIDE the
+        // modal once the panel hits its `max-h`, while the header
+        // (Preferences / Settings / Esc) stays pinned at the top.
+        // Without this, on a 13" MacBook screen the Settings + GitHub
+        // Connect + MCP servers section overflowed past the viewport
+        // and was unreachable because there was no scroll anywhere
+        // (the backdrop is `inset-0` and just clips). `100dvh` (vs
+        // `100vh`) lets iOS Safari's dynamic chrome shrink the modal
+        // cleanly when the URL bar appears.
+        className="cf-card flex max-h-[calc(100dvh-6rem)] w-full max-w-xl flex-col overflow-hidden"
         {...panelMotion}
       >
-        <div className="mb-6 flex items-start justify-between gap-4">
+        <div className="flex items-start justify-between gap-4 px-8 pb-6 pt-8">
           <div>
             <p className="cf-tag mb-2">Preferences</p>
             <h2
@@ -434,7 +446,11 @@ function SettingsModalContent({
             Esc
           </button>
         </div>
-        <div className="divide-y divide-cf-border border-y border-cf-border">
+        <div
+          data-testid="settings-modal-body"
+          className="flex-1 overflow-y-auto px-8 pb-8"
+        >
+          <div className="divide-y divide-cf-border border-y border-cf-border">
           {/* Audience-side setting — visible to everyone, including
               unauthenticated visitors on `/decks/<slug>`. Show-slide-
               indicators is a pure viewer-side display preference; it
@@ -532,6 +548,7 @@ function SettingsModalContent({
               <McpServersSection />
             </>
           )}
+          </div>
         </div>
       </motion.div>
     </motion.div>

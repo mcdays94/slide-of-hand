@@ -51,6 +51,30 @@ describe("<SettingsModal>", () => {
     ).toBeTruthy();
   });
 
+  // Structural regression: the rows must live inside a separate
+  // `settings-modal-body` wrapper that's the scroll container. If a
+  // future refactor merges the body back into the panel root, the
+  // 13" MacBook overflow bug (#168 follow-up) returns silently —
+  // the modal grows past the viewport and admin rows below the fold
+  // become unreachable. Keep the body-wrapper intact.
+  it("scrollable body wrapper contains the setting rows", () => {
+    render(
+      <SettingsProvider>
+        <SettingsModal open={true} onClose={() => {}} />
+      </SettingsProvider>,
+    );
+    const body = screen.getByTestId("settings-modal-body");
+    expect(body).toBeTruthy();
+    // The first (audience-side) row lives inside the body, not at
+    // the panel root. The header — Preferences kicker, Settings
+    // title, Esc button — is the other child of the panel and
+    // stays put at the top while the body scrolls.
+    const indicatorsToggle = screen.getByTestId(
+      "settings-modal-toggle-show-indicators",
+    );
+    expect(body.contains(indicatorsToggle)).toBe(true);
+  });
+
   it("backdrop carries data-no-advance", () => {
     render(
       <SettingsProvider>
