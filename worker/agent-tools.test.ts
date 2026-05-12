@@ -161,8 +161,19 @@ function makeEnv(initial: Record<string, unknown> = {}): {
   // mock `getSandboxFn` override so this binding never gets touched;
   // a bare stub satisfies the type.
   const sandbox = {} as unknown as AgentToolsEnv["Sandbox"];
+  // Issue #168 Wave 1 — `createDeckDraft` + `iterateOnDeckDraft` need
+  // ARTIFACTS + AI. Tests that exercise those tools pass mock impls;
+  // the rest of the suite just needs the type-system stubs.
+  const artifacts = {} as unknown as Artifacts;
+  const ai = {} as unknown as Ai;
   return {
-    env: { DECKS: kv, GITHUB_TOKENS: githubTokens, Sandbox: sandbox },
+    env: {
+      DECKS: kv,
+      GITHUB_TOKENS: githubTokens,
+      Sandbox: sandbox,
+      ARTIFACTS: artifacts,
+      AI: ai,
+    },
     puts,
   };
 }
@@ -866,10 +877,10 @@ describe("readSource", () => {
   });
 });
 
-// ─── Tool exposure assertion — make sure all 6 tools are wired ────────
+// ─── Tool exposure assertion — make sure all 8 tools are wired ────────
 
-describe("buildTools — phase 3 surface", () => {
-  it("exposes commitPatch, listSourceTree, readSource, and proposeSourceEdit alongside the phase-2 tools", () => {
+describe("buildTools — full tool surface", () => {
+  it("exposes all eight tools (phase-2 + phase-3 + issue #168 Wave 1)", () => {
     const { env } = makeEnv();
     const tools = buildTools(env, "test-deck");
     expect(tools.readDeck).toBeDefined();
@@ -878,11 +889,16 @@ describe("buildTools — phase 3 surface", () => {
     expect(tools.listSourceTree).toBeDefined();
     expect(tools.readSource).toBeDefined();
     expect(tools.proposeSourceEdit).toBeDefined();
+    // Issue #168 Wave 1 — AI-driven deck creation + iteration tools.
+    expect(tools.createDeckDraft).toBeDefined();
+    expect(tools.iterateOnDeckDraft).toBeDefined();
     // Sanity: each has a description string for the model.
     expect(typeof tools.commitPatch.description).toBe("string");
     expect(typeof tools.listSourceTree.description).toBe("string");
     expect(typeof tools.readSource.description).toBe("string");
     expect(typeof tools.proposeSourceEdit.description).toBe("string");
+    expect(typeof tools.createDeckDraft.description).toBe("string");
+    expect(typeof tools.iterateOnDeckDraft.description).toBe("string");
   });
 });
 

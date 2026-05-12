@@ -31,7 +31,7 @@ import { requireAccessAuth } from "./access-auth";
 import { ensureDeckStarterRepo } from "./artifacts-client";
 
 export interface DeckStarterSetupEnv {
-  ARTIFACTS?: Artifacts;
+  ARTIFACTS: Artifacts;
 }
 
 const ROUTE_PATH = "/api/admin/setup/deck-starter";

@@ -51,11 +51,16 @@ beforeEach(() => {
   vi.spyOn(console, "info").mockImplementation(() => {});
 });
 
+// Cast-helper for tests that simulate a missing ARTIFACTS binding —
+// the production type marks it required, but the runtime check
+// guards against misconfiguration drift.
+const emptyEnv = {} as unknown as DeckStarterSetupEnv;
+
 describe("handleDeckStarterSetup — path / method gates", () => {
   it("returns null for paths outside /api/admin/setup/deck-starter", async () => {
     const req = adminRequest("https://example.com/api/admin/decks");
     expect(
-      await handleDeckStarterSetup(req, {}),
+      await handleDeckStarterSetup(req, emptyEnv),
     ).toBeNull();
   });
 
@@ -64,7 +69,7 @@ describe("handleDeckStarterSetup — path / method gates", () => {
       "https://example.com/api/admin/setup/deck-starter",
       { method: "GET" },
     );
-    const res = await handleDeckStarterSetup(req, {});
+    const res = await handleDeckStarterSetup(req, emptyEnv);
     expect(res!.status).toBe(405);
   });
 });
@@ -75,7 +80,7 @@ describe("handleDeckStarterSetup — auth gate", () => {
       "https://example.com/api/admin/setup/deck-starter",
       { method: "POST" },
     );
-    const res = await handleDeckStarterSetup(req, {});
+    const res = await handleDeckStarterSetup(req, emptyEnv);
     expect(res!.status).toBe(403);
   });
 });
@@ -86,7 +91,7 @@ describe("handleDeckStarterSetup — binding gate", () => {
       "https://example.com/api/admin/setup/deck-starter",
       { method: "POST" },
     );
-    const res = await handleDeckStarterSetup(req, {});
+    const res = await handleDeckStarterSetup(req, emptyEnv);
     expect(res!.status).toBe(503);
     const body = await res!.json();
     expect((body as { error: string }).error).toMatch(/ARTIFACTS/);

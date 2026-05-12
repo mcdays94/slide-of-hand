@@ -95,6 +95,10 @@ function makeEnv(): AgentEnv {
     // per-user OAuth token lookup. Same routing-test reasoning —
     // unused at the SDK delegation point, but required by the type.
     GITHUB_TOKENS: {} as KVNamespace,
+    // Issue #168 Wave 1: ARTIFACTS backs createDeckDraft +
+    // iterateOnDeckDraft. Routing tests don't hit those flows; a
+    // bare stub satisfies the type.
+    ARTIFACTS: {} as unknown as Artifacts,
   };
 }
 
@@ -498,7 +502,7 @@ describe("buildSystemPrompt", () => {
     expect(prompt.length).toBeGreaterThan(500);
   });
 
-  it("still lists all six tools", () => {
+  it("still lists all eight tools", () => {
     const prompt = buildSystemPrompt("any");
     for (const tool of [
       "readDeck",
@@ -507,6 +511,9 @@ describe("buildSystemPrompt", () => {
       "listSourceTree",
       "readSource",
       "proposeSourceEdit",
+      // Issue #168 Wave 1 — AI-driven deck creation + iteration tools.
+      "createDeckDraft",
+      "iterateOnDeckDraft",
     ]) {
       expect(prompt).toContain(tool);
     }

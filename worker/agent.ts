@@ -93,6 +93,12 @@ export interface AgentEnv {
   GITHUB_TOKENS: KVNamespace;
   Sandbox: DurableObjectNamespace<Sandbox>;
   /**
+   * Cloudflare Artifacts binding (issue #168 Wave 1). Backs the new
+   * `createDeckDraft` + `iterateOnDeckDraft` tools — per-user git
+   * repos for AI-generated deck drafts.
+   */
+  ARTIFACTS: Artifacts;
+  /**
    * Per-user MCP server registry (issue #168 Wave 6). When bound,
    * `onChatMessage` reads the calling user's configured servers and
    * merges their tools into the agent's toolset for the turn.
@@ -236,7 +242,7 @@ they're editing, you already know. If this is a build-time JSX deck
 \`readSource\` the relevant files to answer questions about it —
 don't ask the user which deck they want to work on.
 
-You have six tools available:
+You have eight tools available:
 
 DECK CONTENT (KV-backed data decks — operates on slug \`${slug}\`):
 
@@ -276,6 +282,23 @@ SOURCE FILES (read + write — anywhere in the repo):
   pass the COMPLETE result. The PR is opened as DRAFT — the user
   reviews on GitHub and merges themselves. Do NOT pretend a change
   has shipped until the user has merged the PR.
+
+NEW-DECK CREATION (Cloudflare Artifacts, AI-driven JSX generation —
+issue #168 Wave 1):
+
+- \`createDeckDraft({ slug, prompt })\` — START a new deck draft. Forks
+  the \`deck-starter\` Artifacts repo as \`${"${userEmail}-${slug}"}\`,
+  asks Workers AI to write a complete set of JSX files based on the
+  prompt, commits + pushes. Pick a kebab-case slug from the prompt
+  (e.g. "build a deck about CRDTs" → \`crdt-collab\`). The result is
+  a separate git repo in Artifacts — NOT yet published to GitHub.
+
+- \`iterateOnDeckDraft({ slug, prompt, pinnedElements? })\` — MODIFY an
+  existing draft. Resolves the user's \`${"${userEmail}-${slug}"}\` repo,
+  clones HEAD, sends the current files + the prompt to Workers AI as
+  context, applies the diff, commits a follow-up revision. Optional
+  \`pinnedElements\` (file + line range + HTML excerpt) scope the
+  edit to specific source ranges.
 
 The source tools (and \`proposeSourceEdit\`, and \`commitPatch\`'s
 GitHub backup leg) all require the user to have connected GitHub
