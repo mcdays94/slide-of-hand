@@ -64,7 +64,8 @@ import type { Sandbox } from "@cloudflare/sandbox";
 import { createWorkersAI } from "workers-ai-provider";
 import { streamText, convertToModelMessages, stepCountIs } from "ai";
 import { requireAccessAuth, getAccessUserEmail } from "./access-auth";
-import { buildTools } from "./agent-tools";
+import { buildTools, currentUserEmail } from "./agent-tools";
+import { fetchMcpTools } from "./mcp-tools";
 import {
   AI_ASSISTANT_MODELS,
   type AiAssistantModel,
@@ -91,6 +92,23 @@ export interface AgentEnv {
   DECKS: KVNamespace;
   GITHUB_TOKENS: KVNamespace;
   Sandbox: DurableObjectNamespace<Sandbox>;
+  /**
+   * Cloudflare Artifacts binding (issue #168 Wave 1). Backs the new
+   * `createDeckDraft` + `iterateOnDeckDraft` tools — per-user git
+   * repos for AI-generated deck drafts.
+   */
+  ARTIFACTS: Artifacts;
+  /**
+   * Per-user MCP server registry (issue #168 Wave 6). When bound,
+   * `onChatMessage` reads the calling user's configured servers and
+   * merges their tools into the agent's toolset for the turn.
+   *
+   * Declared OPTIONAL so the Worker compiles + the agent keeps
+   * working before the binding lands in `wrangler.jsonc`. With the
+   * binding absent the merge is a no-op; existing chat behaviour is
+   * unchanged.
+   */
+  MCP_SERVERS?: KVNamespace;
 }
 
 /**
@@ -224,7 +242,7 @@ they're editing, you already know. If this is a build-time JSX deck
 \`readSource\` the relevant files to answer questions about it —
 don't ask the user which deck they want to work on.
 
-You have six tools available:
+You have eight tools available:
 
 DECK CONTENT (KV-backed data decks — operates on slug \`${slug}\`):
 
@@ -264,6 +282,23 @@ SOURCE FILES (read + write — anywhere in the repo):
   pass the COMPLETE result. The PR is opened as DRAFT — the user
   reviews on GitHub and merges themselves. Do NOT pretend a change
   has shipped until the user has merged the PR.
+
+NEW-DECK CREATION (Cloudflare Artifacts, AI-driven JSX generation —
+issue #168 Wave 1):
+
+- \`createDeckDraft({ slug, prompt })\` — START a new deck draft. Forks
+  the \`deck-starter\` Artifacts repo as \`${"${userEmail}-${slug}"}\`,
+  asks Workers AI to write a complete set of JSX files based on the
+  prompt, commits + pushes. Pick a kebab-case slug from the prompt
+  (e.g. "build a deck about CRDTs" → \`crdt-collab\`). The result is
+  a separate git repo in Artifacts — NOT yet published to GitHub.
+
+- \`iterateOnDeckDraft({ slug, prompt, pinnedElements? })\` — MODIFY an
+  existing draft. Resolves the user's \`${"${userEmail}-${slug}"}\` repo,
+  clones HEAD, sends the current files + the prompt to Workers AI as
+  context, applies the diff, commits a follow-up revision. Optional
+  \`pinnedElements\` (file + line range + HTML excerpt) scope the
+  edit to specific source ranges.
 
 The source tools (and \`proposeSourceEdit\`, and \`commitPatch\`'s
 GitHub backup leg) all require the user to have connected GitHub
@@ -361,7 +396,22 @@ export class DeckAuthorAgent extends AIChatAgent<AgentEnv> {
     // per-(user, deck), is fine for phase 2). The tools close over
     // it so `readDeck`/`proposePatch` always operate on the deck the
     // user is actually editing.
-    const tools = buildTools(this.env, this.name);
+    const baseTools = buildTools(this.env, this.name);
+    // Merge in any MCP-sourced tools the user has configured (issue
+    // #168 Wave 6). `fetchMcpTools` never throws — failures from
+    // individual servers are logged + that server's tools are
+    // dropped, while built-in tools and other servers keep working.
+    //
+    // `currentUserEmail()` reads from the same AsyncLocalStorage
+    // context that `currentUserEmail()` uses elsewhere — falls
+    // through request → connection state → null. Service-token
+    // contexts have no email, so the merge returns an empty record
+    // for them — fine, MCP servers are an author-side feature.
+    const email = currentUserEmail();
+    const mcpTools = email
+      ? await fetchMcpTools(this.env, email)
+      : {};
+    const tools = { ...baseTools, ...mcpTools };
     // Resolve the model on every turn (issue #131 item A). The client
     // sends a friendly key via `useAgentChat({ body: { model } })`;
     // `resolveAiAssistantModel` allow-list-validates and resolves to

@@ -171,6 +171,22 @@
     {
       "binding": "GITHUB_TOKENS",
       "id": "9b73d3f19d8c41e6af524fac74a1a2f7"
+    },
+    /**
+     * Per-user MCP server registry (issue #168 Wave 6).
+     *
+     * Keyed by `mcp-servers:<email>` → JSON array of server
+     * descriptors (Streamable HTTP URLs + auth). Read on every
+     * chat turn by `worker/mcp-tools.ts:fetchMcpTools` to merge
+     * external MCP tools into the agent's local toolset. CRUD
+     * endpoints live in `worker/mcp-servers.ts`.
+     *
+     * No preview ID: the in-memory mock used by `wrangler dev`
+     * covers dev/test scenarios.
+     */
+    {
+      "binding": "MCP_SERVERS",
+      "id": "9faa9e742e8741959c5a98fba7ebc16a"
     }
   ],
   /**
@@ -186,6 +202,40 @@
     {
       "binding": "IMAGES",
       "bucket_name": "slide-of-hand-images"
+    }
+  ],
+  /**
+   * Cloudflare Artifacts — git-for-agents draft repos (issue #168
+   * Wave 1).
+   *
+   * Each AI-generated deck draft lives as a git repo named
+   * `${userEmail}-${slug}` (sanitised; see `worker/artifacts-client.ts`
+   * `draftRepoName()` for the rules). Drafts are forked from the
+   * `deck-starter` baseline repo created via Worker E
+   * (`POST /api/admin/setup/deck-starter`).
+   *
+   * The agent flow:
+   *   1. `createDeckDraft` tool forks `deck-starter` into a new
+   *      named fork.
+   *   2. Sandbox clones the fork via the git protocol using a
+   *      short-lived write token minted by `repo.createToken()`.
+   *   3. Workers AI generates JSX into the working tree.
+   *   4. Sandbox commits + pushes back to Artifacts.
+   *   5. `publishDraft` later: Sandbox clones the fork, runs the
+   *      full slide-of-hand test gate, pushes to GitHub on a
+   *      `deck/<slug>` branch, opens a draft PR.
+   *
+   * Namespace `slide-of-hand-drafts` is project-scoped — keeps
+   * the drafts cleanly separated from anything else on the
+   * account that uses Artifacts.
+   *
+   * PRIVATE BETA — confirmed allowlisted for account
+   * 1bcef46cbe9172d2569dcf7039048842 on 2026-05-11.
+   */
+  "artifacts": [
+    {
+      "binding": "ARTIFACTS",
+      "namespace": "slide-of-hand-drafts"
     }
   ],
   /**

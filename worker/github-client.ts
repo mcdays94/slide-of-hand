@@ -46,6 +46,45 @@ export const TARGET_REPO = {
  */
 export const DEFAULT_BRANCH = "main";
 
+/**
+ * Pinned commit identity for EVERY agent-driven commit that lands in
+ * the slide-of-hand GitHub repo. This is the project owner's
+ * canonical identity:
+ *
+ *   - `name`: GitHub username (`mcdays94`)
+ *   - `email`: the owner's verified email (`amtccdias@gmail.com`)
+ *
+ * ## Why pinned (issue #168 follow-up, 2026-05-12)
+ *
+ * Previously the commit identity was constructed from the OAuth-
+ * stored GitHub user metadata at commit time:
+ *
+ * ```ts
+ * authorName = stored.username ?? "slide-of-hand-agent";
+ * authorEmail = `${stored.userId}+${stored.username}@users.noreply.github.com`;
+ * ```
+ *
+ * That broke once: a transient OAuth state was issued (or cached)
+ * against a different GitHub account, and every commit since carried
+ * that account's noreply email. The resulting "Cutindah" contributor
+ * surfaced on the repo's contributor list — a regrettable artefact
+ * of trusting per-session state for what should be a project-level
+ * constant.
+ *
+ * Pinning to the project owner's identity eliminates the failure
+ * mode entirely: the GitHub OAuth token is still per-user (so commit
+ * authorisation is correctly scoped), but the committer attribution
+ * is always the project owner regardless of who's driving the agent.
+ *
+ * This file lives under user.email = amtccdias@gmail.com / user.name
+ * = mcdays94 already (verified in repo git config). The constant is
+ * the runtime/Sandbox equivalent.
+ */
+export const SLIDE_OF_HAND_COMMIT_IDENTITY = {
+  name: "mcdays94",
+  email: "amtccdias@gmail.com",
+} as const;
+
 /** Where KV-backed deck JSON lives in the repo (one file per slug). */
 export function dataDeckPath(slug: string): string {
   return `data-decks/${slug}.json`;

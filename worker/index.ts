@@ -38,6 +38,13 @@ import { handleAuthStatus, type AuthStatusEnv } from "./auth-status";
 import { handleAgent, type AgentEnv } from "./agent";
 import { handleGitHubOAuth, type GitHubOAuthEnv } from "./github-oauth";
 import { handleSandboxSmoke, type SandboxSmokeEnv } from "./sandbox-smoke";
+import { handleSkills, type SkillsEnv } from "./skill-composer";
+import { handleMcpServers, type McpServersEnv } from "./mcp-servers";
+import { handlePreview, type PreviewEnv } from "./preview-route";
+import {
+  handleDeckStarterSetup,
+  type DeckStarterSetupEnv,
+} from "./deck-starter-setup";
 import { applyCacheControl } from "./cache-control";
 
 // Re-export the agent DO class so wrangler can find it from the same
@@ -62,7 +69,11 @@ export interface Env
     AuthStatusEnv,
     AgentEnv,
     GitHubOAuthEnv,
-    SandboxSmokeEnv {
+    SandboxSmokeEnv,
+    SkillsEnv,
+    McpServersEnv,
+    PreviewEnv,
+    DeckStarterSetupEnv {
   ASSETS: Fetcher;
 }
 
@@ -101,6 +112,30 @@ export default {
     // endpoint rather than a one-off bring-up script.
     const sandboxSmokeResponse = await handleSandboxSmoke(request, env);
     if (sandboxSmokeResponse) return sandboxSmokeResponse;
+    // Skill composer (issue #168 Wave 4). Serves a composed Markdown
+    // skill describing the deck-authoring contract + a live list of
+    // every public deck. Consumed by the in-Studio AI agent and by
+    // external harnesses (Opencode / Claude Code / Codex) via service
+    // token. See `worker/skill-composer.ts`.
+    const skillsResponse = await handleSkills(request, env);
+    if (skillsResponse) return skillsResponse;
+    // MCP server registry CRUD (issue #168 Wave 6). Per-user MCP
+    // server configs stored in KV; consumed at chat turn time by the
+    // agent's tool merge hook. See `worker/mcp-servers.ts`.
+    const mcpServersResponse = await handleMcpServers(request, env);
+    if (mcpServersResponse) return mcpServersResponse;
+    // Deck-starter baseline setup (issue #168 Wave 1 / Worker E).
+    // One-shot (idempotent) endpoint that creates the deck-starter
+    // Artifacts repo all draft decks fork from. See
+    // `worker/deck-starter-setup.ts`.
+    const deckStarterResponse = await handleDeckStarterSetup(request, env);
+    if (deckStarterResponse) return deckStarterResponse;
+    // Draft deck preview route (issue #168 Wave 1). Serves preview
+    // bundles from Cloudflare Artifacts draft repos so the Studio can
+    // iframe each commit's output. STUB — returns 501 until Worker A
+    // wires in the body. See `worker/preview-route.ts`.
+    const previewResponse = await handlePreview(request, env);
+    if (previewResponse) return previewResponse;
 
     // All non-API paths fall through to the Static Assets binding.
     // The binding's `not_found_handling: single-page-application`

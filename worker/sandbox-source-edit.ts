@@ -320,14 +320,18 @@ export interface CommitAndPushOptions {
   branchName: string;
   /**
    * Git author name. Surfaced in the commit metadata + the PR's
-   * commit list. Mirrors `runCommitPatch`'s pattern — typically the
-   * connected GitHub user's username.
+   * commit list. The caller (`runProposeSourceEdit`) passes
+   * `SLIDE_OF_HAND_COMMIT_IDENTITY.name` here — see
+   * `worker/github-client.ts` for the "Cutindah" post-mortem on why
+   * per-user OAuth-derived identities mis-attribute and why the
+   * project owner's identity is pinned.
    */
   authorName: string;
   /**
-   * Git author email. GitHub validates this when surfacing the commit
-   * — using the user's `<id>+<username>@users.noreply.github.com`
-   * keeps the commit author resolved to the user's GitHub profile.
+   * Git author email. Verified for GitHub commit attribution. The
+   * caller passes `SLIDE_OF_HAND_COMMIT_IDENTITY.email` —
+   * `amtccdias@gmail.com` is the project owner's verified email on
+   * `mcdays94`'s GitHub account.
    */
   authorEmail: string;
   /**

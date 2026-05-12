@@ -59,6 +59,7 @@ import {
   openPullRequest,
   putFileContents,
   readFileContents,
+  SLIDE_OF_HAND_COMMIT_IDENTITY,
   TARGET_REPO,
   type GitHubError,
 } from "./github-client";
@@ -71,6 +72,12 @@ import {
   type PhaseResult,
   type TestGatePhase,
 } from "./sandbox-source-edit";
+import {
+  runCreateDeckDraft,
+  runIterateOnDeckDraft,
+  type DeckDraftError,
+  type DeckDraftResult,
+} from "./sandbox-deck-creation";
 
 /** Subset of the Worker env the tools need. */
 export interface AgentToolsEnv {
@@ -83,6 +90,18 @@ export interface AgentToolsEnv {
    * union at call sites.
    */
   Sandbox: DurableObjectNamespace<Sandbox>;
+  /**
+   * Cloudflare Artifacts binding (issue #168 Wave 1) — backs
+   * `createDeckDraft` + `iterateOnDeckDraft`. Repos are forks of the
+   * `deck-starter` baseline (one-time Worker E setup).
+   */
+  ARTIFACTS: Artifacts;
+  /**
+   * Workers AI binding — Workers AI calls inside the deck-draft
+   * tools (separate from the agent's main streamText loop) go via
+   * this binding + the AI Gateway.
+   */
+  AI: Ai;
 }
 
 const KV_DECK = (slug: string) => `deck:${slug}`;
@@ -419,6 +438,95 @@ export function buildTools(env: AgentToolsEnv, slug: string) {
       },
     }),
 
+    createDeckDraft: tool({
+      description:
+        "Start a NEW deck draft. Forks the `deck-starter` Cloudflare " +
+        "Artifacts repo (creating `${userEmail}-${slug}` if it doesn't " +
+        "exist), spawns a Sandbox, asks Workers AI to write a complete " +
+        "set of JSX files for a deck about the user's prompt, commits " +
+        "+ pushes to the fork. Use when the user wants to START a new " +
+        "deck. Pick a kebab-case slug from the prompt (e.g. \"build me " +
+        "a deck about CRDT collaboration\" → slug `crdt-collab`). " +
+        "Returns the draft ID + commit SHA. The draft is NOT published " +
+        "to GitHub or live decks — call `publishDraft` later for that.",
+      inputSchema: z.object({
+        slug: z
+          .string()
+          .min(2)
+          .max(64)
+          .regex(/^[a-z][a-z0-9-]*[a-z0-9]$/, {
+            message:
+              "Slug must be kebab-case: lowercase letters / digits / hyphens, " +
+              "starting with a letter, ending with letter or digit.",
+          })
+          .describe(
+            "Kebab-case slug for the new deck. Derive from the prompt's topic.",
+          ),
+        prompt: z
+          .string()
+          .min(3)
+          .max(2_000)
+          .describe(
+            "The user's natural-language description of the deck. Pass through verbatim.",
+          ),
+      }),
+      execute: async ({ slug, prompt }): Promise<DeckDraftToolResult> => {
+        return runCreateDeckDraftTool(env, slug, prompt);
+      },
+    }),
+
+    iterateOnDeckDraft: tool({
+      description:
+        "Iterate on an EXISTING deck draft. Resolves the user's " +
+        "`${userEmail}-${slug}` Artifacts repo, clones HEAD, sends the " +
+        "current files + the user's prompt to Workers AI as context, " +
+        "applies the diff, commits + pushes a follow-up revision. Use " +
+        "when the user wants to MODIFY an existing draft (the agent's " +
+        "instance name is usually the slug). Returns the new commit " +
+        "SHA. If the draft doesn't exist yet, returns a `fork`-phase " +
+        "error — call `createDeckDraft` first in that case.",
+      inputSchema: z.object({
+        slug: z
+          .string()
+          .min(2)
+          .max(64)
+          .regex(/^[a-z][a-z0-9-]*[a-z0-9]$/)
+          .describe(
+            "Kebab-case slug of the existing draft. Usually matches the agent instance name.",
+          ),
+        prompt: z
+          .string()
+          .min(3)
+          .max(2_000)
+          .describe(
+            "The user's prompt describing the change they want to make.",
+          ),
+        pinnedElements: z
+          .array(
+            z.object({
+              file: z.string(),
+              lineStart: z.number().int().positive(),
+              lineEnd: z.number().int().positive(),
+              htmlExcerpt: z.string(),
+            }),
+          )
+          .max(20)
+          .optional()
+          .describe(
+            "Optional pinned elements from the inspector. The model " +
+              "scopes its edits to ONLY these source ranges unless the " +
+              "prompt explicitly broadens scope.",
+          ),
+      }),
+      execute: async ({
+        slug,
+        prompt,
+        pinnedElements,
+      }): Promise<DeckDraftToolResult> => {
+        return runIterateOnDeckDraftTool(env, slug, prompt, pinnedElements);
+      },
+    }),
+
     proposeSourceEdit: tool({
       description:
         "Propose source-file edits to the Slide of Hand repo " +
@@ -617,15 +725,15 @@ export async function runCommitPatch(
     message:
       commitMessage?.trim() ||
       `Update deck "${dry.dryRun.meta.title}" via in-Studio AI agent`,
-    committer: stored.username
-      ? {
-          name: stored.username,
-          // GitHub requires email; OAuth tokens from `public_repo` don't
-          // give us the user's verified email reliably, so fall back to
-          // the noreply form which GitHub displays correctly.
-          email: `${stored.userId}+${stored.username}@users.noreply.github.com`,
-        }
-      : undefined,
+    // Commit identity is PINNED to the project owner — see
+    // `SLIDE_OF_HAND_COMMIT_IDENTITY` in `worker/github-client.ts`
+    // for the rationale. Deriving the committer from OAuth-stored
+    // state per-call previously caused mis-attribution ("Cutindah"
+    // surfaced as a contributor after a transient OAuth state was
+    // cached against a different account). The token itself is
+    // still per-user (so authorisation is correctly scoped), only
+    // the attribution is constant.
+    committer: { ...SLIDE_OF_HAND_COMMIT_IDENTITY },
   });
 
   if (!result.ok) {
@@ -858,10 +966,14 @@ export async function runProposeSourceEdit(
 
   // 6. Commit + push a fresh branch.
   const branchName = `agent/${slug}-${Date.now()}`;
-  const authorName = stored.username ?? "slide-of-hand-agent";
-  const authorEmail = stored.username
-    ? `${stored.userId}+${stored.username}@users.noreply.github.com`
-    : "agent@slide-of-hand.local";
+  // Commit identity is PINNED to the project owner — see
+  // `SLIDE_OF_HAND_COMMIT_IDENTITY` in `worker/github-client.ts` for
+  // the "Cutindah" post-mortem. Deriving the author from OAuth state
+  // caused mis-attribution after a transient bad-account cache. The
+  // token (`stored.token`) is still per-user, so commit
+  // authorisation is correctly scoped.
+  const authorName = SLIDE_OF_HAND_COMMIT_IDENTITY.name;
+  const authorEmail = SLIDE_OF_HAND_COMMIT_IDENTITY.email;
   const commitResult = await commitAndPushInSandbox(
     sandbox,
     {
@@ -906,6 +1018,76 @@ export async function runProposeSourceEdit(
     commitSha: commitResult.sha,
     testGatePhases: gate.phases,
   };
+}
+
+// ─── createDeckDraft + iterateOnDeckDraft tool runners ──────────────
+
+export type DeckDraftToolResult = DeckDraftResult | DeckDraftError;
+
+/**
+ * Tool runner for `createDeckDraft`. Resolves the user's email from
+ * the current AsyncLocalStorage context + delegates to
+ * `runCreateDeckDraft` in `sandbox-deck-creation.ts`. Surfaces a
+ * friendly auth error for service-token contexts (which have no
+ * user identity).
+ */
+export async function runCreateDeckDraftTool(
+  env: AgentToolsEnv,
+  slug: string,
+  prompt: string,
+  emailOverride?: string | null,
+): Promise<DeckDraftToolResult> {
+  const email =
+    emailOverride !== undefined ? emailOverride : currentUserEmail();
+  if (!email) {
+    return {
+      ok: false,
+      phase: "validation",
+      error:
+        "createDeckDraft requires an interactive user identity. " +
+        "Service-token contexts can't create per-user drafts.",
+    };
+  }
+  return runCreateDeckDraft(env, {
+    userEmail: email,
+    slug,
+    prompt,
+  });
+}
+
+/**
+ * Tool runner for `iterateOnDeckDraft`. Mirrors `runCreateDeckDraftTool`
+ * but for the iteration flow.
+ */
+export async function runIterateOnDeckDraftTool(
+  env: AgentToolsEnv,
+  slug: string,
+  prompt: string,
+  pinnedElements?: Array<{
+    file: string;
+    lineStart: number;
+    lineEnd: number;
+    htmlExcerpt: string;
+  }>,
+  emailOverride?: string | null,
+): Promise<DeckDraftToolResult> {
+  const email =
+    emailOverride !== undefined ? emailOverride : currentUserEmail();
+  if (!email) {
+    return {
+      ok: false,
+      phase: "validation",
+      error:
+        "iterateOnDeckDraft requires an interactive user identity. " +
+        "Service-token contexts can't iterate on per-user drafts.",
+    };
+  }
+  return runIterateOnDeckDraft(env, {
+    userEmail: email,
+    slug,
+    prompt,
+    ...(pinnedElements ? { pinnedElements } : {}),
+  });
 }
 
 /**
