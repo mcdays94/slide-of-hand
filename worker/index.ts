@@ -41,6 +41,10 @@ import { handleSandboxSmoke, type SandboxSmokeEnv } from "./sandbox-smoke";
 import { handleSkills, type SkillsEnv } from "./skill-composer";
 import { handleMcpServers, type McpServersEnv } from "./mcp-servers";
 import { handlePreview, type PreviewEnv } from "./preview-route";
+import {
+  handleDeckStarterSetup,
+  type DeckStarterSetupEnv,
+} from "./deck-starter-setup";
 import { applyCacheControl } from "./cache-control";
 
 // Re-export the agent DO class so wrangler can find it from the same
@@ -68,7 +72,8 @@ export interface Env
     SandboxSmokeEnv,
     SkillsEnv,
     McpServersEnv,
-    PreviewEnv {
+    PreviewEnv,
+    DeckStarterSetupEnv {
   ASSETS: Fetcher;
 }
 
@@ -116,10 +121,15 @@ export default {
     if (skillsResponse) return skillsResponse;
     // MCP server registry CRUD (issue #168 Wave 6). Per-user MCP
     // server configs stored in KV; consumed at chat turn time by the
-    // agent's tool merge hook. STUB — returns 501 until Worker C wires
-    // in the body. See `worker/mcp-servers.ts`.
+    // agent's tool merge hook. See `worker/mcp-servers.ts`.
     const mcpServersResponse = await handleMcpServers(request, env);
     if (mcpServersResponse) return mcpServersResponse;
+    // Deck-starter baseline setup (issue #168 Wave 1 / Worker E).
+    // One-shot (idempotent) endpoint that creates the deck-starter
+    // Artifacts repo all draft decks fork from. See
+    // `worker/deck-starter-setup.ts`.
+    const deckStarterResponse = await handleDeckStarterSetup(request, env);
+    if (deckStarterResponse) return deckStarterResponse;
     // Draft deck preview route (issue #168 Wave 1). Serves preview
     // bundles from Cloudflare Artifacts draft repos so the Studio can
     // iframe each commit's output. STUB — returns 501 until Worker A
