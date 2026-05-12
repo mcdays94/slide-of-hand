@@ -46,7 +46,7 @@
 
 import { Suspense, lazy, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, Globe, Lock } from "lucide-react";
 
 // Lazy-load to keep the agent SDK + ai-chat off the first paint of
 // the static admin routes. Same pattern as the existing mounts in
@@ -78,10 +78,29 @@ function makeNewDeckAgentName(): string {
   return `new-deck-${Math.random().toString(36).slice(2, 10)}-${Date.now()}`;
 }
 
+/**
+ * The deck's intended visibility once published. Captured on the
+ * new-deck creator and threaded through to the generated `meta.ts`
+ * so the draft is born with the right value.
+ *
+ * Drafts in Cloudflare Artifacts are per-user and inherently
+ * private at the storage layer — this value matters at PUBLISH
+ * time (when the draft becomes a KV deck or a `deck/<slug>` PR
+ * against the source repo). Capturing the choice up-front means
+ * the model can include it in the generated metadata and the
+ * publish flow doesn't have to ask later.
+ */
+type DeckVisibility = "public" | "private";
+
 export default function NewDeckRoute() {
   const navigate = useNavigate();
   // Lazy init so the UUID is computed exactly once per mount.
   const [agentName] = useState(makeNewDeckAgentName);
+  // Default to private — most drafts won't get published, and
+  // private-by-default is a safer floor than the reverse. Threaded
+  // through `useAgentChat({ body })` so the agent sees the current
+  // selection on every turn and can pass it to `createDeckDraft`.
+  const [visibility, setVisibility] = useState<DeckVisibility>("private");
 
   return (
     <main
@@ -113,6 +132,14 @@ export default function NewDeckRoute() {
         </div>
       </div>
 
+      {/* Visibility selector. Two-button segmented control — same
+          visual language as `<SettingsSegmentedRow>` in the Settings
+          modal so the affordance reads as "pick one". The chosen
+          value rides along on every chat turn via `body.visibility`
+          (see useAgentChat wiring in StudioAgentPanel.tsx) and lands
+          on the generated `meta.ts.visibility` field. */}
+      <VisibilitySelector value={visibility} onChange={setVisibility} />
+
       {/* The panel. `flex-1` so it fills the rest of the viewport
           below the page header. The lazy boundary mirrors the
           existing mounts in Deck.tsx / EditMode.tsx — the bundle is
@@ -123,6 +150,14 @@ export default function NewDeckRoute() {
           <StudioAgentPanel
             deckSlug={agentName}
             variant="page"
+            // `body` is forwarded to `onChatMessage`'s
+            // `options.body` on every turn. The agent reads
+            // `body.visibility` and (a) injects it into the
+            // system-prompt context for the model, (b) defaults
+            // any `createDeckDraft` call without an explicit
+            // visibility to this value. So the toggle deterministically
+            // wins unless the user types "make it public" in chat.
+            body={{ visibility }}
             emptyState={{
               title: "What deck would you like to build?",
               description:
@@ -133,5 +168,81 @@ export default function NewDeckRoute() {
         </Suspense>
       </div>
     </main>
+  );
+}
+
+/**
+ * Two-button segmented control for picking the new deck's
+ * visibility. Visually mirrors the `<SettingsSegmentedRow>` style
+ * (mono caps labels, orange-fill active, dashed-border hover)
+ * so it reads as part of the same UI family.
+ *
+ * Kept inline rather than reused from `SettingsModal.tsx` because
+ * that one is a row-shaped container; this one is a standalone
+ * control on its own row with a visible header label.
+ */
+function VisibilitySelector({
+  value,
+  onChange,
+}: {
+  value: DeckVisibility;
+  onChange: (next: DeckVisibility) => void;
+}) {
+  const OPTIONS: Array<{
+    value: DeckVisibility;
+    label: string;
+    icon: typeof Globe;
+    helper: string;
+  }> = [
+    {
+      value: "private",
+      label: "Private",
+      icon: Lock,
+      helper: "Only you can see this deck once published.",
+    },
+    {
+      value: "public",
+      label: "Public",
+      icon: Globe,
+      helper: "Anyone with the link can see this deck once published.",
+    },
+  ];
+
+  return (
+    <div
+      data-testid="new-deck-visibility"
+      className="flex flex-col gap-2"
+      role="radiogroup"
+      aria-label="Deck visibility"
+    >
+      <p className="font-mono text-[10px] uppercase tracking-[0.25em] text-cf-text-muted">
+        Visibility
+      </p>
+      <div className="flex items-center gap-1 self-start rounded-md border border-cf-border bg-cf-bg-200 p-0.5">
+        {OPTIONS.map((opt) => {
+          const isActive = opt.value === value;
+          const Icon = opt.icon;
+          return (
+            <button
+              key={opt.value}
+              type="button"
+              role="radio"
+              aria-checked={isActive}
+              data-testid={`new-deck-visibility-${opt.value}`}
+              onClick={() => onChange(opt.value)}
+              title={opt.helper}
+              className={`inline-flex items-center gap-1.5 rounded px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.2em] transition-colors ${
+                isActive
+                  ? "bg-cf-orange text-cf-bg-100"
+                  : "text-cf-text-muted hover:text-cf-text"
+              }`}
+            >
+              <Icon size={11} aria-hidden="true" />
+              {opt.label}
+            </button>
+          );
+        })}
+      </div>
+    </div>
   );
 }

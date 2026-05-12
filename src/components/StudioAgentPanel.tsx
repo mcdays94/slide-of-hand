@@ -76,6 +76,17 @@ export interface StudioAgentPanelProps {
    * "Ask me anything about your deck" copy.
    */
   emptyState?: { title: string; description: string };
+  /**
+   * Extra fields to merge into `useAgentChat`'s `body` option. The
+   * `body` is forwarded to `onChatMessage`'s `options.body` on the
+   * server every turn — this is the channel the new-deck creator
+   * uses to send the current Public/Private toggle state through
+   * to the agent (issue #171 visibility toggle). The model picker
+   * always merges in `model: settings.aiAssistantModel` on top of
+   * this, so a caller can't accidentally clobber the model
+   * selection by passing `body={ model: ... }`.
+   */
+  body?: Record<string, unknown>;
 }
 
 /**
@@ -115,6 +126,7 @@ export function StudioAgentPanel({
   onClose,
   variant = "side-panel",
   emptyState,
+  body,
 }: StudioAgentPanelProps) {
   // Visibility state powers the slide-out exit animation in
   // `side-panel` variant. In `page` variant the visibility is
@@ -152,6 +164,7 @@ export function StudioAgentPanel({
         onRequestClose={onClose}
         variant="page"
         emptyState={emptyState}
+        body={body}
       />
     );
   }
@@ -172,6 +185,7 @@ export function StudioAgentPanel({
           onRequestClose={() => setVisible(false)}
           variant="side-panel"
           emptyState={emptyState}
+          body={body}
         />
       )}
     </AnimatePresence>
@@ -183,6 +197,7 @@ interface PanelInnerProps {
   onRequestClose: () => void;
   variant: "side-panel" | "page";
   emptyState?: { title: string; description: string };
+  body?: Record<string, unknown>;
 }
 
 function PanelInner({
@@ -190,6 +205,7 @@ function PanelInner({
   onRequestClose,
   variant,
   emptyState,
+  body: extraBody,
 }: PanelInnerProps) {
   const isPageVariant = variant === "page";
   // `useAgent` opens the WebSocket. Setting `prefix` here lines up
@@ -245,7 +261,14 @@ function PanelInner({
     // `body` is forwarded to `onChatMessage`'s `options.body` on the
     // server every turn. See `worker/agent.ts`'s
     // `resolveAiAssistantModel(options.body)` call.
-    body: { model: settings.aiAssistantModel },
+    //
+    // We splat `extraBody` (caller-provided per-route fields like
+    // the new-deck creator's `visibility` toggle, issue #171) BEFORE
+    // the model key. That ordering means callers cannot accidentally
+    // clobber the model selection by passing `body={ model: ... }` —
+    // the always-spread-last `model: settings.aiAssistantModel` line
+    // wins.
+    body: { ...(extraBody ?? {}), model: settings.aiAssistantModel },
   });
 
   // "Show model thinking" — power-user opt-in for rendering the
