@@ -26,6 +26,7 @@ import {
   forkDeckStarter,
   forkDeckStarterIdempotent,
   getDraftRepo,
+  isDuplicateNameError,
   mintReadToken,
   mintWriteToken,
   parseTokenExpiry,
@@ -248,6 +249,168 @@ describe("forkDeckStarter", () => {
       "alice-example-com-my",
       expect.objectContaining({ description: "custom description" }),
     );
+  });
+
+  // Duplicate-name recovery (post-#179 production fix). The Artifacts
+  // beta sometimes surfaces a generic "An internal error occurred"
+  // on a fork that actually succeeded; the model's auto-retry then
+  // trips a "repo already exists" error. forkDeckStarter recovers by
+  // fetching a handle for the existing repo + minting a fresh write
+  // token, returning the same shape as a successful fork.
+  it("recovers from 'repo already exists' by fetching the existing repo + minting a write token", async () => {
+    const existingRepo = makeRepoStub({
+      id: "existing-id",
+      name: "alice-example-com-my-deck",
+      description: null,
+      defaultBranch: "main",
+      remote: FAKE_REMOTE,
+    });
+    const freshToken = {
+      id: "tok-2",
+      plaintext: FAKE_TOKEN_WITH_EXPIRES,
+      scope: "write" as const,
+      expiresAt: "2027-01-15T00:00:00.000Z",
+    };
+    existingRepo.createToken = vi
+      .fn()
+      .mockResolvedValue(freshToken) as ArtifactsRepo["createToken"];
+
+    // Starter handle: fork throws with "already exists" the FIRST
+    // (and only) time. The recovery path then calls artifacts.get
+    // for the existing repo.
+    const forkMock = vi
+      .fn()
+      .mockRejectedValue(
+        new Error("repo already exists: alice-example-com-my-deck"),
+      );
+    const starter = makeRepoStub({
+      fork: forkMock as ArtifactsRepo["fork"],
+    });
+    const getMock = vi
+      .fn()
+      // First call: deck-starter (to fork from).
+      .mockResolvedValueOnce(starter)
+      // Second call: the existing duplicate (recovery path).
+      .mockResolvedValueOnce(existingRepo);
+    const artifacts = makeArtifactsStub({
+      get: getMock as Artifacts["get"],
+    });
+
+    const result = await forkDeckStarter(
+      artifacts,
+      "alice@example.com",
+      "my-deck",
+    );
+    expect(result.id).toBe("existing-id");
+    expect(result.name).toBe("alice-example-com-my-deck");
+    expect(result.remote).toBe(FAKE_REMOTE);
+    expect(result.token).toBe(FAKE_TOKEN_WITH_EXPIRES);
+    expect(result.tokenExpiresAt).toBe("2027-01-15T00:00:00.000Z");
+    // Verify we DID call artifacts.get twice — once for starter,
+    // once for the existing duplicate — and createToken on the
+    // recovered repo.
+    expect(getMock).toHaveBeenNthCalledWith(1, DECK_STARTER_REPO);
+    expect(getMock).toHaveBeenNthCalledWith(2, "alice-example-com-my-deck");
+    expect(existingRepo.createToken).toHaveBeenCalled();
+  });
+
+  it("recovers from a generic 'internal error occurred' if the message hints at duplication", async () => {
+    // We don't auto-recover from EVERY internal error (false-positive
+    // cost = wasted getDraftRepo call which throws). But the
+    // matcher is generous about 'duplicate'/'conflict' phrasing —
+    // the Artifacts beta has been observed to use 'already exists'
+    // in some 5xx responses too. This test pins the broader-match
+    // behaviour against drift.
+    const existingRepo = makeRepoStub({
+      id: "x",
+      name: "alice-my",
+      remote: FAKE_REMOTE,
+    });
+    existingRepo.createToken = vi.fn().mockResolvedValue({
+      id: "t",
+      plaintext: FAKE_TOKEN_WITH_EXPIRES,
+      scope: "write",
+      expiresAt: "2027-01-15T00:00:00.000Z",
+    }) as ArtifactsRepo["createToken"];
+    const starter = makeRepoStub({
+      fork: vi
+        .fn()
+        .mockRejectedValue(
+          new Error("ArtifactsError: conflict — name already exists"),
+        ) as ArtifactsRepo["fork"],
+    });
+    const artifacts = makeArtifactsStub({
+      get: vi
+        .fn()
+        .mockResolvedValueOnce(starter)
+        .mockResolvedValueOnce(existingRepo) as Artifacts["get"],
+    });
+
+    const result = await forkDeckStarter(artifacts, "alice@example.com", "my");
+    expect(result.remote).toBe(FAKE_REMOTE);
+  });
+
+  it("rethrows non-duplicate errors unchanged", async () => {
+    // Quota errors, auth errors, etc. must NOT be silently swallowed
+    // by the recovery path — only the duplicate-name case is
+    // recoverable. We verify by asserting the original error
+    // bubbles up.
+    const starter = makeRepoStub({
+      fork: vi
+        .fn()
+        .mockRejectedValue(
+          new Error("ArtifactsError: quota exceeded"),
+        ) as ArtifactsRepo["fork"],
+    });
+    const getMock = vi.fn().mockResolvedValue(starter);
+    const artifacts = makeArtifactsStub({ get: getMock as Artifacts["get"] });
+
+    await expect(
+      forkDeckStarter(artifacts, "alice@example.com", "my"),
+    ).rejects.toThrow(/quota exceeded/);
+    // No recovery attempt — get called once for the starter only.
+    expect(getMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("isDuplicateNameError", () => {
+  it("matches 'already exists' (case-insensitive)", () => {
+    expect(isDuplicateNameError(new Error("repo already exists: foo"))).toBe(
+      true,
+    );
+    expect(isDuplicateNameError(new Error("REPO ALREADY EXISTS"))).toBe(true);
+    expect(isDuplicateNameError(new Error("Already Exists"))).toBe(true);
+  });
+
+  it("matches 'duplicate' phrasing", () => {
+    expect(isDuplicateNameError(new Error("duplicate name"))).toBe(true);
+    expect(isDuplicateNameError(new Error("Duplicate repository"))).toBe(true);
+  });
+
+  it("matches 'conflict' phrasing", () => {
+    expect(isDuplicateNameError(new Error("name conflict"))).toBe(true);
+    expect(isDuplicateNameError(new Error("HTTP 409 Conflict"))).toBe(true);
+  });
+
+  it("does NOT match unrelated error phrasing", () => {
+    // The matcher must be specific enough that ordinary errors
+    // don't trip the recovery path.
+    expect(isDuplicateNameError(new Error("quota exceeded"))).toBe(false);
+    expect(isDuplicateNameError(new Error("unauthorized"))).toBe(false);
+    expect(isDuplicateNameError(new Error("network timeout"))).toBe(false);
+    expect(isDuplicateNameError(new Error("An internal error occurred"))).toBe(
+      false,
+    );
+  });
+
+  it("handles non-Error inputs gracefully (defensive against thrown strings)", () => {
+    expect(isDuplicateNameError("repo already exists")).toBe(true);
+    expect(isDuplicateNameError(null)).toBe(false);
+    expect(isDuplicateNameError(undefined)).toBe(false);
+    // Plain objects fall through to `String(err) = "[object Object]"`
+    // — which does NOT match. We don't fish into arbitrary
+    // `message` properties because we have no contract on shape.
+    expect(isDuplicateNameError({ message: "already exists" })).toBe(false);
   });
 });
 

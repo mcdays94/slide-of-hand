@@ -79,6 +79,33 @@ export function draftRepoName(userEmail: string, slug: string): string {
 export const DECK_STARTER_REPO = "deck-starter";
 
 /**
+ * Detect whether an error from the Artifacts API indicates a
+ * duplicate-name collision (the repo already exists). Diagnosed
+ * during the post-#179 verification — the Artifacts beta surfaces
+ * this case as either:
+ *
+ *   1. A generic `An internal error occurred.` (when the API
+ *      transient-fails AFTER successfully creating the repo, the
+ *      retry then sees a duplicate but reports it as 500).
+ *   2. An explicit `repo already exists: <name>` message.
+ *
+ * Both are recoverable: the repo IS there, we just need to fetch
+ * a handle for it instead of trying to fork again. `forkDeckStarter`
+ * uses this to do exactly that, turning a transient duplicate error
+ * into a successful response.
+ *
+ * The matcher is intentionally generous: "already exists",
+ * "duplicate", and "conflict" all qualify. The cost of a false
+ * positive (treating a non-duplicate as recoverable) is one
+ * extra `getDraftRepo` call which then throws its own error;
+ * the cost of a false negative is the bug we're fixing today.
+ */
+export function isDuplicateNameError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /already exists|duplicate|conflict/i.test(msg);
+}
+
+/**
  * Token TTL for write operations inside the Sandbox. 5 minutes —
  * comfortably covers clone → AI gen → commit → push (typically 30s)
  * but short enough that a leaked token can't be reused weeks later.
@@ -144,10 +171,20 @@ export function buildAuthenticatedRemoteUrl(
  * `${userEmail}-${slug}` (sanitised). Returns the fork's metadata +
  * the initial write token for the Sandbox to use.
  *
- * If the fork already exists (idempotency), the caller can fall back
- * to `getDraftRepo` + `mintWriteToken`. The Artifacts API throws on
- * duplicate name; this function doesn't catch — callers that want
- * idempotency should use `forkDeckStarterIdempotent` instead.
+ * If the fork already exists, this function recovers by fetching a
+ * handle for the existing repo and minting a fresh write token —
+ * returning a result that callers can use exactly like the
+ * just-forked path.
+ *
+ * This was originally documented as "throws on duplicate name" and
+ * recommended `forkDeckStarterIdempotent` for that case. Post-#179
+ * diagnostic showed the duplicate case is much more common than
+ * expected — the Artifacts beta sometimes returns a generic
+ * `An internal error occurred.` on a fork that actually succeeded,
+ * and the model's auto-retry then trips the duplicate-name path.
+ * Recovering here makes the create flow naturally idempotent and
+ * avoids needing the caller to know about the race. See
+ * `isDuplicateNameError` for the matcher.
  */
 export async function forkDeckStarter(
   artifacts: Artifacts,
@@ -157,13 +194,48 @@ export async function forkDeckStarter(
 ): Promise<ArtifactsCreateRepoResult> {
   const targetName = draftRepoName(userEmail, slug);
   const starter = await artifacts.get(DECK_STARTER_REPO);
-  return starter.fork(targetName, {
-    description:
-      opts.description ??
-      `Draft deck for ${slug} by ${userEmail} (Slide of Hand #168).`,
-    readOnly: false,
-    defaultBranchOnly: true,
-  });
+  try {
+    return await starter.fork(targetName, {
+      description:
+        opts.description ??
+        `Draft deck for ${slug} by ${userEmail} (Slide of Hand #168).`,
+      readOnly: false,
+      defaultBranchOnly: true,
+    });
+  } catch (err) {
+    if (!isDuplicateNameError(err)) {
+      throw err;
+    }
+    // The repo already exists — usually because a prior fork
+    // succeeded server-side but the API surfaced a transient
+    // error before returning success. Recover by fetching a
+    // handle + minting a fresh write token, and return the same
+    // shape we'd have returned on a successful fork.
+    //
+    // The shape of `ArtifactsCreateRepoResult` includes `name`,
+    // `remote`, and `token` (plaintext); we synthesise it from the
+    // existing repo's metadata + a freshly-minted write token.
+    console.info(
+      `[artifacts-client] forkDeckStarter: duplicate-name recovery for ${targetName}. ` +
+        `Underlying error: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    const existing = await artifacts.get(targetName);
+    const freshToken = await mintWriteToken(existing);
+    // Synthesise the `ArtifactsCreateRepoResult` shape from the
+    // existing repo's metadata + a fresh write token. The metadata
+    // getters on `Artifacts.get()`'s handle are reliable at runtime
+    // (the documented serialization quirk only affects
+    // JSON.stringify; direct property access works).
+    return {
+      id: existing.id,
+      name: existing.name,
+      description: existing.description,
+      defaultBranch: existing.defaultBranch,
+      remote: existing.remote,
+      token: freshToken.plaintext,
+      tokenExpiresAt: freshToken.expiresAt,
+    };
+  }
 }
 
 /**
