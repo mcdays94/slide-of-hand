@@ -62,7 +62,8 @@ import {
   commitAndPushToArtifactsInSandbox,
 } from "./sandbox-artifacts";
 import { applyFilesIntoSandbox } from "./sandbox-source-edit";
-import { generateDeckFiles } from "./ai-deck-gen";
+import { streamDeckFiles, type DeckGenPartial } from "./ai-deck-gen";
+import type { DeckCreationSnapshot } from "../src/lib/deck-creation-snapshot";
 
 export interface SandboxDeckCreationEnv {
   Sandbox: DurableObjectNamespace<Sandbox>;
@@ -70,7 +71,7 @@ export interface SandboxDeckCreationEnv {
   AI: Ai;
   /**
    * AI Gateway authentication token (Worker secret
-   * `CF_AI_GATEWAY_TOKEN`). Threaded through to `generateDeckFiles`
+   * `CF_AI_GATEWAY_TOKEN`). Threaded through to `streamDeckFiles`
    * so the model call carries `cf-aig-authorization: Bearer <token>`
    * when the gateway requires auth. Optional — unset means the
    * gateway is unauthenticated.
@@ -84,7 +85,7 @@ export interface CreateDeckDraftInput {
   prompt: string;
   /**
    * Intended publish-time visibility of the deck. Threaded through
-   * to `generateDeckFiles` so the AI's generated `meta.ts` carries
+   * to `streamDeckFiles` so the AI's generated `meta.ts` carries
    * the correct value. Defaults to "private" when unset (safer
    * floor than the reverse). Issue #171 visibility toggle.
    */
@@ -157,6 +158,17 @@ export interface DeckDraftError {
     | "no_files";
 }
 
+/**
+ * Re-export `DeckCreationSnapshot` from the shared types module. The
+ * shape lives in `src/lib/deck-creation-snapshot.ts` because both
+ * `tsconfig.app.json` (frontend) and `tsconfig.node.json` (worker)
+ * need to type-check against it, and pulling it out of `worker/`
+ * avoids transitively dragging Cloudflare ambient types (`Artifacts`,
+ * `Ai`, ...) into the frontend type-check. See ADR 0002.
+ */
+export type { DeckCreationSnapshot } from "../src/lib/deck-creation-snapshot";
+export type { DeckGenPartial } from "../src/lib/deck-creation-snapshot";
+
 export type GetSandboxFn = (
   namespace: DurableObjectNamespace<Sandbox>,
   id: string,
@@ -190,16 +202,67 @@ function buildPromptNote(prompt: string, modelId?: string): string {
 }
 
 /**
- * First-turn deck creation. Forks `deck-starter` (idempotent), clones
- * the fork into a fresh Sandbox, asks Workers AI for the deck files,
- * applies + commits + pushes them.
+ * Flip a stream-derived files array (last entry "writing") into the
+ * "all done" shape used by snapshots from `apply` onwards. Saves
+ * the orchestrator from rebuilding the same map at every phase
+ * boundary post-AI-gen.
  */
-export async function runCreateDeckDraft(
+function asAllDone(
+  files: Array<{ path: string; content: string }>,
+): DeckCreationSnapshot["files"] {
+  return files.map((f) => ({
+    path: f.path,
+    content: f.content,
+    state: "done" as const,
+  }));
+}
+
+/**
+ * Translate a single `DeckGenPartial` from `streamDeckFiles` into the
+ * envelope shape consumed by the canvas. Adds `phase: "ai_gen"` and
+ * (when known) the draftId. Keeps `currentFile` / `commitMessage`
+ * fields when the partial includes them.
+ */
+function aiGenSnapshotFromPartial(
+  partial: DeckGenPartial,
+  draftId: string,
+): DeckCreationSnapshot {
+  const snap: DeckCreationSnapshot = {
+    phase: "ai_gen",
+    files: partial.files,
+    draftId,
+  };
+  if (partial.currentFile !== undefined) snap.currentFile = partial.currentFile;
+  if (partial.commitMessage !== undefined) {
+    snap.commitMessage = partial.commitMessage;
+  }
+  return snap;
+}
+
+/**
+ * First-turn deck creation. Forks `deck-starter` (idempotent), clones
+ * the fork into a fresh Sandbox, asks Workers AI for the deck files
+ * (streaming), applies + commits + pushes them.
+ *
+ * **Async generator**: yields a `DeckCreationSnapshot` at every phase
+ * boundary AND for each partial yielded by `streamDeckFiles` during
+ * `ai_gen`. Returns the lean `DeckDraftResult | DeckDraftError` once
+ * the pipeline terminates — that return value is what the model sees
+ * as the tool result (see ADR 0002).
+ *
+ * Validation failures return directly without yielding — the UI
+ * hasn't pivoted yet at that point. All later failures yield an
+ * `error` snapshot AND return the appropriate `DeckDraftError` so
+ * both consumers (canvas + model) are kept in sync.
+ *
+ * Issue #178 sub-pieces (1) + (3).
+ */
+export async function* runCreateDeckDraft(
   env: SandboxDeckCreationEnv,
   input: CreateDeckDraftInput,
   /** Test hook. Defaults to the real `getSandbox`. */
   getSandboxFn: GetSandboxFn = getSandbox,
-): Promise<DeckDraftResult | DeckDraftError> {
+): AsyncGenerator<DeckCreationSnapshot, DeckDraftResult | DeckDraftError> {
   if (!input.userEmail.trim()) {
     return {
       ok: false,
@@ -214,7 +277,11 @@ export async function runCreateDeckDraft(
     return { ok: false, phase: "validation", error: "Missing prompt." };
   }
 
-  // 1. Fork (or look up an existing fork).
+  // Phase 1: fork. Yield the boundary BEFORE the call so the canvas
+  // can show "fork in progress" while the (currently upstream-broken,
+  // see #182) Artifacts API churns.
+  yield { phase: "fork", files: [] };
+
   let remoteUrl: string;
   let token: string;
   try {
@@ -231,47 +298,58 @@ export async function runCreateDeckDraft(
       token = forkResult.freshWriteToken.plaintext;
     }
   } catch (err) {
-    return {
-      ok: false,
-      phase: "fork",
-      error: `Failed to fork deck-starter: ${err instanceof Error ? err.message : String(err)}`,
-    };
+    const errorMsg = `Failed to fork deck-starter: ${err instanceof Error ? err.message : String(err)}`;
+    yield { phase: "error", files: [], error: errorMsg, failedPhase: "fork" };
+    return { ok: false, phase: "fork", error: errorMsg };
   }
 
   let authenticatedUrl: string;
   try {
     authenticatedUrl = buildAuthenticatedRemoteUrl(remoteUrl, token);
   } catch (err) {
-    return {
-      ok: false,
-      phase: "token",
-      error: `Failed to build authenticated URL: ${err instanceof Error ? err.message : String(err)}`,
-    };
+    const errorMsg = `Failed to build authenticated URL: ${err instanceof Error ? err.message : String(err)}`;
+    // `token` is a DeckDraftError phase but not a canvas phase — the
+    // strip's "fork" chip is the closest visible step (token-build
+    // happens right after fork success). Marking it red is honest
+    // enough for the user.
+    yield { phase: "error", files: [], error: errorMsg, failedPhase: "fork" };
+    return { ok: false, phase: "token", error: errorMsg };
   }
 
   const draftId = draftRepoName(input.userEmail, input.slug);
   const sandbox = getSandboxFn(env.Sandbox, sandboxIdForDraft(draftId));
 
-  // 2. Clone (empty repo is fine — empty: true).
+  // Phase 2: clone.
+  yield { phase: "clone", files: [], draftId };
+
   const clone = await cloneArtifactsRepoIntoSandbox(sandbox, {
     authenticatedUrl,
   });
   if (!clone.ok) {
+    yield {
+      phase: "error",
+      files: [],
+      error: clone.error,
+      draftId,
+      failedPhase: "clone",
+    };
     return { ok: false, phase: "clone", error: clone.error };
   }
 
-  // 3. AI gen.
-  const aiResult = await generateDeckFiles(env.AI, {
+  // Phase 3: AI generation. Yield the boundary first so the canvas can
+  // flip to "model is thinking" before the first partial arrives, then
+  // forward each `partialObjectStream` partial as its own `ai_gen`
+  // snapshot.
+  yield { phase: "ai_gen", files: [], draftId };
+
+  const aiStream = streamDeckFiles(env.AI, {
     slug: input.slug,
     userPrompt: input.prompt,
-    // Default to private here — the new-deck creator UI's toggle
-    // also defaults to private, and the model is instructed to
-    // pass that default through unless the user overrides. This
-    // is the floor for the rare case where neither the UI nor the
-    // model supplies a value.
+    // Default to private — the new-deck creator UI's toggle also
+    // defaults to private, and the model is instructed to pass that
+    // default through unless the user overrides. Floor case in case
+    // neither the UI nor the model supplies a value.
     visibility: input.visibility ?? "private",
-    // Wave 3 references aren't wired here yet — passed through if the
-    // model later supports them.
   }, {
     ...(input.modelId ? { modelId: input.modelId } : {}),
     // Thread the AI Gateway token through so the Workers AI call
@@ -281,7 +359,20 @@ export async function runCreateDeckDraft(
       ? { gatewayToken: env.CF_AI_GATEWAY_TOKEN }
       : {}),
   });
+
+  for await (const partial of aiStream.partials) {
+    yield aiGenSnapshotFromPartial(partial, draftId);
+  }
+
+  const aiResult = await aiStream.result;
   if (!aiResult.ok) {
+    yield {
+      phase: "error",
+      files: [],
+      error: aiResult.error,
+      draftId,
+      failedPhase: "ai_gen",
+    };
     return {
       ok: false,
       phase: "ai_generation",
@@ -290,23 +381,45 @@ export async function runCreateDeckDraft(
     };
   }
 
-  // 4. Apply files.
+  // Files are now committed (in the model's output sense, not git
+  // sense yet) — flip them all to "done" for the post-AI-gen phases.
+  const doneFiles = asAllDone(aiResult.files);
+
+  // Phase 4: apply files into the Sandbox working tree.
+  yield {
+    phase: "apply",
+    files: doneFiles,
+    commitMessage: aiResult.commitMessage,
+    draftId,
+  };
+
   const apply = await applyFilesIntoSandbox(
     sandbox,
     aiResult.files,
     clone.workdir,
   );
   if (!apply.ok) {
-    return {
-      ok: false,
-      phase: "apply_files",
-      error: `Failed to write generated files: ${apply.error}${
-        apply.failedPath ? ` (path: ${apply.failedPath})` : ""
-      }`,
+    const errorMsg = `Failed to write generated files: ${apply.error}${
+      apply.failedPath ? ` (path: ${apply.failedPath})` : ""
+    }`;
+    yield {
+      phase: "error",
+      files: doneFiles,
+      error: errorMsg,
+      draftId,
+      failedPhase: "apply",
     };
+    return { ok: false, phase: "apply_files", error: errorMsg };
   }
 
-  // 5. Commit + push.
+  // Phase 5: commit + push (atomic helper).
+  yield {
+    phase: "commit",
+    files: doneFiles,
+    commitMessage: aiResult.commitMessage,
+    draftId,
+  };
+
   const authorIdentity = authorIdentityFor(input.userEmail);
   const commitResult = await commitAndPushToArtifactsInSandbox(
     sandbox,
@@ -321,17 +434,43 @@ export async function runCreateDeckDraft(
     clone.workdir,
   );
   if (!commitResult.ok) {
-    return {
-      ok: false,
-      phase: "commit_push",
+    yield {
+      phase: "error",
+      files: doneFiles,
       error: commitResult.error,
+      draftId,
+      failedPhase: "commit",
     };
+    return { ok: false, phase: "commit_push", error: commitResult.error };
   }
 
-  // Wipe the locally-held bare token before returning, defence in
-  // depth in case `token` would otherwise survive in a closure
-  // captured by the calling tool's response.
+  // Phase 6: push. The underlying helper does commit + push
+  // atomically; the separate yield keeps the canvas's six-chip phase
+  // strip honest about progressing past commit. UI consumers may see
+  // this and `done` arrive back-to-back; that's fine — the chip flips
+  // through `push` then immediately to `done`.
+  yield {
+    phase: "push",
+    files: doneFiles,
+    commitMessage: aiResult.commitMessage,
+    draftId,
+  };
+
+  // Wipe the locally-held bare token before returning. Defence in
+  // depth — the generator's closure stays alive until GC, so the
+  // token would otherwise be retrievable via a `.return()` trick.
   token = stripExpiresSuffix("redacted");
+  void token;
+
+  // Terminal: yield the success snapshot (commitSha now populated),
+  // then return the lean `DeckDraftResult` for the model.
+  yield {
+    phase: "done",
+    files: doneFiles,
+    commitMessage: aiResult.commitMessage,
+    commitSha: commitResult.sha,
+    draftId,
+  };
 
   const result: DeckDraftResult = {
     ok: true,
@@ -350,15 +489,24 @@ export async function runCreateDeckDraft(
 /**
  * Iteration on an existing draft. Resolves the existing fork, clones
  * HEAD into a Sandbox, sends the existing files (+ optional pinned
- * elements) as context to Workers AI, applies the resulting diff,
- * commits + pushes a follow-up revision.
+ * elements) as context to Workers AI (streaming), applies the
+ * resulting diff, commits + pushes a follow-up revision.
+ *
+ * Same async-generator contract as `runCreateDeckDraft` — yields
+ * `DeckCreationSnapshot`s for the canvas, returns
+ * `DeckDraftResult | DeckDraftError` for the model. The phase
+ * sequence is the same; semantically `fork` here means "resolving the
+ * existing draft + minting a write token", not literal git-fork.
+ *
+ * Issue #178 sub-piece (1) — symmetric with `runCreateDeckDraft` so
+ * the orchestrators can't drift on snapshot shape.
  */
-export async function runIterateOnDeckDraft(
+export async function* runIterateOnDeckDraft(
   env: SandboxDeckCreationEnv,
   input: IterateOnDeckDraftInput,
   /** Test hook. Defaults to the real `getSandbox`. */
   getSandboxFn: GetSandboxFn = getSandbox,
-): Promise<DeckDraftResult | DeckDraftError> {
+): AsyncGenerator<DeckCreationSnapshot, DeckDraftResult | DeckDraftError> {
   if (!input.userEmail.trim()) {
     return {
       ok: false,
@@ -373,7 +521,11 @@ export async function runIterateOnDeckDraft(
     return { ok: false, phase: "validation", error: "Missing prompt." };
   }
 
-  // 1. Resolve existing fork + mint a fresh write token.
+  // Phase 1: "fork" — semantically "resolve existing draft" for the
+  // iteration path. Yields the same phase boundary so the canvas's
+  // phase strip is consistent across create and iterate.
+  yield { phase: "fork", files: [] };
+
   let remoteUrl: string;
   let token: string;
   try {
@@ -382,58 +534,77 @@ export async function runIterateOnDeckDraft(
     remoteUrl = repo.remote;
     token = fresh.plaintext;
   } catch (err) {
-    return {
-      ok: false,
-      phase: "fork",
-      error: `Draft not found for slug "${input.slug}". Use createDeckDraft first. (${err instanceof Error ? err.message : String(err)})`,
-    };
+    const errorMsg = `Draft not found for slug "${input.slug}". Use createDeckDraft first. (${err instanceof Error ? err.message : String(err)})`;
+    yield { phase: "error", files: [], error: errorMsg, failedPhase: "fork" };
+    return { ok: false, phase: "fork", error: errorMsg };
   }
 
   let authenticatedUrl: string;
   try {
     authenticatedUrl = buildAuthenticatedRemoteUrl(remoteUrl, token);
   } catch (err) {
-    return {
-      ok: false,
-      phase: "token",
-      error: `Failed to build authenticated URL: ${err instanceof Error ? err.message : String(err)}`,
-    };
+    const errorMsg = `Failed to build authenticated URL: ${err instanceof Error ? err.message : String(err)}`;
+    yield { phase: "error", files: [], error: errorMsg, failedPhase: "fork" };
+    return { ok: false, phase: "token", error: errorMsg };
   }
 
   const draftId = draftRepoName(input.userEmail, input.slug);
   const sandbox = getSandboxFn(env.Sandbox, sandboxIdForDraft(draftId));
 
-  // 2. Clone HEAD.
+  // Phase 2: clone HEAD.
+  yield { phase: "clone", files: [], draftId };
+
   const clone = await cloneArtifactsRepoIntoSandbox(sandbox, {
     authenticatedUrl,
   });
   if (!clone.ok) {
+    yield {
+      phase: "error",
+      files: [],
+      error: clone.error,
+      draftId,
+      failedPhase: "clone",
+    };
     return { ok: false, phase: "clone", error: clone.error };
   }
 
-  // 3. Read the existing deck files so the AI gen has full context.
-  // We use a single `find + cat` script to gather them efficiently.
+  // Read the existing deck files so the AI gen has full context.
+  // (Not a separate phase — happens inside the boundary before
+  // `ai_gen` yields. The file read is fast, ~10ms typically.)
   const existingFiles = await readDeckFilesFromSandbox(
     sandbox,
     input.slug,
     clone.workdir,
   );
 
-  // 4. AI gen with iteration context.
-  const aiResult = await generateDeckFiles(env.AI, {
+  // Phase 3: AI generation with iteration context.
+  yield { phase: "ai_gen", files: [], draftId };
+
+  const aiStream = streamDeckFiles(env.AI, {
     slug: input.slug,
     userPrompt: input.prompt,
     existingFiles,
     ...(input.pinnedElements ? { pinnedElements: input.pinnedElements } : {}),
   }, {
     ...(input.modelId ? { modelId: input.modelId } : {}),
-    // Same AI Gateway auth threading as runCreateDeckDraft — see
-    // the comment above.
     ...(env.CF_AI_GATEWAY_TOKEN
       ? { gatewayToken: env.CF_AI_GATEWAY_TOKEN }
       : {}),
   });
+
+  for await (const partial of aiStream.partials) {
+    yield aiGenSnapshotFromPartial(partial, draftId);
+  }
+
+  const aiResult = await aiStream.result;
   if (!aiResult.ok) {
+    yield {
+      phase: "error",
+      files: [],
+      error: aiResult.error,
+      draftId,
+      failedPhase: "ai_gen",
+    };
     return {
       ok: false,
       phase: "ai_generation",
@@ -442,23 +613,43 @@ export async function runIterateOnDeckDraft(
     };
   }
 
-  // 5. Apply.
+  const doneFiles = asAllDone(aiResult.files);
+
+  // Phase 4: apply files.
+  yield {
+    phase: "apply",
+    files: doneFiles,
+    commitMessage: aiResult.commitMessage,
+    draftId,
+  };
+
   const apply = await applyFilesIntoSandbox(
     sandbox,
     aiResult.files,
     clone.workdir,
   );
   if (!apply.ok) {
-    return {
-      ok: false,
-      phase: "apply_files",
-      error: `Failed to write generated files: ${apply.error}${
-        apply.failedPath ? ` (path: ${apply.failedPath})` : ""
-      }`,
+    const errorMsg = `Failed to write generated files: ${apply.error}${
+      apply.failedPath ? ` (path: ${apply.failedPath})` : ""
+    }`;
+    yield {
+      phase: "error",
+      files: doneFiles,
+      error: errorMsg,
+      draftId,
+      failedPhase: "apply",
     };
+    return { ok: false, phase: "apply_files", error: errorMsg };
   }
 
-  // 6. Commit + push.
+  // Phase 5: commit + push.
+  yield {
+    phase: "commit",
+    files: doneFiles,
+    commitMessage: aiResult.commitMessage,
+    draftId,
+  };
+
   const authorIdentity = authorIdentityFor(input.userEmail);
   const commitResult = await commitAndPushToArtifactsInSandbox(
     sandbox,
@@ -473,14 +664,34 @@ export async function runIterateOnDeckDraft(
     clone.workdir,
   );
   if (!commitResult.ok) {
-    return {
-      ok: false,
-      phase: "commit_push",
+    yield {
+      phase: "error",
+      files: doneFiles,
       error: commitResult.error,
+      draftId,
+      failedPhase: "commit",
     };
+    return { ok: false, phase: "commit_push", error: commitResult.error };
   }
 
+  // Phase 6: push (same atomic-helper note as `runCreateDeckDraft`).
+  yield {
+    phase: "push",
+    files: doneFiles,
+    commitMessage: aiResult.commitMessage,
+    draftId,
+  };
+
   token = stripExpiresSuffix("redacted");
+  void token;
+
+  yield {
+    phase: "done",
+    files: doneFiles,
+    commitMessage: aiResult.commitMessage,
+    commitSha: commitResult.sha,
+    draftId,
+  };
 
   const result: DeckDraftResult = {
     ok: true,

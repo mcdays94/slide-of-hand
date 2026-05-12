@@ -50,6 +50,7 @@ import ReactMarkdown from "react-markdown";
 import { easeEntrance, easeStandard } from "@/lib/motion";
 import { useSettings } from "@/framework/viewer/useSettings";
 import { useAccessAuth } from "@/lib/use-access-auth";
+import { extractLatestDeckCreationCall } from "@/components/deck-creation-canvas/extractLatestCall";
 
 export interface StudioAgentPanelProps {
   /** Slug of the deck this conversation belongs to. */
@@ -87,6 +88,37 @@ export interface StudioAgentPanelProps {
    * selection by passing `body={ model: ... }`.
    */
   body?: Record<string, unknown>;
+  /**
+   * Render slot for a LEFT pane next to the chat (issue #178 sub-
+   * pieces 1 + 3). When set AND `variant === "page"` AND the chat
+   * history contains a deck-creation tool-call (createDeckDraft or
+   * iterateOnDeckDraft), the panel renders a two-column layout:
+   * this slot in the left column, the chat in the right.
+   *
+   * Called every render with the live chat state, so consumers can
+   * pass the latest `messages` down to their canvas component. The
+   * slot is NOT rendered when no deck-creation call exists yet —
+   * the page is full-width chat until the model fires its first
+   * tool call.
+   *
+   * Used by `/admin/decks/new` to mount `<DeckCreationCanvas>`.
+   * No effect in `variant === "side-panel"` (which already has
+   * its own underlying surface).
+   */
+  renderLeftPane?: (state: PanelChatState) => ReactNode;
+}
+
+/**
+ * Live chat state surfaced to the `renderLeftPane` slot. Mirrors
+ * the subset of `useAgentChat`'s return shape the canvas (or any
+ * future left-pane content) needs.
+ */
+export interface PanelChatState {
+  messages: ReadonlyArray<{
+    id?: string;
+    parts: Array<{ type: string; [k: string]: unknown }>;
+  }>;
+  sendMessage: (message: { text: string }) => void;
 }
 
 /**
@@ -127,6 +159,7 @@ export function StudioAgentPanel({
   variant = "side-panel",
   emptyState,
   body,
+  renderLeftPane,
 }: StudioAgentPanelProps) {
   // Visibility state powers the slide-out exit animation in
   // `side-panel` variant. In `page` variant the visibility is
@@ -165,6 +198,7 @@ export function StudioAgentPanel({
         variant="page"
         emptyState={emptyState}
         body={body}
+        {...(renderLeftPane ? { renderLeftPane } : {})}
       />
     );
   }
@@ -198,6 +232,7 @@ interface PanelInnerProps {
   variant: "side-panel" | "page";
   emptyState?: { title: string; description: string };
   body?: Record<string, unknown>;
+  renderLeftPane?: (state: PanelChatState) => ReactNode;
 }
 
 function PanelInner({
@@ -206,6 +241,7 @@ function PanelInner({
   variant,
   emptyState,
   body: extraBody,
+  renderLeftPane,
 }: PanelInnerProps) {
   const isPageVariant = variant === "page";
   // `useAgent` opens the WebSocket. Setting `prefix` here lines up
@@ -333,16 +369,33 @@ function PanelInner({
       window.removeEventListener("keydown", onKey, { capture: true });
   }, [isBusy, stop]);
 
+  // When the panel hosts a left-pane slot (issue #178 sub-pieces 1
+  // + 3 — `/admin/decks/new` mounts the deck-creation canvas there)
+  // AND the chat history contains a deck-creation tool-call, pivot
+  // to a two-column layout: left pane takes the bulk of the
+  // viewport, the chat shrinks to a right rail. Once split, stays
+  // split for the rest of the tab's lifetime (call always exists in
+  // history once made).
+  const isSplitLayout =
+    isPageVariant &&
+    renderLeftPane !== undefined &&
+    extractLatestDeckCreationCall(messages) !== null;
+
   // Page-variant root is a plain block-level element (no fixed
   // positioning, no slide-in, no backdrop, no shadow). The
   // surrounding route handler owns the viewport layout — we just
   // claim the height it gave us via `h-full`. Side-panel variant is
   // unchanged.
+  //
+  // In the split layout the panel becomes the right rail (constrained
+  // width + a left border to separate from the canvas).
   const panelClassName = isPageVariant
-    ? "flex h-full w-full max-w-3xl mx-auto flex-col bg-cf-bg-100 text-cf-text"
+    ? isSplitLayout
+      ? "flex h-full w-full max-w-md flex-col border-l border-cf-border bg-cf-bg-100 text-cf-text"
+      : "flex h-full w-full max-w-3xl mx-auto flex-col bg-cf-bg-100 text-cf-text"
     : "fixed right-0 top-0 z-50 flex h-screen w-full max-w-[400px] flex-col border-l border-cf-border bg-cf-bg-100 text-cf-text shadow-xl";
 
-  return (
+  const panelTree = (
     <>
       {/* Backdrop — light dimming so the panel reads as modal-ish
           without blocking the deck preview entirely. Clicking the
@@ -573,6 +626,28 @@ function PanelInner({
       </motion.aside>
     </>
   );
+
+  // In split layout, wrap the panel tree in a flex container with
+  // the left pane. The left pane gets the larger area; the chat
+  // panel becomes the right rail.
+  if (isSplitLayout && renderLeftPane) {
+    return (
+      <div
+        data-testid="studio-agent-split-layout"
+        className="flex h-full w-full"
+      >
+        <section
+          data-testid="studio-agent-left-pane"
+          className="flex-1 min-w-0 overflow-hidden"
+        >
+          {renderLeftPane({ messages, sendMessage })}
+        </section>
+        {panelTree}
+      </div>
+    );
+  }
+
+  return panelTree;
 }
 
 /**

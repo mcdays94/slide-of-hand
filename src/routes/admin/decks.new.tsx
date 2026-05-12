@@ -47,6 +47,7 @@
 import { Suspense, lazy, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { ArrowLeft, Globe, Lock } from "lucide-react";
+import { DeckCreationCanvas } from "@/components/deck-creation-canvas";
 
 // Lazy-load to keep the agent SDK + ai-chat off the first paint of
 // the static admin routes. Same pattern as the existing mounts in
@@ -144,7 +145,14 @@ export default function NewDeckRoute() {
           below the page header. The lazy boundary mirrors the
           existing mounts in Deck.tsx / EditMode.tsx — the bundle is
           ~300 KB and we don't want it in the initial paint of
-          static admin pages. */}
+          static admin pages.
+          
+          `renderLeftPane` is the canvas slot (issue #178 sub-pieces
+          1 + 3). The panel calls it on every render with the live
+          chat state; when the model fires its first deck-creation
+          tool call, the panel pivots its layout to two columns and
+          the canvas renders here. Before the first tool call, the
+          slot is unmounted and the panel renders full-width. */}
       <div className="flex flex-1 flex-col overflow-hidden">
         <Suspense fallback={null}>
           <StudioAgentPanel
@@ -164,6 +172,9 @@ export default function NewDeckRoute() {
                 "Describe a topic in plain language — e.g. \"a deck about CRDT collaborative editing for an engineering audience, ~25 min, five slides.\" I'll pick a slug, write the slides, and save the result to your scratch space.",
             }}
             onClose={() => navigate("/admin")}
+            renderLeftPane={({ messages }) => (
+              <DeckCreationCanvas messages={messages} />
+            )}
           />
         </Suspense>
       </div>

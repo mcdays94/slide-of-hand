@@ -33,6 +33,7 @@
     "src/lib/deck-record.ts",
     "src/lib/slot-types.ts",
     "src/lib/ai-models.ts",
+    "src/lib/deck-creation-snapshot.ts",
     "src/framework/viewer/types.ts"
   ]
 }
