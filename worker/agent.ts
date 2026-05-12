@@ -65,6 +65,7 @@ import { createWorkersAI } from "workers-ai-provider";
 import { streamText, convertToModelMessages, stepCountIs } from "ai";
 import { requireAccessAuth, getAccessUserEmail } from "./access-auth";
 import { buildTools, currentUserEmail } from "./agent-tools";
+import { buildAiGatewayHeaders } from "./ai-gateway";
 import { fetchMcpTools } from "./mcp-tools";
 import {
   AI_ASSISTANT_MODELS,
@@ -109,6 +110,25 @@ export interface AgentEnv {
    * unchanged.
    */
   MCP_SERVERS?: KVNamespace;
+  /**
+   * Cloudflare AI Gateway authentication token (Worker secret, set
+   * via `wrangler secret put CF_AI_GATEWAY_TOKEN`). Required when
+   * the `slide-of-hand-agent` gateway has Authenticated Gateway
+   * enabled in the Cloudflare dashboard — without it, every
+   * Workers AI call routed through the gateway returns error 2001
+   * ("Please configure AI Gateway in the Cloudflare dashboard").
+   *
+   * Forwarded as the `cf-aig-authorization: Bearer <token>` header
+   * via the workers-ai-provider's `extraHeaders` option. See the
+   * `onChatMessage` site below and `worker/ai-deck-gen.ts` for the
+   * matching plumbing on the deck-generation path.
+   *
+   * Declared OPTIONAL so a future gateway flip back to
+   * unauthenticated continues to work without code changes — when
+   * the secret is unset we just don't send the header. The gateway
+   * is the load-bearing security boundary here, not this header.
+   */
+  CF_AI_GATEWAY_TOKEN?: string;
 }
 
 /**
@@ -400,13 +420,29 @@ export class DeckAuthorAgent extends AIChatAgent<AgentEnv> {
     // the current Workers AI catalog ID. Falls back to the default
     // (Kimi K2.6) for missing / unknown / tampered values.
     const modelId = resolveAiAssistantModel(options?.body);
+    // AI Gateway authentication header (only sent when the gateway
+    // is configured as Authenticated). Returns `undefined` when the
+    // CF_AI_GATEWAY_TOKEN secret isn't set, so the spread is a no-op
+    // and the chat stream still works against an unauthenticated
+    // gateway.
+    const aiGatewayHeaders = buildAiGatewayHeaders(
+      this.env.CF_AI_GATEWAY_TOKEN,
+    );
     const result = streamText({
-      // `workersai(modelId)` returns the AI-SDK provider for the
-      // chosen Workers AI model. Cast through `any` because the SDK's
-      // model ID union is narrower than the catalog (Kimi K2 is in the
-      // catalog but the TS type sometimes lags behind).
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      model: workersai(modelId as any),
+      // `workersai(modelId, settings)` returns the AI-SDK provider
+      // for the chosen Workers AI model. Cast through `any` because
+      // the SDK's model ID union is narrower than the catalog
+      // (Kimi K2 is in the catalog but the TS type sometimes lags
+      // behind).
+      // The second arg threads `cf-aig-authorization` through to
+      // the underlying `binding.run(model, inputs, { extraHeaders })`
+      // call — see `node_modules/workers-ai-provider/src/workersai-
+      // chat-language-model.ts:getRunOptions` for the wire path.
+      model: workersai(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        modelId as any,
+        aiGatewayHeaders ? { extraHeaders: aiGatewayHeaders } : {},
+      ),
       // Build the system prompt fresh per turn so the current deck
       // slug (this.name) is injected into the prompt. The model can
       // see what deck it's scoped to + know the source path without

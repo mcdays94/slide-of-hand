@@ -177,7 +177,11 @@ describe("generateDeckFiles — happy path", () => {
       slug: "x",
       userPrompt: "x",
     });
-    expect(modelMock).toHaveBeenCalledWith("@cf/openai/gpt-oss-120b");
+    // The provider is invoked with `(modelId, settings)`. With no
+    // gateway token the settings object is empty — the AI Gateway
+    // auth header is only attached when CF_AI_GATEWAY_TOKEN is
+    // supplied via `options.gatewayToken`.
+    expect(modelMock).toHaveBeenCalledWith("@cf/openai/gpt-oss-120b", {});
   });
 
   it("honours an explicit model override", async () => {
@@ -194,7 +198,47 @@ describe("generateDeckFiles — happy path", () => {
     );
     expect(modelMock).toHaveBeenCalledWith(
       "@cf/meta/llama-4-scout-17b-16e-instruct",
+      {},
     );
+  });
+
+  // AI Gateway authentication (issue: 2001 'Please configure AI
+  // Gateway' error when the gateway has Authenticated Gateway turned
+  // on). When the caller supplies a `gatewayToken`, the model call's
+  // settings carry the `cf-aig-authorization: Bearer <token>` header
+  // via the workers-ai-provider's `extraHeaders` option.
+  it("attaches the cf-aig-authorization header when gatewayToken is supplied", async () => {
+    generateObjectMock.mockResolvedValueOnce({
+      object: {
+        files: [{ path: "src/decks/public/x/meta.ts", content: "a" }],
+        commitMessage: "x",
+      },
+    });
+    await generateDeckFiles(
+      fakeAiBinding,
+      { slug: "x", userPrompt: "x" },
+      { gatewayToken: "secret-token-abc" },
+    );
+    expect(modelMock).toHaveBeenCalledWith("@cf/openai/gpt-oss-120b", {
+      extraHeaders: { "cf-aig-authorization": "Bearer secret-token-abc" },
+    });
+  });
+
+  it("does not attach the cf-aig-authorization header when gatewayToken is empty", async () => {
+    generateObjectMock.mockResolvedValueOnce({
+      object: {
+        files: [{ path: "src/decks/public/x/meta.ts", content: "a" }],
+        commitMessage: "x",
+      },
+    });
+    await generateDeckFiles(
+      fakeAiBinding,
+      { slug: "x", userPrompt: "x" },
+      { gatewayToken: "  " },
+    );
+    // Empty-string-after-trim token = treat as unset (defence
+    // against a misconfigured secret that's all whitespace).
+    expect(modelMock).toHaveBeenCalledWith("@cf/openai/gpt-oss-120b", {});
   });
 });
 

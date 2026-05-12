@@ -68,6 +68,14 @@ export interface SandboxDeckCreationEnv {
   Sandbox: DurableObjectNamespace<Sandbox>;
   ARTIFACTS: Artifacts;
   AI: Ai;
+  /**
+   * AI Gateway authentication token (Worker secret
+   * `CF_AI_GATEWAY_TOKEN`). Threaded through to `generateDeckFiles`
+   * so the model call carries `cf-aig-authorization: Bearer <token>`
+   * when the gateway requires auth. Optional — unset means the
+   * gateway is unauthenticated.
+   */
+  CF_AI_GATEWAY_TOKEN?: string;
 }
 
 export interface CreateDeckDraftInput {
@@ -253,6 +261,12 @@ export async function runCreateDeckDraft(
     // model later supports them.
   }, {
     ...(input.modelId ? { modelId: input.modelId } : {}),
+    // Thread the AI Gateway token through so the Workers AI call
+    // can authenticate against the gateway when it's set to
+    // Authenticated. No-op when the secret isn't set.
+    ...(env.CF_AI_GATEWAY_TOKEN
+      ? { gatewayToken: env.CF_AI_GATEWAY_TOKEN }
+      : {}),
   });
   if (!aiResult.ok) {
     return {
@@ -400,6 +414,11 @@ export async function runIterateOnDeckDraft(
     ...(input.pinnedElements ? { pinnedElements: input.pinnedElements } : {}),
   }, {
     ...(input.modelId ? { modelId: input.modelId } : {}),
+    // Same AI Gateway auth threading as runCreateDeckDraft — see
+    // the comment above.
+    ...(env.CF_AI_GATEWAY_TOKEN
+      ? { gatewayToken: env.CF_AI_GATEWAY_TOKEN }
+      : {}),
   });
   if (!aiResult.ok) {
     return {
