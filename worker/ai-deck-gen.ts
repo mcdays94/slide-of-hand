@@ -27,7 +27,7 @@
  * full skill body).
  */
 
-import { generateObject, streamObject } from "ai";
+import { streamObject } from "ai";
 import { createWorkersAI } from "workers-ai-provider";
 import { buildAiGatewayHeaders } from "./ai-gateway";
 import { z } from "zod";
@@ -307,7 +307,7 @@ function buildUserMessage(input: AiDeckGenInput): string {
   return parts.join("\n");
 }
 
-export interface GenerateDeckFilesOptions {
+export interface StreamDeckFilesOptions {
   /** Override the model id (e.g. when the user picked a different one). */
   modelId?: string;
   /**
@@ -330,67 +330,6 @@ export interface GenerateDeckFilesOptions {
    * built model factory to bypass that wiring.
    */
   buildModel?: (aiBinding: Ai, modelId: string) => unknown;
-}
-
-/**
- * Run the deck-generation pass and return the parsed file edits.
- * Never throws — failures come back via the `AiDeckGenFailure` branch
- * so callers can render a useful UI message.
- */
-export async function generateDeckFiles(
-  aiBinding: Ai,
-  input: AiDeckGenInput,
-  options: GenerateDeckFilesOptions = {},
-): Promise<AiDeckGenResult> {
-  const modelId = options.modelId ?? DEFAULT_DECK_GEN_MODEL_ID;
-  // AI Gateway auth header (only sent when the gateway is configured
-  // as Authenticated and the token has been provisioned). Returns
-  // `undefined` when the token isn't set so the spread below is a
-  // no-op against unauthenticated gateways.
-  const aiGatewayHeaders = buildAiGatewayHeaders(options.gatewayToken);
-  const buildModel =
-    options.buildModel ??
-    ((binding: Ai, id: string) => {
-      const workersai = createWorkersAI({
-        binding,
-        gateway: { id: AI_GATEWAY_ID },
-      });
-      // `workersai(modelId, settings)` accepts a second `settings`
-      // arg that becomes the per-call `extraHeaders` on the
-      // underlying `binding.run()`. See workers-ai-provider's
-      // `workersai-chat-language-model.ts:getRunOptions` for the
-      // wire path.
-      return workersai(
-        id as Parameters<ReturnType<typeof createWorkersAI>>[0],
-        aiGatewayHeaders ? { extraHeaders: aiGatewayHeaders } : {},
-      );
-    });
-
-  let object: z.infer<typeof deckGenSchema>;
-  try {
-    const model = buildModel(aiBinding, modelId);
-    const result = await generateObject({
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      model: model as any,
-      schema: deckGenSchema,
-      system: buildSystemPrompt(input.slug),
-      prompt: buildUserMessage(input),
-    });
-    object = result.object;
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    return {
-      ok: false,
-      phase: "model_error",
-      error: `Workers AI request failed: ${message}`,
-    };
-  }
-
-  // Defence-in-depth: even though Zod validates the shape, also
-  // enforce path-scoping at runtime. Shared with `streamDeckFiles`
-  // via `validateGeneratedObject` so the two functions can't drift
-  // on what's an allowed path.
-  return validateGeneratedObject(object, input.slug);
 }
 
 /**
@@ -438,20 +377,34 @@ export interface StreamDeckFilesResult {
 }
 
 /**
- * Streaming variant of `generateDeckFiles`. Identical contract on the
- * model call (same system + user prompt, same schema, same model
- * defaults, same AI Gateway auth threading) but exposes the model's
- * output incrementally via `partials` AND resolves the same validated
- * `AiDeckGenResult` via `result`.
+ * Run a deck-generation pass against Workers AI and surface its
+ * progress through TWO channels:
  *
- * Issue #178 sub-piece (1). Will replace `generateDeckFiles` once
- * `runCreateDeckDraft` and `runIterateOnDeckDraft` migrate (Slice 2
- * in #183).
+ *   - `partials` — async iterable of `DeckGenPartial` snapshots
+ *     yielded as the model writes successive tokens (transformed
+ *     from the AI SDK's `partialObjectStream`).
+ *   - `result` — promise that resolves to a validated `AiDeckGenResult`
+ *     once the model finishes (path-allowlist + no-files checks
+ *     applied to the final `object`).
+ *
+ * Never throws — model failures, schema violations, and path
+ * violations all come back via the `AiDeckGenFailure` branch of
+ * `result` so callers can render a useful UI message instead of
+ * handling exceptions.
+ *
+ * Mirrors the AI SDK's `streamObject`'s `{partialObjectStream, object}`
+ * idiom. The two halves are designed to be consumed in parallel:
+ *
+ *   const { partials, result } = streamDeckFiles(env.AI, input, opts);
+ *   for await (const partial of partials) { ... }
+ *   const final = await result;
+ *
+ * Issue #178 sub-piece (1).
  */
 export function streamDeckFiles(
   aiBinding: Ai,
   input: AiDeckGenInput,
-  options: GenerateDeckFilesOptions = {},
+  options: StreamDeckFilesOptions = {},
 ): StreamDeckFilesResult {
   const modelId = options.modelId ?? DEFAULT_DECK_GEN_MODEL_ID;
   const aiGatewayHeaders = buildAiGatewayHeaders(options.gatewayToken);

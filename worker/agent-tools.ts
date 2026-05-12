@@ -75,6 +75,7 @@ import {
 import {
   runCreateDeckDraft,
   runIterateOnDeckDraft,
+  type DeckCreationSnapshot,
   type DeckDraftError,
   type DeckDraftResult,
 } from "./sandbox-deck-creation";
@@ -476,12 +477,12 @@ export function buildTools(env: AgentToolsEnv, slug: string) {
             'Intended visibility of the published deck. The new-deck creator surface sends a default via the per-turn body; pass that value through unless the user explicitly overrides ("make it public"). Defaults to "private" when unset.',
           ),
       }),
-      execute: async ({
+      execute: async function* ({
         slug,
         prompt,
         visibility,
-      }): Promise<DeckDraftToolResult> => {
-        return runCreateDeckDraftTool(env, slug, prompt, visibility);
+      }): AsyncGenerator<DeckDraftToolStreamItem, void> {
+        yield* runCreateDeckDraftTool(env, slug, prompt, visibility);
       },
     }),
 
@@ -528,12 +529,12 @@ export function buildTools(env: AgentToolsEnv, slug: string) {
               "prompt explicitly broadens scope.",
           ),
       }),
-      execute: async ({
+      execute: async function* ({
         slug,
         prompt,
         pinnedElements,
-      }): Promise<DeckDraftToolResult> => {
-        return runIterateOnDeckDraftTool(env, slug, prompt, pinnedElements);
+      }): AsyncGenerator<DeckDraftToolStreamItem, void> {
+        yield* runIterateOnDeckDraftTool(env, slug, prompt, pinnedElements);
       },
     }),
 
@@ -1035,11 +1036,34 @@ export async function runProposeSourceEdit(
 export type DeckDraftToolResult = DeckDraftResult | DeckDraftError;
 
 /**
+ * What `createDeckDraft.execute` and `iterateOnDeckDraft.execute`
+ * yield to the AI SDK over the streaming tool-call protocol.
+ *
+ * Most yields are `DeckCreationSnapshot` (verbose, with full file
+ * contents) — those drive the canvas UI on `/admin/decks/new`. The
+ * FINAL yield is the lean `DeckDraftToolResult` (commit SHA +
+ * metadata) — that's what the model sees as the tool result on its
+ * next turn. The shapes are union-discriminated by `"ok" in value`
+ * — only the lean result has `ok`.
+ *
+ * The AI SDK's `ToolExecuteFunction` accepts `AsyncIterable<OUTPUT>`
+ * and observes the LAST yield as the tool's final output (the
+ * generator's `return` value is intentionally ignored). So we yield
+ * the lean shape last to keep the model's context budget tight.
+ */
+export type DeckDraftToolStreamItem = DeckCreationSnapshot | DeckDraftToolResult;
+
+/**
  * Tool runner for `createDeckDraft`. Resolves the user's email from
  * the current AsyncLocalStorage context + delegates to
  * `runCreateDeckDraft` in `sandbox-deck-creation.ts`. Surfaces a
  * friendly auth error for service-token contexts (which have no
  * user identity).
+ *
+ * Async generator: forwards every `DeckCreationSnapshot` from the
+ * orchestrator AND yields the lean `DeckDraftToolResult` returned by
+ * the orchestrator as the final value. See `DeckDraftToolStreamItem`
+ * for why the asymmetry.
  *
  * `visibility` comes from the model's tool call. The model is
  * instructed (via the new-deck creator system prompt) to pass
@@ -1047,37 +1071,51 @@ export type DeckDraftToolResult = DeckDraftResult | DeckDraftError;
  * explicitly overrides it. When omitted, the orchestrator
  * defaults to "private".
  */
-export async function runCreateDeckDraftTool(
+export async function* runCreateDeckDraftTool(
   env: AgentToolsEnv,
   slug: string,
   prompt: string,
   visibility?: "public" | "private",
   emailOverride?: string | null,
-): Promise<DeckDraftToolResult> {
+): AsyncGenerator<DeckDraftToolStreamItem, void> {
   const email =
     emailOverride !== undefined ? emailOverride : currentUserEmail();
   if (!email) {
-    return {
+    yield {
       ok: false,
       phase: "validation",
       error:
         "createDeckDraft requires an interactive user identity. " +
         "Service-token contexts can't create per-user drafts.",
     };
+    return;
   }
-  return runCreateDeckDraft(env, {
+  const gen = runCreateDeckDraft(env, {
     userEmail: email,
     slug,
     prompt,
     ...(visibility ? { visibility } : {}),
   });
+  // Forward every snapshot, then yield the orchestrator's return
+  // value (lean DeckDraftToolResult) as the final tool output.
+  // `for await ... of` would discard the return value — using
+  // manual `.next()` to capture it.
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const next = await gen.next();
+    if (next.done) {
+      yield next.value;
+      return;
+    }
+    yield next.value;
+  }
 }
 
 /**
  * Tool runner for `iterateOnDeckDraft`. Mirrors `runCreateDeckDraftTool`
  * but for the iteration flow.
  */
-export async function runIterateOnDeckDraftTool(
+export async function* runIterateOnDeckDraftTool(
   env: AgentToolsEnv,
   slug: string,
   prompt: string,
@@ -1088,24 +1126,34 @@ export async function runIterateOnDeckDraftTool(
     htmlExcerpt: string;
   }>,
   emailOverride?: string | null,
-): Promise<DeckDraftToolResult> {
+): AsyncGenerator<DeckDraftToolStreamItem, void> {
   const email =
     emailOverride !== undefined ? emailOverride : currentUserEmail();
   if (!email) {
-    return {
+    yield {
       ok: false,
       phase: "validation",
       error:
         "iterateOnDeckDraft requires an interactive user identity. " +
         "Service-token contexts can't iterate on per-user drafts.",
     };
+    return;
   }
-  return runIterateOnDeckDraft(env, {
+  const gen = runIterateOnDeckDraft(env, {
     userEmail: email,
     slug,
     prompt,
     ...(pinnedElements ? { pinnedElements } : {}),
   });
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const next = await gen.next();
+    if (next.done) {
+      yield next.value;
+      return;
+    }
+    yield next.value;
+  }
 }
 
 /**

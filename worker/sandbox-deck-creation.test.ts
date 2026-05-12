@@ -60,11 +60,11 @@ vi.mock("./sandbox-source-edit", () => ({
   applyFilesIntoSandbox: applyFilesIntoSandboxMock,
 }));
 
-const { generateDeckFilesMock } = vi.hoisted(() => ({
-  generateDeckFilesMock: vi.fn(),
+const { streamDeckFilesMock } = vi.hoisted(() => ({
+  streamDeckFilesMock: vi.fn(),
 }));
 vi.mock("./ai-deck-gen", () => ({
-  generateDeckFiles: generateDeckFilesMock,
+  streamDeckFiles: streamDeckFilesMock,
 }));
 
 const { getSandboxMock } = vi.hoisted(() => ({
@@ -78,8 +78,10 @@ import {
   runCreateDeckDraft,
   runIterateOnDeckDraft,
   runPublishDraft,
+  type DeckCreationSnapshot,
   type SandboxDeckCreationEnv,
 } from "./sandbox-deck-creation";
+import type { AiDeckGenResult, DeckGenPartial } from "./ai-deck-gen";
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -89,6 +91,43 @@ function makeEnv(): SandboxDeckCreationEnv {
     ARTIFACTS: {} as unknown as Artifacts,
     AI: {} as unknown as Ai,
   };
+}
+
+/**
+ * Builds a fake `streamDeckFiles` return value: yields the given
+ * partial deltas from `partials`, then resolves `result`. Default
+ * partials = empty (no streaming visible) for tests that don't care
+ * about the streaming surface.
+ *
+ * Mirrors the shape `streamDeckFiles` produces in `worker/ai-deck-gen.ts`.
+ */
+function fakeStreamDeckFiles(
+  partials: DeckGenPartial[],
+  result: AiDeckGenResult,
+): { partials: AsyncIterable<DeckGenPartial>; result: Promise<AiDeckGenResult> } {
+  return {
+    partials: (async function* () {
+      for (const p of partials) yield p;
+    })(),
+    result: Promise.resolve(result),
+  };
+}
+
+/**
+ * Drains an async generator: collects every yielded snapshot AND
+ * returns the generator's final return value. Centralised here so
+ * each test doesn't repeat the while/await/done dance.
+ */
+async function runGen<TYield, TReturn>(
+  gen: AsyncGenerator<TYield, TReturn>,
+): Promise<{ snapshots: TYield[]; result: TReturn }> {
+  const snapshots: TYield[] = [];
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const next = await gen.next();
+    if (next.done) return { snapshots, result: next.value };
+    snapshots.push(next.value);
+  }
 }
 
 function setHappyPathMocks() {
@@ -109,15 +148,17 @@ function setHappyPathMocks() {
     workdir: "/workspace/repo",
     ref: "main",
   });
-  generateDeckFilesMock.mockResolvedValue({
-    ok: true,
-    files: [
-      { path: "src/decks/public/my/meta.ts", content: "..." },
-      { path: "src/decks/public/my/index.tsx", content: "..." },
-      { path: "src/decks/public/my/01-title.tsx", content: "..." },
-    ],
-    commitMessage: "Initial deck",
-  });
+  streamDeckFilesMock.mockReturnValue(
+    fakeStreamDeckFiles([], {
+      ok: true,
+      files: [
+        { path: "src/decks/public/my/meta.ts", content: "..." },
+        { path: "src/decks/public/my/index.tsx", content: "..." },
+        { path: "src/decks/public/my/01-title.tsx", content: "..." },
+      ],
+      commitMessage: "Initial deck",
+    }),
+  );
   applyFilesIntoSandboxMock.mockResolvedValue({
     ok: true,
     paths: [
@@ -142,7 +183,7 @@ beforeEach(() => {
   cloneArtifactsRepoIntoSandboxMock.mockReset();
   commitAndPushToArtifactsInSandboxMock.mockReset();
   applyFilesIntoSandboxMock.mockReset();
-  generateDeckFilesMock.mockReset();
+  streamDeckFilesMock.mockReset();
   getSandboxMock.mockReset();
 });
 
@@ -150,31 +191,37 @@ beforeEach(() => {
 
 describe("runCreateDeckDraft — validation", () => {
   it("rejects missing user email with validation phase", async () => {
-    const result = await runCreateDeckDraft(makeEnv(), {
-      userEmail: "  ",
-      slug: "x",
-      prompt: "x",
-    });
+    const { result } = await runGen(
+      runCreateDeckDraft(makeEnv(), {
+        userEmail: "  ",
+        slug: "x",
+        prompt: "x",
+      }),
+    );
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.phase).toBe("validation");
   });
 
   it("rejects missing slug with validation phase", async () => {
-    const result = await runCreateDeckDraft(makeEnv(), {
-      userEmail: "x@y",
-      slug: "",
-      prompt: "x",
-    });
+    const { result } = await runGen(
+      runCreateDeckDraft(makeEnv(), {
+        userEmail: "x@y",
+        slug: "",
+        prompt: "x",
+      }),
+    );
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.phase).toBe("validation");
   });
 
   it("rejects missing prompt with validation phase", async () => {
-    const result = await runCreateDeckDraft(makeEnv(), {
-      userEmail: "x@y",
-      slug: "x",
-      prompt: "",
-    });
+    const { result } = await runGen(
+      runCreateDeckDraft(makeEnv(), {
+        userEmail: "x@y",
+        slug: "x",
+        prompt: "",
+      }),
+    );
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.phase).toBe("validation");
   });
@@ -184,11 +231,13 @@ describe("runCreateDeckDraft — happy path", () => {
   beforeEach(() => setHappyPathMocks());
 
   it("composes fork → clone → AI gen → apply → commit + push and returns success", async () => {
-    const result = await runCreateDeckDraft(makeEnv(), {
-      userEmail: "alice@example.com",
-      slug: "my",
-      prompt: "build a deck about CRDTs",
-    });
+    const { result } = await runGen(
+      runCreateDeckDraft(makeEnv(), {
+        userEmail: "alice@example.com",
+        slug: "my",
+        prompt: "build a deck about CRDTs",
+      }),
+    );
 
     expect(result.ok).toBe(true);
     if (result.ok) {
@@ -208,7 +257,7 @@ describe("runCreateDeckDraft — happy path", () => {
       "my",
     );
     expect(cloneArtifactsRepoIntoSandboxMock).toHaveBeenCalledTimes(1);
-    expect(generateDeckFilesMock).toHaveBeenCalledTimes(1);
+    expect(streamDeckFilesMock).toHaveBeenCalledTimes(1);
     expect(applyFilesIntoSandboxMock).toHaveBeenCalledTimes(1);
     expect(commitAndPushToArtifactsInSandboxMock).toHaveBeenCalledTimes(1);
   });
@@ -230,11 +279,13 @@ describe("runCreateDeckDraft — happy path", () => {
       },
     });
 
-    const result = await runCreateDeckDraft(makeEnv(), {
-      userEmail: "alice@example.com",
-      slug: "my",
-      prompt: "iterate",
-    });
+    const { result } = await runGen(
+      runCreateDeckDraft(makeEnv(), {
+        userEmail: "alice@example.com",
+        slug: "my",
+        prompt: "iterate",
+      }),
+    );
 
     expect(result.ok).toBe(true);
     // Confirm the fresh token was used to build the URL.
@@ -245,24 +296,166 @@ describe("runCreateDeckDraft — happy path", () => {
   });
 
   it("forwards a model override into the AI gen call", async () => {
-    await runCreateDeckDraft(makeEnv(), {
-      userEmail: "alice@example.com",
-      slug: "my",
-      prompt: "x",
-      modelId: "@cf/meta/llama-4-scout-17b-16e-instruct",
-    });
-    const [, , options] = generateDeckFilesMock.mock.calls[0];
+    await runGen(
+      runCreateDeckDraft(makeEnv(), {
+        userEmail: "alice@example.com",
+        slug: "my",
+        prompt: "x",
+        modelId: "@cf/meta/llama-4-scout-17b-16e-instruct",
+      }),
+    );
+    const [, , options] = streamDeckFilesMock.mock.calls[0];
     expect(options.modelId).toBe("@cf/meta/llama-4-scout-17b-16e-instruct");
   });
 
   it("attaches the prompt as a git note", async () => {
-    await runCreateDeckDraft(makeEnv(), {
-      userEmail: "alice@example.com",
-      slug: "my",
-      prompt: "build a deck",
-    });
+    await runGen(
+      runCreateDeckDraft(makeEnv(), {
+        userEmail: "alice@example.com",
+        slug: "my",
+        prompt: "build a deck",
+      }),
+    );
     const [, opts] = commitAndPushToArtifactsInSandboxMock.mock.calls[0];
     expect(opts.promptNote).toMatch(/prompt: build a deck/);
+  });
+});
+
+describe("runCreateDeckDraft — yields", () => {
+  beforeEach(() => setHappyPathMocks());
+
+  it("yields phase snapshots in order: fork → clone → ai_gen → apply → commit → push → done", async () => {
+    const { snapshots, result } = await runGen(
+      runCreateDeckDraft(makeEnv(), {
+        userEmail: "alice@example.com",
+        slug: "my",
+        prompt: "x",
+      }),
+    );
+
+    expect(result.ok).toBe(true);
+
+    // Extract phase order, dropping duplicate consecutive phases (each
+    // phase boundary yields once, but ai_gen can fan out into multiple
+    // partial yields — we only assert "the phase shows up", not "exactly
+    // once").
+    const phases = snapshots.map((s) => s.phase);
+    const order: DeckCreationSnapshot["phase"][] = [];
+    for (const p of phases) {
+      if (order[order.length - 1] !== p) order.push(p);
+    }
+    expect(order).toEqual([
+      "fork",
+      "clone",
+      "ai_gen",
+      "apply",
+      "commit",
+      "push",
+      "done",
+    ]);
+  });
+
+  it("forwards streamDeckFiles partials as ai_gen snapshots with file tree state", async () => {
+    streamDeckFilesMock.mockReturnValueOnce(
+      fakeStreamDeckFiles(
+        [
+          {
+            files: [
+              {
+                path: "src/decks/public/my/meta.ts",
+                content: "export const",
+                state: "writing",
+              },
+            ],
+            currentFile: "src/decks/public/my/meta.ts",
+          },
+          {
+            files: [
+              {
+                path: "src/decks/public/my/meta.ts",
+                content: "export const meta = { slug: 'my' };",
+                state: "done",
+              },
+              {
+                path: "src/decks/public/my/index.tsx",
+                content: "import",
+                state: "writing",
+              },
+            ],
+            currentFile: "src/decks/public/my/index.tsx",
+          },
+        ],
+        {
+          ok: true,
+          files: [
+            { path: "src/decks/public/my/meta.ts", content: "export const meta = { slug: 'my' };" },
+            { path: "src/decks/public/my/index.tsx", content: "import ..." },
+          ],
+          commitMessage: "Initial",
+        },
+      ),
+    );
+
+    const { snapshots } = await runGen(
+      runCreateDeckDraft(makeEnv(), {
+        userEmail: "alice@example.com",
+        slug: "my",
+        prompt: "x",
+      }),
+    );
+
+    const aiGenSnapshots = snapshots.filter((s) => s.phase === "ai_gen");
+    // 1 boundary yield (empty files) + 2 partial yields.
+    expect(aiGenSnapshots.length).toBeGreaterThanOrEqual(3);
+
+    const lastAiGen = aiGenSnapshots[aiGenSnapshots.length - 1];
+    expect(lastAiGen?.files).toHaveLength(2);
+    expect(lastAiGen?.files[1]?.state).toBe("writing");
+    expect(lastAiGen?.currentFile).toBe(
+      "src/decks/public/my/index.tsx",
+    );
+  });
+
+  it("yields a done snapshot carrying commitSha + draftId + commitMessage", async () => {
+    const { snapshots } = await runGen(
+      runCreateDeckDraft(makeEnv(), {
+        userEmail: "alice@example.com",
+        slug: "my",
+        prompt: "x",
+      }),
+    );
+    const done = snapshots[snapshots.length - 1];
+    expect(done?.phase).toBe("done");
+    expect(done?.commitSha).toBe(
+      "abc1234567890abcdef1234567890abcdef12345",
+    );
+    expect(done?.draftId).toMatch(/-my$/);
+    expect(done?.commitMessage).toBe("Initial deck");
+    // All files in the final snapshot are marked done.
+    expect(done?.files.every((f) => f.state === "done")).toBe(true);
+  });
+
+  it("yields an error snapshot on fork failure (before returning the DeckDraftError)", async () => {
+    forkDeckStarterIdempotentMock.mockRejectedValueOnce(
+      new Error("artifacts down"),
+    );
+
+    const { snapshots, result } = await runGen(
+      runCreateDeckDraft(makeEnv(), {
+        userEmail: "alice@example.com",
+        slug: "my",
+        prompt: "x",
+      }),
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.phase).toBe("fork");
+
+    // The last snapshot is the error one — UI uses it to surface the
+    // banner with the failed-phase highlight.
+    const last = snapshots[snapshots.length - 1];
+    expect(last?.phase).toBe("error");
+    expect(last?.error).toMatch(/artifacts down/);
   });
 });
 
@@ -273,11 +466,13 @@ describe("runCreateDeckDraft — failure modes", () => {
     forkDeckStarterIdempotentMock.mockRejectedValueOnce(
       new Error("artifacts down"),
     );
-    const result = await runCreateDeckDraft(makeEnv(), {
-      userEmail: "x@y",
-      slug: "x",
-      prompt: "x",
-    });
+    const { result } = await runGen(
+      runCreateDeckDraft(makeEnv(), {
+        userEmail: "x@y",
+        slug: "x",
+        prompt: "x",
+      }),
+    );
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.phase).toBe("fork");
@@ -290,11 +485,13 @@ describe("runCreateDeckDraft — failure modes", () => {
       ok: false,
       error: "auth failed",
     });
-    const result = await runCreateDeckDraft(makeEnv(), {
-      userEmail: "x@y",
-      slug: "x",
-      prompt: "x",
-    });
+    const { result } = await runGen(
+      runCreateDeckDraft(makeEnv(), {
+        userEmail: "x@y",
+        slug: "x",
+        prompt: "x",
+      }),
+    );
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.phase).toBe("clone");
@@ -303,16 +500,20 @@ describe("runCreateDeckDraft — failure modes", () => {
   });
 
   it("returns phase:ai_generation with subphase when AI gen fails", async () => {
-    generateDeckFilesMock.mockResolvedValueOnce({
-      ok: false,
-      phase: "path_violation",
-      error: "tried to write package.json",
-    });
-    const result = await runCreateDeckDraft(makeEnv(), {
-      userEmail: "x@y",
-      slug: "x",
-      prompt: "x",
-    });
+    streamDeckFilesMock.mockReturnValueOnce(
+      fakeStreamDeckFiles([], {
+        ok: false,
+        phase: "path_violation",
+        error: "tried to write package.json",
+      }),
+    );
+    const { result } = await runGen(
+      runCreateDeckDraft(makeEnv(), {
+        userEmail: "x@y",
+        slug: "x",
+        prompt: "x",
+      }),
+    );
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.phase).toBe("ai_generation");
@@ -326,11 +527,13 @@ describe("runCreateDeckDraft — failure modes", () => {
       error: "disk full",
       failedPath: "src/decks/public/x/meta.ts",
     });
-    const result = await runCreateDeckDraft(makeEnv(), {
-      userEmail: "x@y",
-      slug: "x",
-      prompt: "x",
-    });
+    const { result } = await runGen(
+      runCreateDeckDraft(makeEnv(), {
+        userEmail: "x@y",
+        slug: "x",
+        prompt: "x",
+      }),
+    );
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.phase).toBe("apply_files");
@@ -343,11 +546,13 @@ describe("runCreateDeckDraft — failure modes", () => {
       ok: false,
       error: "push rejected",
     });
-    const result = await runCreateDeckDraft(makeEnv(), {
-      userEmail: "x@y",
-      slug: "x",
-      prompt: "x",
-    });
+    const { result } = await runGen(
+      runCreateDeckDraft(makeEnv(), {
+        userEmail: "x@y",
+        slug: "x",
+        prompt: "x",
+      }),
+    );
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.phase).toBe("commit_push");
@@ -391,16 +596,18 @@ function setIterateHappyPathMocks() {
       exitCode: 0,
     }),
   } as unknown as ReturnType<typeof getSandboxMock>);
-  generateDeckFilesMock.mockResolvedValue({
-    ok: true,
-    files: [
-      {
-        path: "src/decks/public/my/01-title.tsx",
-        content: "modified",
-      },
-    ],
-    commitMessage: "Iterate title slide",
-  });
+  streamDeckFilesMock.mockReturnValue(
+    fakeStreamDeckFiles([], {
+      ok: true,
+      files: [
+        {
+          path: "src/decks/public/my/01-title.tsx",
+          content: "modified",
+        },
+      ],
+      commitMessage: "Iterate title slide",
+    }),
+  );
   applyFilesIntoSandboxMock.mockResolvedValue({
     ok: true,
     paths: ["src/decks/public/my/01-title.tsx"],
@@ -417,34 +624,38 @@ describe("runIterateOnDeckDraft — happy path", () => {
   beforeEach(() => setIterateHappyPathMocks());
 
   it("reads existing files + passes them as context to AI gen", async () => {
-    await runIterateOnDeckDraft(makeEnv(), {
-      userEmail: "alice@example.com",
-      slug: "my",
-      prompt: "change the title",
-    });
+    await runGen(
+      runIterateOnDeckDraft(makeEnv(), {
+        userEmail: "alice@example.com",
+        slug: "my",
+        prompt: "change the title",
+      }),
+    );
 
-    const [, input] = generateDeckFilesMock.mock.calls[0];
+    const [, input] = streamDeckFilesMock.mock.calls[0];
     expect(input.existingFiles).toBeDefined();
     expect(input.existingFiles.length).toBeGreaterThan(0);
     expect(input.existingFiles[0].path).toMatch(/src\/decks\/public\/my\//);
   });
 
   it("forwards pinned elements to AI gen", async () => {
-    await runIterateOnDeckDraft(makeEnv(), {
-      userEmail: "alice@example.com",
-      slug: "my",
-      prompt: "make this orange",
-      pinnedElements: [
-        {
-          file: "src/decks/public/my/01-title.tsx",
-          lineStart: 5,
-          lineEnd: 9,
-          htmlExcerpt: "<h1>Title</h1>",
-        },
-      ],
-    });
+    await runGen(
+      runIterateOnDeckDraft(makeEnv(), {
+        userEmail: "alice@example.com",
+        slug: "my",
+        prompt: "make this orange",
+        pinnedElements: [
+          {
+            file: "src/decks/public/my/01-title.tsx",
+            lineStart: 5,
+            lineEnd: 9,
+            htmlExcerpt: "<h1>Title</h1>",
+          },
+        ],
+      }),
+    );
 
-    const [, input] = generateDeckFilesMock.mock.calls[0];
+    const [, input] = streamDeckFilesMock.mock.calls[0];
     expect(input.pinnedElements).toHaveLength(1);
     expect(input.pinnedElements[0].file).toBe(
       "src/decks/public/my/01-title.tsx",
@@ -452,11 +663,13 @@ describe("runIterateOnDeckDraft — happy path", () => {
   });
 
   it("returns success result with the new SHA", async () => {
-    const result = await runIterateOnDeckDraft(makeEnv(), {
-      userEmail: "alice@example.com",
-      slug: "my",
-      prompt: "iter",
-    });
+    const { result } = await runGen(
+      runIterateOnDeckDraft(makeEnv(), {
+        userEmail: "alice@example.com",
+        slug: "my",
+        prompt: "iter",
+      }),
+    );
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.commitSha).toBe(
@@ -464,16 +677,45 @@ describe("runIterateOnDeckDraft — happy path", () => {
       );
     }
   });
+
+  it("yields phase snapshots in order: fork → clone → ai_gen → apply → commit → push → done", async () => {
+    const { snapshots, result } = await runGen(
+      runIterateOnDeckDraft(makeEnv(), {
+        userEmail: "alice@example.com",
+        slug: "my",
+        prompt: "iter",
+      }),
+    );
+
+    expect(result.ok).toBe(true);
+
+    const phases = snapshots.map((s) => s.phase);
+    const order: DeckCreationSnapshot["phase"][] = [];
+    for (const p of phases) {
+      if (order[order.length - 1] !== p) order.push(p);
+    }
+    expect(order).toEqual([
+      "fork",
+      "clone",
+      "ai_gen",
+      "apply",
+      "commit",
+      "push",
+      "done",
+    ]);
+  });
 });
 
 describe("runIterateOnDeckDraft — failure modes", () => {
   it("returns phase:fork when the draft doesn't exist", async () => {
     getDraftRepoMock.mockRejectedValueOnce(new Error("not found"));
-    const result = await runIterateOnDeckDraft(makeEnv(), {
-      userEmail: "x@y",
-      slug: "x",
-      prompt: "x",
-    });
+    const { result } = await runGen(
+      runIterateOnDeckDraft(makeEnv(), {
+        userEmail: "x@y",
+        slug: "x",
+        prompt: "x",
+      }),
+    );
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.phase).toBe("fork");
