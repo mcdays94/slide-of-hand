@@ -183,7 +183,7 @@ function PanelInner({ deckSlug, onRequestClose }: PanelInnerProps) {
   const authStatus = useAccessAuth();
   const sessionExpired = authStatus === "unauthenticated";
 
-  const { messages, sendMessage, status, clearHistory } = useAgentChat({
+  const { messages, sendMessage, status, stop, clearHistory } = useAgentChat({
     agent,
     // `body` is forwarded to `onChatMessage`'s `options.body` on the
     // server every turn. See `worker/agent.ts`'s
@@ -232,6 +232,26 @@ function PanelInner({ deckSlug, onRequestClose }: PanelInnerProps) {
   // the WebSocket layer, and the user would see the same silent
   // empty state that motivated this banner in the first place.
   const composerDisabled = isBusy || sessionExpired;
+
+  // Esc-to-cancel while streaming (issue #172). Capture phase so we
+  // beat `Deck.tsx`'s top-level keydown handler, which would otherwise
+  // close the panel — closing doesn't stop the inference, it just
+  // hides the chat. When there's no stream in flight we don't
+  // intercept Esc at all, so the regular "Esc closes the panel"
+  // behaviour is preserved.
+  useEffect(() => {
+    if (!isBusy) return;
+    if (typeof window === "undefined") return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopPropagation();
+      stop();
+    };
+    window.addEventListener("keydown", onKey, { capture: true });
+    return () =>
+      window.removeEventListener("keydown", onKey, { capture: true });
+  }, [isBusy, stop]);
 
   return (
     <>
@@ -394,22 +414,57 @@ function PanelInner({ deckSlug, onRequestClose }: PanelInnerProps) {
             className="resize-none rounded border border-cf-border bg-cf-bg-100 px-3 py-2 text-sm text-cf-text placeholder:text-cf-text-subtle focus:border-cf-orange focus:outline-none disabled:opacity-50"
           />
           <div className="flex items-center justify-between gap-2">
-            <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-cf-text-subtle">
-              {sessionExpired
-                ? "Reload to sign in"
-                : isBusy
-                  ? "Thinking…"
-                  : "Enter to send · Shift+Enter for newline"}
-            </p>
-            <button
-              type="submit"
-              data-interactive
-              data-testid="studio-agent-send"
-              disabled={composerDisabled || input.trim().length === 0}
-              className="cf-btn-primary disabled:opacity-40"
+            {/* Status hint. While the agent is working we surface a
+                pulsing dot + an Esc-to-cancel affordance so the user
+                knows (a) something is happening, and (b) how to get
+                out of it. Issues #172, #173. */}
+            <p
+              data-testid="studio-agent-status-hint"
+              className="flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.2em] text-cf-text-subtle"
             >
-              Send
-            </button>
+              {sessionExpired ? (
+                "Reload to sign in"
+              ) : isBusy ? (
+                <>
+                  <span
+                    aria-hidden="true"
+                    className="inline-flex h-1.5 w-1.5 animate-pulse rounded-full bg-cf-orange"
+                  />
+                  <span>Thinking… · Esc or Stop to cancel</span>
+                </>
+              ) : (
+                "Enter to send · Shift+Enter for newline"
+              )}
+            </p>
+            {/* Send → Stop swap (issue #172). While the agent is
+                streaming, the only useful affordance is "stop"; a
+                send button would be ambiguous (queued? after the
+                current turn? composer is disabled anyway). Two
+                buttons with distinct test-ids keep tests + ARIA
+                clear. Both share the cf-btn-primary visual so the
+                button doesn't visually jump on swap. */}
+            {isBusy ? (
+              <button
+                type="button"
+                data-interactive
+                data-testid="studio-agent-stop"
+                onClick={() => stop()}
+                aria-label="Stop the agent"
+                className="cf-btn-primary"
+              >
+                Stop
+              </button>
+            ) : (
+              <button
+                type="submit"
+                data-interactive
+                data-testid="studio-agent-send"
+                disabled={sessionExpired || input.trim().length === 0}
+                className="cf-btn-primary disabled:opacity-40"
+              >
+                Send
+              </button>
+            )}
           </div>
         </form>
       </motion.aside>
@@ -521,6 +576,32 @@ function getToolNameFromPart(p: ToolPart): string {
   if (p.type === "dynamic-tool") return p.toolName ?? "tool";
   // `tool-readDeck` → `readDeck`
   return p.type.startsWith("tool-") ? p.type.slice(5) : p.type;
+}
+
+/**
+ * Map internal tool names to user-readable verb phrases. Surfaced in
+ * the tool-call cards so the user reads "Creating a new deck…" rather
+ * than "Calling createDeckDraft…". The internal name is still
+ * available as a `data-tool=` attribute on the card for tests + power
+ * users who inspect the DOM. Issue #173.
+ *
+ * Keep this map in sync with `buildTools()` in `worker/agent-tools.ts`.
+ * An unknown tool (e.g. a user-configured MCP tool) falls back to
+ * "Working on <name>" so we never render a totally opaque pill.
+ */
+const FRIENDLY_TOOL_LABEL: Record<string, string> = {
+  readDeck: "Reading the deck",
+  proposePatch: "Drafting a change",
+  commitPatch: "Saving the change",
+  listSourceTree: "Browsing source files",
+  readSource: "Reading source file",
+  proposeSourceEdit: "Building a pull request",
+  createDeckDraft: "Creating a new deck",
+  iterateOnDeckDraft: "Updating the deck",
+};
+
+export function friendlyToolLabel(toolName: string): string {
+  return FRIENDLY_TOOL_LABEL[toolName] ?? `Working on ${toolName}`;
 }
 
 function MessageBubble({
@@ -649,7 +730,8 @@ function ToolPartCard({ part }: { part: ToolPart }) {
         className="rounded-md border border-red-500/40 bg-red-500/5 px-3 py-2 text-sm text-cf-text"
       >
         <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-red-500">
-          {state === "output-denied" ? "Denied" : "Tool error"} · {toolName}
+          {state === "output-denied" ? "Denied" : "Error"} ·{" "}
+          {friendlyToolLabel(toolName)}
         </p>
         <p className="mt-1 text-cf-text">
           {part.errorText ?? "Tool call failed."}
@@ -677,8 +759,8 @@ function ToolPartCard({ part }: { part: ToolPart }) {
         className="flex items-center gap-2 rounded-md border border-cf-border bg-cf-bg-200 px-3 py-2 text-sm text-cf-text-muted"
       >
         <span aria-hidden="true">🛠</span>
-        <span className="font-mono text-[11px] tracking-[0.05em]">
-          Calling <span className="text-cf-text">{toolName}</span>…
+        <span className="text-[12px] text-cf-text">
+          {friendlyToolLabel(toolName)}…
         </span>
         <span className="ml-auto inline-flex h-1.5 w-1.5 animate-pulse rounded-full bg-cf-orange" />
       </div>
@@ -696,7 +778,7 @@ function ToolPartCard({ part }: { part: ToolPart }) {
       className="rounded-md border border-cf-border bg-cf-bg-200 px-3 py-2 text-sm text-cf-text"
     >
       <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-cf-orange">
-        {summary.icon} {summary.label} · {toolName}
+        {summary.icon} {friendlyToolLabel(toolName)} · {summary.label}
       </p>
       {summary.detail && (
         <p className="mt-1 text-cf-text">{summary.detail}</p>

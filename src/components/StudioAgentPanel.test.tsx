@@ -10,6 +10,7 @@
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -22,12 +23,14 @@ const {
   useAgentChatMock,
   sendMessageMock,
   clearHistoryMock,
+  stopMock,
   useAccessAuthMock,
 } = vi.hoisted(() => ({
   useAgentMock: vi.fn(),
   useAgentChatMock: vi.fn(),
   sendMessageMock: vi.fn(),
   clearHistoryMock: vi.fn(),
+  stopMock: vi.fn(),
   useAccessAuthMock: vi.fn(),
 }));
 
@@ -74,6 +77,7 @@ function setupHooks({
     messages,
     sendMessage: sendMessageMock,
     clearHistory: clearHistoryMock,
+    stop: stopMock,
     status,
     addToolOutput: vi.fn(),
     addToolApprovalResponse: vi.fn(),
@@ -94,6 +98,7 @@ afterEach(() => {
   useAgentChatMock.mockReset();
   sendMessageMock.mockReset();
   clearHistoryMock.mockReset();
+  stopMock.mockReset();
   useAccessAuthMock.mockReset();
 });
 
@@ -295,14 +300,61 @@ describe("<StudioAgentPanel>", () => {
     expect(sendMessageMock).not.toHaveBeenCalled();
   });
 
-  it("disables the send button while the assistant is streaming", () => {
+  // Issue #172: while the agent is streaming, the Send button is
+  // REPLACED by a Stop button (rather than just disabled). This gives
+  // the user an unambiguous "abort" affordance and removes the
+  // confusing "what does Send do right now?" state.
+  it("replaces Send with Stop while the assistant is streaming", () => {
     setupHooks({ status: "streaming" });
     render(<StudioAgentPanel deckSlug="hello" onClose={vi.fn()} />);
-    const send = screen.getByTestId("studio-agent-send") as HTMLButtonElement;
-    expect(send.disabled).toBe(true);
-    // The composer surfaces a "thinking" affordance instead of the
-    // keyboard hint when a turn is in flight.
+    expect(screen.queryByTestId("studio-agent-send")).toBeNull();
+    expect(screen.getByTestId("studio-agent-stop")).toBeDefined();
+    // The status hint surfaces a "thinking" affordance instead of the
+    // keyboard hint when a turn is in flight, and points at the Esc
+    // shortcut as a keyboard cancel.
     expect(screen.getByText(/thinking/i)).toBeDefined();
+  });
+
+  it("replaces Send with Stop while the assistant is submitted (pre-stream)", () => {
+    // `submitted` is the pre-stream state — the request has been sent
+    // but no tokens have come back yet. Stop must work here too,
+    // otherwise the user is locked in for the full inference once they
+    // hit Send.
+    setupHooks({ status: "submitted" });
+    render(<StudioAgentPanel deckSlug="hello" onClose={vi.fn()} />);
+    expect(screen.queryByTestId("studio-agent-send")).toBeNull();
+    expect(screen.getByTestId("studio-agent-stop")).toBeDefined();
+  });
+
+  it("clicking Stop calls stop() from useAgentChat", () => {
+    setupHooks({ status: "streaming" });
+    render(<StudioAgentPanel deckSlug="hello" onClose={vi.fn()} />);
+    fireEvent.click(screen.getByTestId("studio-agent-stop"));
+    expect(stopMock).toHaveBeenCalledTimes(1);
+  });
+
+  // Issue #172: Esc semantics. While streaming, Esc cancels the
+  // current turn (it doesn't close the panel — the panel-close path
+  // would otherwise leave the inference running on the server). The
+  // capture-phase handler beats <Deck>'s top-level keydown listener,
+  // which would otherwise call closeOverlays on Esc.
+  it("Esc while streaming calls stop() (and is intercepted before panel-close)", () => {
+    setupHooks({ status: "streaming" });
+    const onClose = vi.fn();
+    render(<StudioAgentPanel deckSlug="hello" onClose={onClose} />);
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    });
+    expect(stopMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("Esc when NOT streaming does NOT call stop (the panel's regular close path stays open)", () => {
+    setupHooks({ status: "ready" });
+    render(<StudioAgentPanel deckSlug="hello" onClose={vi.fn()} />);
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    });
+    expect(stopMock).not.toHaveBeenCalled();
   });
 
   it("disables the send button when the input is empty (status=ready)", () => {
@@ -658,7 +710,11 @@ describe("<StudioAgentPanel> — show model thinking", () => {
 });
 
 describe("<StudioAgentPanel> — tool-call rendering (phase 2)", () => {
-  it("renders a 'Calling <name>…' pill while a tool call is in progress", () => {
+  // Issue #173: tool-call cards surface a user-readable verb phrase
+  // rather than the internal tool name. The internal name stays on
+  // the `data-tool=` attribute so power users / tests can still pin
+  // behaviour against it.
+  it("renders a friendly verb phrase while a tool call is in progress", () => {
     setupHooks({
       messages: [
         {
@@ -679,7 +735,57 @@ describe("<StudioAgentPanel> — tool-call rendering (phase 2)", () => {
     const pill = screen.getByTestId("studio-agent-tool-part");
     expect(pill.dataset.tool).toBe("readDeck");
     expect(pill.dataset.state).toBe("input-available");
-    expect(pill.textContent).toMatch(/calling.*readDeck/i);
+    // Friendly verb, not the raw tool name. The raw name is on the
+    // data-tool attribute above; tests that care about the underlying
+    // tool key pin to that, not to user-facing text.
+    expect(pill.textContent).toMatch(/reading the deck/i);
+    expect(pill.textContent).not.toMatch(/readdeck/i);
+  });
+
+  it("renders a friendly verb phrase for createDeckDraft", () => {
+    setupHooks({
+      messages: [
+        {
+          id: "a1",
+          role: "assistant",
+          parts: [
+            {
+              type: "tool-createDeckDraft",
+              toolCallId: "call-1",
+              state: "input-available",
+              input: { slug: "new-thing", prompt: "..." },
+            },
+          ],
+        },
+      ],
+    });
+    render(<StudioAgentPanel deckSlug="hello" onClose={vi.fn()} />);
+    const pill = screen.getByTestId("studio-agent-tool-part");
+    expect(pill.textContent).toMatch(/creating a new deck/i);
+    expect(pill.textContent).not.toMatch(/createdeckdraft/i);
+  });
+
+  it("falls back to 'Working on <name>' for an unknown tool (e.g. user-configured MCP tool)", () => {
+    setupHooks({
+      messages: [
+        {
+          id: "a1",
+          role: "assistant",
+          parts: [
+            {
+              type: "dynamic-tool",
+              toolName: "my-mcp-tool",
+              toolCallId: "call-1",
+              state: "input-available",
+              input: {},
+            },
+          ],
+        },
+      ],
+    });
+    render(<StudioAgentPanel deckSlug="hello" onClose={vi.fn()} />);
+    const pill = screen.getByTestId("studio-agent-tool-part");
+    expect(pill.textContent).toMatch(/working on my-mcp-tool/i);
   });
 
   it("renders the readDeck output with a friendly summary line", () => {
