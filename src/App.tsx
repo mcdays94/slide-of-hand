@@ -23,6 +23,7 @@ import Root from "./routes/_root";
 import DeckRoute from "./routes/deck.$slug";
 import AdminLayout from "./routes/admin/_layout";
 import AdminIndex from "./routes/admin/index";
+import NewDeckRoute from "./routes/admin/decks.new";
 import AdminDeckRoute from "./routes/admin/decks.$slug";
 import { SettingsProvider } from "./framework/viewer/useSettings";
 
@@ -70,6 +71,9 @@ export default function App() {
         <Route path="/decks/:slug" element={<DeckRoute />} />
         <Route path="/admin" element={<AdminLayout />}>
           <Route index element={<AdminIndex />} />
+          {/* Issue #171: AI-first new-deck creator. Replaces the
+              <NewDeckModal> that used to live inside AdminIndex. */}
+          <Route path="decks/new" element={<NewDeckRoute />} />
           <Route
             path="decks/:slug/analytics"
             element={
