@@ -29,7 +29,13 @@ import { ErrorOverlay } from "./ErrorOverlay";
 
 export interface DeckCreationCanvasProps {
   messages: ReadonlyArray<DeckCreationMessage>;
-  /** Deck slug — used to strip the repo prefix from displayed paths. */
+  /**
+   * Deck slug — used to strip the `src/decks/public/<slug>/` prefix
+   * from displayed file paths. Optional: when unset the canvas
+   * infers the slug from the first emitted file's path. Useful on
+   * `/admin/decks/new` where the model picks the slug from the
+   * user's prompt and the route doesn't know it ahead of time.
+   */
   slug?: string;
   /**
    * Called when the user clicks "Retry" on the error overlay. Hidden
@@ -39,9 +45,23 @@ export interface DeckCreationCanvasProps {
   onRetry?: () => void;
 }
 
+/**
+ * Infer the deck slug from the first emitted file's path. Paths look
+ * like `src/decks/public/<slug>/meta.ts`; we grab the segment after
+ * `src/decks/public/`. Returns `undefined` if no file has been emitted
+ * yet or the path doesn't match the expected shape.
+ */
+function inferSlug(files: Array<{ path: string }>): string | undefined {
+  if (files.length === 0) return undefined;
+  const path = files[0]?.path;
+  if (!path) return undefined;
+  const match = path.match(/^src\/decks\/public\/([^/]+)\//);
+  return match?.[1];
+}
+
 export function DeckCreationCanvas({
   messages,
-  slug,
+  slug: slugProp,
   onRetry,
 }: DeckCreationCanvasProps) {
   const call = extractLatestDeckCreationCall(messages);
@@ -114,6 +134,7 @@ export function DeckCreationCanvas({
   const lastFile = snapshot.files[snapshot.files.length - 1];
   const fileToShow = activeFile ?? lastFile;
   const isErrored = snapshot.phase === "error";
+  const slug = slugProp ?? inferSlug(snapshot.files);
 
   return (
     <div

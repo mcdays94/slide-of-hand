@@ -200,4 +200,74 @@ describe("<NewDeckRoute>", () => {
       expect(publicBtn.getAttribute("aria-checked")).toBe("true");
     });
   });
+
+  // Issue #178 sub-pieces 1 + 3 — the deck-creation canvas mounts
+  // as a left-pane slot the moment the model fires a
+  // `createDeckDraft` or `iterateOnDeckDraft` tool call.
+  describe("deck-creation canvas wiring", () => {
+    it("does NOT render the canvas in the empty state (no tool calls yet)", async () => {
+      setupHooks();
+      await renderRoute();
+      expect(screen.queryByTestId("deck-creation-canvas")).toBeNull();
+      expect(screen.queryByTestId("studio-agent-split-layout")).toBeNull();
+    });
+
+    it("pivots to a split layout with the canvas when a createDeckDraft tool-call lands", async () => {
+      useAgentMock.mockReturnValue({
+        agent: "DeckAuthorAgent",
+        name: "new-deck-test-uuid",
+        getHttpUrl: () => "https://example.com/api/admin/agents/...",
+      });
+      useAgentChatMock.mockReturnValue({
+        messages: [
+          {
+            id: "msg-1",
+            role: "assistant",
+            parts: [
+              {
+                type: "tool-createDeckDraft",
+                toolCallId: "call-1",
+                state: "output-available",
+                output: {
+                  phase: "ai_gen",
+                  files: [
+                    {
+                      path: "src/decks/public/hello/meta.ts",
+                      content: "export const meta = { slug:",
+                      state: "writing",
+                    },
+                  ],
+                  currentFile: "src/decks/public/hello/meta.ts",
+                  draftId: "test-com-hello",
+                },
+              },
+            ],
+          },
+        ],
+        sendMessage: vi.fn(),
+        clearHistory: vi.fn(),
+        stop: vi.fn(),
+        status: "streaming",
+        addToolOutput: vi.fn(),
+        addToolApprovalResponse: vi.fn(),
+        setMessages: vi.fn(),
+        isStreaming: true,
+        isServerStreaming: false,
+        isToolContinuation: false,
+      });
+      useAccessAuthMock.mockReturnValue("authenticated");
+
+      await renderRoute();
+
+      // Split layout container appears.
+      expect(screen.getByTestId("studio-agent-split-layout")).toBeDefined();
+      expect(screen.getByTestId("studio-agent-left-pane")).toBeDefined();
+      // The canvas renders inside the left pane with the snapshot's
+      // phase reflected as the data-state.
+      const canvas = screen.getByTestId("deck-creation-canvas");
+      expect(canvas.getAttribute("data-state")).toBe("ai_gen");
+      // The streaming file is rendered with its writing caret.
+      expect(screen.getByTestId("deck-creation-writing-caret")).toBeDefined();
+    });
+  });
 });
