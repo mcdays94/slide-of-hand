@@ -83,6 +83,13 @@ export interface CreateDeckDraftInput {
   slug: string;
   prompt: string;
   /**
+   * Intended publish-time visibility of the deck. Threaded through
+   * to `generateDeckFiles` so the AI's generated `meta.ts` carries
+   * the correct value. Defaults to "private" when unset (safer
+   * floor than the reverse). Issue #171 visibility toggle.
+   */
+  visibility?: "public" | "private";
+  /**
    * Optional reference URLs (Wave 3) — fetched + readability-stripped
    * + attached as system-prompt context. Out of scope for Wave 1 but
    * plumbed through so Wave 3 can land without disturbing the tool
@@ -257,6 +264,12 @@ export async function runCreateDeckDraft(
   const aiResult = await generateDeckFiles(env.AI, {
     slug: input.slug,
     userPrompt: input.prompt,
+    // Default to private here — the new-deck creator UI's toggle
+    // also defaults to private, and the model is instructed to
+    // pass that default through unless the user overrides. This
+    // is the floor for the rare case where neither the UI nor the
+    // model supplies a value.
+    visibility: input.visibility ?? "private",
     // Wave 3 references aren't wired here yet — passed through if the
     // model later supports them.
   }, {

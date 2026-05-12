@@ -14,7 +14,7 @@
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 
 // Hoisted spies so `vi.mock` factories can reference them.
@@ -151,6 +151,53 @@ describe("<NewDeckRoute>", () => {
     expect(opts).toMatchObject({
       agent: "DeckAuthorAgent",
       prefix: "api/admin/agents",
+    });
+  });
+
+  // Issue #171 visibility toggle — the user's choice on this surface
+  // threads through useAgentChat's `body` so the agent's
+  // `onChatMessage` sees it on every turn and can pass it through
+  // to `createDeckDraft`. Default is "private".
+  describe("visibility toggle", () => {
+    it("renders both visibility options with the private one active by default", async () => {
+      setupHooks();
+      await renderRoute();
+      expect(screen.getByTestId("new-deck-visibility")).toBeDefined();
+      const privateBtn = screen.getByTestId("new-deck-visibility-private");
+      const publicBtn = screen.getByTestId("new-deck-visibility-public");
+      expect(privateBtn.getAttribute("aria-checked")).toBe("true");
+      expect(publicBtn.getAttribute("aria-checked")).toBe("false");
+    });
+
+    it("passes visibility through useAgentChat's body (defaults to private)", async () => {
+      setupHooks();
+      await renderRoute();
+      const [chatOpts] = useAgentChatMock.mock.calls[0];
+      // The body merges extraBody (visibility) BEFORE the model
+      // key, so model is last and wins on collisions. visibility
+      // sits alongside it.
+      expect(chatOpts.body).toMatchObject({ visibility: "private" });
+    });
+
+    it("flips visibility to public when the public button is clicked", async () => {
+      setupHooks();
+      await renderRoute();
+      fireEvent.click(screen.getByTestId("new-deck-visibility-public"));
+      // The panel re-renders with the new body. Look at the last
+      // call to useAgentChat for the up-to-date body.
+      const calls = useAgentChatMock.mock.calls;
+      const latest = calls[calls.length - 1][0];
+      expect(latest.body).toMatchObject({ visibility: "public" });
+    });
+
+    it("flips active aria-checked on click", async () => {
+      setupHooks();
+      await renderRoute();
+      fireEvent.click(screen.getByTestId("new-deck-visibility-public"));
+      const privateBtn = screen.getByTestId("new-deck-visibility-private");
+      const publicBtn = screen.getByTestId("new-deck-visibility-public");
+      expect(privateBtn.getAttribute("aria-checked")).toBe("false");
+      expect(publicBtn.getAttribute("aria-checked")).toBe("true");
     });
   });
 });

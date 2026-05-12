@@ -61,6 +61,14 @@ export interface AiDeckGenInput {
   /** The user's natural-language prompt describing the deck. */
   userPrompt: string;
   /**
+   * Intended publish-time visibility of the deck. Embedded in the
+   * user message so the generated `meta.ts` carries
+   * `visibility: "public" | "private"` correctly. Issue #171
+   * visibility toggle. Defaults to "private" when unset (matches
+   * the new-deck creator UI default).
+   */
+  visibility?: "public" | "private";
+  /**
    * Optional existing files in the working tree. Passed for
    * iteration ("modify slide 3 to ..."). Each file's content is
    * embedded in the system prompt so the model has the full current
@@ -256,6 +264,18 @@ function buildUserMessage(input: AiDeckGenInput): string {
   const parts: string[] = [];
 
   parts.push(`User prompt: ${input.userPrompt}`);
+
+  // Tell the model the publish-time visibility so it sets
+  // `visibility: "public"` or `visibility: "private"` on the
+  // generated `meta.ts`'s `DeckMeta` object. Defaults to "private"
+  // when unset — matches the new-deck creator UI's default and the
+  // safer-floor principle (issue #171).
+  const visibility = input.visibility ?? "private";
+  parts.push(
+    `\nThe deck's intended publish-time visibility is: **${visibility}**. ` +
+      `Set \`visibility: "${visibility}"\` on the generated \`meta.ts\`'s ` +
+      `\`DeckMeta\` object so the deck is born with this value baked in.`,
+  );
 
   if (input.existingFiles && input.existingFiles.length > 0) {
     parts.push("\n## Current deck files\n");

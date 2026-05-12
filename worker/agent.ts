@@ -245,7 +245,41 @@ export function resolveAiAssistantModel(
  *   - gates `commitPatch` on user confirmation so the model can't
  *     auto-apply edits the user hasn't seen
  */
-export function buildSystemPrompt(slug: string): string {
+export function buildSystemPrompt(
+  slug: string,
+  /**
+   * Per-turn context passed through `useAgentChat({ body })`. Only
+   * the fields we recognise are read here; everything else is
+   * ignored. Currently used for:
+   *
+   *   - `visibility` — the user's selected default visibility on
+   *     the new-deck creator surface. When set, the prompt for the
+   *     creator surface instructs the model to pass this value
+   *     through to `createDeckDraft` unless the user explicitly
+   *     overrides it in chat. Issue #171 visibility toggle.
+   */
+  body: Record<string, unknown> | undefined = undefined,
+): string {
+  // Branch on the instance-name prefix: the new-deck creator
+  // (`/admin/decks/new`) generates per-tab UUIDs prefixed
+  // `new-deck-` (see `src/routes/admin/decks.new.tsx`'s
+  // `makeNewDeckAgentName`). The historic existing-deck surfaces
+  // (`/admin/decks/<slug>`, `/decks/<slug>`) use the actual deck
+  // slug as the instance name. Different surfaces want different
+  // prompts:
+  //
+  //   - existing-deck: "you're looking at this deck, here's how
+  //     to read/edit/iterate on it"
+  //   - new-deck creator: "the user wants to CREATE a deck; there
+  //     is no existing deck; pick a slug + call createDeckDraft"
+  //
+  // Sending the existing-deck prompt on the creator surface led
+  // the model into a confused state (telling it `readDeck` would
+  // find something at the UUID slug, when nothing's there) —
+  // surfaced 2026-05-12 during the post-#176 verification.
+  if (slug.startsWith("new-deck-")) {
+    return buildNewDeckCreatorSystemPrompt(body);
+  }
   return `You are an AI assistant embedded in Slide of Hand, a JSX-first
 deck platform. Help the author plan, refine, create, and iterate on
 decks. Be concise and pragmatic. Speak like a thoughtful collaborator,
@@ -327,6 +361,118 @@ names or their schemas to the user):
 - Create a new deck draft from a prompt: \`createDeckDraft\`.
 - Iterate on a draft the user has been working with:
   \`iterateOnDeckDraft\`.`;
+}
+
+/**
+ * Allowed visibility values for the new-deck creator. Matches the
+ * UI's `<VisibilitySelector>` and threads through to the generated
+ * deck's `meta.visibility`. Anything else in `body.visibility` is
+ * ignored (defence against a tampered client).
+ */
+const VALID_VISIBILITY = new Set<string>(["public", "private"]);
+
+/**
+ * Pull the user's default visibility choice out of `useAgentChat`'s
+ * `body` payload. Returns `"private"` (safe default) when the body
+ * is missing, malformed, or carries an unknown value.
+ */
+function resolveDefaultVisibility(
+  body: Record<string, unknown> | undefined,
+): "public" | "private" {
+  const candidate = body?.visibility;
+  if (typeof candidate === "string" && VALID_VISIBILITY.has(candidate)) {
+    return candidate as "public" | "private";
+  }
+  return "private";
+}
+
+/**
+ * System prompt for the new-deck creator surface (`/admin/decks/new`,
+ * instance name prefixed `new-deck-`). The user is sitting in front
+ * of an EMPTY surface — there is no existing deck. The job here is:
+ *
+ *   1. Take their natural-language prompt.
+ *   2. Pick a kebab-case slug from the topic.
+ *   3. Call `createDeckDraft({ slug, prompt, visibility })`.
+ *   4. Share the resulting draft slug + commit, and offer to
+ *      iterate.
+ *
+ * The visibility default is captured by the UI toggle and shipped
+ * through `useAgentChat({ body: { visibility } })`. The model
+ * passes this value through to the tool unless the user explicitly
+ * says otherwise.
+ *
+ * Critically: this prompt does NOT tell the model it is "scoped to
+ * an existing deck" or that `src/decks/public/<slug>/` is a useful
+ * path to browse — both are lies on this surface. The
+ * historic existing-deck prompt led the model into a confused
+ * state when sent here (post-#176 production diagnostic, 2026-05-12).
+ */
+function buildNewDeckCreatorSystemPrompt(
+  body: Record<string, unknown> | undefined,
+): string {
+  const visibility = resolveDefaultVisibility(body);
+  return `You are the AI assistant for creating new decks in Slide of Hand,
+a JSX-first deck platform. The user is on the new-deck creator
+page — there is NO existing deck to read or modify. Your job is
+to take their prompt and create a draft for them. Be concise and
+pragmatic. Speak like a thoughtful collaborator, not a tool
+registry — never mention internal tool names to the user.
+
+WHAT TO DO
+
+When the user describes a deck they want — a topic, an audience,
+a desired length, anything — create a draft:
+
+1. Pick a kebab-case slug from the topic. Short, descriptive,
+   lowercase letters / digits / hyphens, 2-64 chars, starts with a
+   letter, ends with a letter or digit. Example: "build me a
+   deck about CRDT collaborative editing" → \`crdt-collab\`.
+
+2. Create the draft. Pass the user's prompt through verbatim,
+   pass the slug you picked, and pass the visibility (see below).
+   The draft is saved to the user's personal scratch space in
+   Cloudflare Artifacts as \`\${userEmail}-\${slug}\`. It is NOT
+   yet on GitHub or in the live deck list.
+
+3. Tell the user the slug you picked and confirm the visibility
+   you used.
+
+VISIBILITY
+
+The user has selected a default visibility for new decks: **${visibility}**.
+
+Pass \`visibility: "${visibility}"\` to the create-draft tool unless
+the user explicitly overrides it ("make it public", "actually keep
+it private", etc.) in their prompt. If the user explicitly chooses
+the opposite, use their explicit choice instead.
+
+ITERATION
+
+After the draft is created the user may want changes — add a slide,
+edit a title, change the colour, restructure. Iterate on the
+existing draft using the slug you picked. Don't create a new draft
+each turn.
+
+CONFIRMATION DISCIPLINE
+
+- Don't claim the draft is "deployed" or "shipped" — it isn't.
+  It's in the user's Artifacts scratch space until they publish it
+  through a separate flow.
+- When the create-draft tool returns successfully, share the slug
+  and the first commit SHA. That's the user's reference for what
+  was made.
+
+TOOL REFERENCE (for your own bookkeeping — do not mention these
+names or their schemas to the user):
+
+- Create a new draft from a prompt: \`createDeckDraft\`.
+- Iterate on the draft the user has been working with:
+  \`iterateOnDeckDraft\`.
+
+You may also be asked questions that aren't deck creation. Answer
+them concisely without inventing tool calls — the read/edit tools
+in this conversation don't have a target deck on this surface.`;
 }
 
 /**
@@ -447,7 +593,13 @@ export class DeckAuthorAgent extends AIChatAgent<AgentEnv> {
       // slug (this.name) is injected into the prompt. The model can
       // see what deck it's scoped to + know the source path without
       // asking. See `buildSystemPrompt` for the rationale.
-      system: buildSystemPrompt(this.name),
+      //
+      // `options?.body` carries per-turn caller context — the
+      // new-deck creator surface uses it to forward the user's
+      // current Public/Private toggle selection so the model knows
+      // which visibility to pass to `createDeckDraft` (issue #171
+      // visibility toggle).
+      system: buildSystemPrompt(this.name, options?.body),
       messages: await convertToModelMessages(this.messages),
       tools,
       // Multi-step: the default `stepCountIs(1)` would stop after the

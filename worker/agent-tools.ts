@@ -469,9 +469,19 @@ export function buildTools(env: AgentToolsEnv, slug: string) {
           .describe(
             "The user's natural-language description of the deck. Pass through verbatim.",
           ),
+        visibility: z
+          .enum(["public", "private"])
+          .optional()
+          .describe(
+            'Intended visibility of the published deck. The new-deck creator surface sends a default via the per-turn body; pass that value through unless the user explicitly overrides ("make it public"). Defaults to "private" when unset.',
+          ),
       }),
-      execute: async ({ slug, prompt }): Promise<DeckDraftToolResult> => {
-        return runCreateDeckDraftTool(env, slug, prompt);
+      execute: async ({
+        slug,
+        prompt,
+        visibility,
+      }): Promise<DeckDraftToolResult> => {
+        return runCreateDeckDraftTool(env, slug, prompt, visibility);
       },
     }),
 
@@ -1030,11 +1040,18 @@ export type DeckDraftToolResult = DeckDraftResult | DeckDraftError;
  * `runCreateDeckDraft` in `sandbox-deck-creation.ts`. Surfaces a
  * friendly auth error for service-token contexts (which have no
  * user identity).
+ *
+ * `visibility` comes from the model's tool call. The model is
+ * instructed (via the new-deck creator system prompt) to pass
+ * through the user's UI-toggle selection unless the user
+ * explicitly overrides it. When omitted, the orchestrator
+ * defaults to "private".
  */
 export async function runCreateDeckDraftTool(
   env: AgentToolsEnv,
   slug: string,
   prompt: string,
+  visibility?: "public" | "private",
   emailOverride?: string | null,
 ): Promise<DeckDraftToolResult> {
   const email =
@@ -1052,6 +1069,7 @@ export async function runCreateDeckDraftTool(
     userEmail: email,
     slug,
     prompt,
+    ...(visibility ? { visibility } : {}),
   });
 }
 

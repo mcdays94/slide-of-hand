@@ -137,6 +137,53 @@ describe("generateDeckFiles — happy path", () => {
     expect(call.prompt).toContain("01-title.tsx");
   });
 
+  // Issue #171 visibility toggle: the user's selected Public /
+  // Private choice on /admin/decks/new threads into the model's
+  // user message so the generated `meta.ts` carries the correct
+  // `visibility` field. Default is "private" (matches the UI
+  // toggle's default + safer floor).
+  it("defaults visibility to private when unset", async () => {
+    generateObjectMock.mockResolvedValueOnce({
+      object: {
+        files: [{ path: "src/decks/public/foo/meta.ts", content: "x" }],
+        commitMessage: "x",
+      },
+    });
+
+    await generateDeckFiles(fakeAiBinding, {
+      slug: "foo",
+      userPrompt: "Build a foo deck.",
+    });
+
+    const call = generateObjectMock.mock.calls[0][0];
+    // Phrasing pinned: the model sees both an unambiguous statement
+    // of the value AND the literal `visibility: "..."` directive it
+    // should drop into meta.ts.
+    expect(call.prompt).toMatch(/visibility[^*]*private/i);
+    expect(call.prompt).toContain('visibility: "private"');
+  });
+
+  it("propagates an explicit visibility into the user message", async () => {
+    generateObjectMock.mockResolvedValueOnce({
+      object: {
+        files: [{ path: "src/decks/public/foo/meta.ts", content: "x" }],
+        commitMessage: "x",
+      },
+    });
+
+    await generateDeckFiles(fakeAiBinding, {
+      slug: "foo",
+      userPrompt: "Build a foo deck.",
+      visibility: "public",
+    });
+
+    const call = generateObjectMock.mock.calls[0][0];
+    expect(call.prompt).toContain('visibility: "public"');
+    // Make sure the default-private branch did NOT also fire — the
+    // model would otherwise see two conflicting directives.
+    expect(call.prompt).not.toContain('visibility: "private"');
+  });
+
   it("forwards pinned elements into the user message", async () => {
     generateObjectMock.mockResolvedValueOnce({
       object: {

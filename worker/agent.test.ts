@@ -520,6 +520,70 @@ describe("buildSystemPrompt", () => {
   });
 });
 
+// ─── buildSystemPrompt — new-deck creator branch (issue #171) ─────
+//
+// Surfaced via production diagnostic 2026-05-12: the new-deck
+// creator instance (slug = `new-deck-<uuid>`) was getting the
+// existing-deck prompt and being told it was "scoped to a deck"
+// that didn't exist. Fix: branch on the slug prefix and serve a
+// different prompt for the creator surface.
+
+describe("buildSystemPrompt — new-deck creator branch (issue #171)", () => {
+  it("returns the creator prompt for slugs prefixed with new-deck-", () => {
+    const prompt = buildSystemPrompt("new-deck-abc-123");
+    // The creator prompt explicitly says there is no existing deck
+    // to read or modify — pin that phrasing as the canonical
+    // signal that the right branch was taken.
+    expect(prompt).toMatch(/no existing deck to read or modify/i);
+    // It must NOT tell the model it's scoped to the UUID slug.
+    expect(prompt).not.toMatch(/scoped to the deck with slug/i);
+  });
+
+  it("returns the historic existing-deck prompt for non-prefixed slugs", () => {
+    const prompt = buildSystemPrompt("hello");
+    expect(prompt).toMatch(/scoped to the deck with slug/i);
+    expect(prompt).not.toMatch(/no existing deck to read or modify/i);
+  });
+
+  it("defaults the creator prompt to private when no body is supplied", () => {
+    const prompt = buildSystemPrompt("new-deck-anything");
+    // Safer floor — same default the UI toggle starts at.
+    expect(prompt).toMatch(/default visibility[^.]*private/i);
+  });
+
+  it("propagates body.visibility=public into the creator prompt", () => {
+    const prompt = buildSystemPrompt("new-deck-anything", {
+      visibility: "public",
+    });
+    expect(prompt).toMatch(/default visibility[^.]*public/i);
+    expect(prompt).toMatch(/Pass `visibility: "public"`/);
+  });
+
+  it("propagates body.visibility=private into the creator prompt", () => {
+    const prompt = buildSystemPrompt("new-deck-anything", {
+      visibility: "private",
+    });
+    expect(prompt).toMatch(/Pass `visibility: "private"`/);
+  });
+
+  it("falls back to private when body.visibility is an unknown string (tampered client)", () => {
+    const prompt = buildSystemPrompt("new-deck-anything", {
+      visibility: "unlisted",
+    });
+    // Defence against a tampered client / future enum drift.
+    // Unknown values must not crash and must not silently pass
+    // through to the model.
+    expect(prompt).toMatch(/Pass `visibility: "private"`/);
+    expect(prompt).not.toMatch(/Pass `visibility: "unlisted"`/);
+  });
+
+  it("creator prompt still lists the create + iterate tools (the only relevant ones on this surface)", () => {
+    const prompt = buildSystemPrompt("new-deck-anything");
+    expect(prompt).toContain("createDeckDraft");
+    expect(prompt).toContain("iterateOnDeckDraft");
+  });
+});
+
 // ─── AI Gateway integration ──────────────────────────────────────────
 //
 // All Workers AI calls go through Cloudflare AI Gateway for free
