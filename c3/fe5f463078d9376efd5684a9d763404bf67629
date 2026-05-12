@@ -1,0 +1,31 @@
+src/lib/use-mcp-servers.test.ts
+  85f7457536dbc2bd 1-201
+src/framework/viewer/SettingsModal.tsx
+  85f7457536dbc2bd 34,528-532
+src/lib/use-mcp-servers.ts
+  85f7457536dbc2bd 1-228
+src/components/McpServersSection.test.tsx
+  85f7457536dbc2bd 1-297
+src/components/McpServersSection.tsx
+  85f7457536dbc2bd 1-356
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "c3fe5f463078d9376efd5684a9d763404bf67629",
+  "prompts": {
+    "85f7457536dbc2bd": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_1e76456b1ffe2GxuWTwlD5b5f7",
+        "model": "anthropic/claude-opus-4-7"
+      },
+      "human_author": "mcdays94",
+      "messages": [],
+      "total_additions": 1088,
+      "total_deletions": 0,
+      "accepted_lines": 1088,
+      "overriden_lines": 0
+    }
+  }
+}
