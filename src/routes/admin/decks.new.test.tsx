@@ -38,6 +38,42 @@ vi.mock("@/lib/use-access-auth", () => ({
   useAccessAuth: useAccessAuthMock,
 }));
 
+// Mock the shared Shiki helper. FileContent (mounted inside the
+// canvas, mounted inside the panel's left pane) calls highlight()
+// on every file-content change. Without the mock the real module's
+// dynamic-import chain fires — works in vitest but adds noise and
+// risks flake if any future test waits on the highlighted output.
+// Identity-ish output so assertions on body textContent still pass.
+vi.mock("@/lib/shiki", () => {
+  const SUPPORTED = new Set([
+    "ts",
+    "js",
+    "tsx",
+    "jsx",
+    "json",
+    "html",
+    "css",
+    "sh",
+    "sql",
+    "python",
+    "ruby",
+    "go",
+    "rust",
+    "yaml",
+    "md",
+  ]);
+  return {
+    highlight: vi.fn(async (code: string, lang: string) => {
+      const escaped = code
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+      return `<pre class="shiki" data-lang="${lang}"><code>${escaped}</code></pre>`;
+    }),
+    isSupportedLang: vi.fn((lang: string) => SUPPORTED.has(lang)),
+  };
+});
+
 import NewDeckRoute from "./decks.new";
 
 function setupHooks() {
