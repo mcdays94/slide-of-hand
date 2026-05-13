@@ -48,6 +48,7 @@ import { Suspense, lazy, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { ArrowLeft, Globe, Lock } from "lucide-react";
 import { DeckCreationCanvas } from "@/components/deck-creation-canvas";
+import { findLastUserPromptText } from "@/components/deck-creation-canvas/extractLatestCall";
 
 // Lazy-load to keep the agent SDK + ai-chat off the first paint of
 // the static admin routes. Same pattern as the existing mounts in
@@ -191,9 +192,21 @@ export default function NewDeckRoute() {
                 "Describe a topic in plain language — e.g. \"a deck about CRDT collaborative editing for an engineering audience, ~25 min, five slides.\" I'll pick a slug, write the slides, and save the result to your scratch space.",
             }}
             onClose={() => navigate("/admin")}
-            renderLeftPane={({ messages }) => (
-              <DeckCreationCanvas messages={messages} />
-            )}
+            renderLeftPane={({ messages, sendMessage }) => {
+              // Wire the canvas's Retry button to re-send the most
+              // recent user prompt. If for some reason there's an
+              // error overlay but no preceding user message (e.g.
+              // history was truncated), `lastPrompt` is null and we
+              // omit `onRetry` entirely — the canvas hides the
+              // button when the prop is absent.
+              const lastPrompt = findLastUserPromptText(messages);
+              const retryProps = lastPrompt
+                ? { onRetry: () => sendMessage({ text: lastPrompt }) }
+                : {};
+              return (
+                <DeckCreationCanvas messages={messages} {...retryProps} />
+              );
+            }}
             // Mirror the panel's internal pivot state up to the
             // route so we can swap the visibility selector for a
             // static chip. Fires after the panel has actually

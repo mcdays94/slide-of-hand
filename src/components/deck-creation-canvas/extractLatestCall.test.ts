@@ -18,6 +18,7 @@
 import { describe, it, expect } from "vitest";
 import {
   extractLatestDeckCreationCall,
+  findLastUserPromptText,
   isDeckCreationSnapshot,
   isDeckDraftToolResult,
   type DeckCreationMessage,
@@ -238,5 +239,99 @@ describe("type guards", () => {
     ).toBe(false);
     expect(isDeckDraftToolResult(undefined)).toBe(false);
     expect(isDeckCreationSnapshot(undefined)).toBe(false);
+  });
+});
+
+describe("findLastUserPromptText", () => {
+  it("returns null for an empty messages array", () => {
+    expect(findLastUserPromptText([])).toBeNull();
+  });
+
+  it("returns null when there are only assistant messages", () => {
+    const messages: DeckCreationMessage[] = [
+      {
+        role: "assistant",
+        parts: [{ type: "text", text: "Hi, I can help" }],
+      },
+    ];
+    expect(findLastUserPromptText(messages)).toBeNull();
+  });
+
+  it("returns the user's text on a simple [user, assistant] history", () => {
+    const messages: DeckCreationMessage[] = [
+      {
+        role: "user",
+        parts: [{ type: "text", text: "Build me a CRDT deck" }],
+      },
+      {
+        role: "assistant",
+        parts: [{ type: "text", text: "On it." }],
+      },
+    ];
+    expect(findLastUserPromptText(messages)).toBe("Build me a CRDT deck");
+  });
+
+  it("returns the LATEST user message when there are multiple user turns", () => {
+    // Mid-conversation: the second user message is the one a Retry
+    // should re-send, not the first.
+    const messages: DeckCreationMessage[] = [
+      {
+        role: "user",
+        parts: [{ type: "text", text: "First prompt" }],
+      },
+      {
+        role: "assistant",
+        parts: [{ type: "text", text: "OK" }],
+      },
+      {
+        role: "user",
+        parts: [{ type: "text", text: "Actually, do this instead" }],
+      },
+      {
+        role: "assistant",
+        parts: [{ type: "tool-createDeckDraft", state: "output-available" }],
+      },
+    ];
+    expect(findLastUserPromptText(messages)).toBe(
+      "Actually, do this instead",
+    );
+  });
+
+  it("returns null when the user message has no text parts (only tool refs)", () => {
+    // Defensive — shouldn't happen in production but the helper
+    // should be robust to messages with only tool-result parts.
+    const messages: DeckCreationMessage[] = [
+      {
+        role: "user",
+        parts: [{ type: "tool-result" }],
+      },
+    ];
+    expect(findLastUserPromptText(messages)).toBeNull();
+  });
+
+  it("skips empty/whitespace-only text parts so we never sendMessage('')", () => {
+    const messages: DeckCreationMessage[] = [
+      {
+        role: "user",
+        parts: [{ type: "text", text: "   \n  " }],
+      },
+    ];
+    expect(findLastUserPromptText(messages)).toBeNull();
+  });
+
+  it("picks the latest text part within a user message when there are multiple", () => {
+    // Multi-part user message (e.g. text + attachment); we want the
+    // text the user typed, and if they typed twice in one message
+    // (rare but possible) the latest part wins.
+    const messages: DeckCreationMessage[] = [
+      {
+        role: "user",
+        parts: [
+          { type: "text", text: "first part" },
+          { type: "text", text: "second part" },
+        ],
+      },
+    ];
+    expect(findLastUserPromptText(messages)).toBe("second part");
   });
 });
