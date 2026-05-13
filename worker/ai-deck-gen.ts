@@ -45,15 +45,21 @@ import { z } from "zod";
 export const AI_GATEWAY_ID = "slide-of-hand-agent";
 
 /**
- * Default model for deck creation. GPT-OSS 120B is reasoning-tuned
- * and produces the most consistent structured output in our testing.
+ * Default model for deck creation. Switched from
+ * `@cf/openai/gpt-oss-120b` to Llama 3.3 70B (fp8-fast) on
+ * 2026-05-13 after the e2e Playwright test showed GPT-OSS 120B
+ * consistently failing the structured-output parse — 5+ retries
+ * across 7+ minutes all yielded "Workers AI request failed: No
+ * object generated: could not parse the response." Llama 3.3 70B
+ * is a peer-class model with a different lineage; if GPT-OSS has
+ * a bad day with the deck-files schema, Llama gives us a fallback
+ * with comparable quality.
+ *
  * Override via `options.modelId` if the user has selected a
  * different model in Settings.
- *
- * Inlined for the same reason as `AI_GATEWAY_ID` above. Mirrors
- * `AI_ASSISTANT_MODEL_IDS["gpt-oss-120b"]` in `worker/agent.ts`.
  */
-export const DEFAULT_DECK_GEN_MODEL_ID = "@cf/openai/gpt-oss-120b";
+export const DEFAULT_DECK_GEN_MODEL_ID =
+  "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
 
 export interface AiDeckGenInput {
   /** Kebab-case slug for the deck. Used to scope file paths. */

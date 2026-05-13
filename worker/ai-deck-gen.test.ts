@@ -383,8 +383,11 @@ describe("streamDeckFiles — auth + wiring", () => {
       { gatewayToken: "secret-token-abc" },
     );
     await collect(stream);
-    expect(modelMock).toHaveBeenCalledWith("@cf/openai/gpt-oss-120b", {
-      extraHeaders: { "cf-aig-authorization": "Bearer secret-token-abc" },
-    });
+    expect(modelMock).toHaveBeenCalledWith(
+      "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+      {
+        extraHeaders: { "cf-aig-authorization": "Bearer secret-token-abc" },
+      },
+    );
   });
 });
