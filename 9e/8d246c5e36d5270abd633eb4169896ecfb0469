@@ -1,0 +1,25 @@
+worker/diag-artifacts.ts
+  55351e0320bd370f 15,17,21-30,32-33,35-40,42-56,78-81,83-103,107-110,112,115,160-161,177-181,183-185,188-189,204-236,239,243-311,314-315,319
+worker/diag-artifacts.test.ts
+  55351e0320bd370f 1-566
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "9e8d246c5e36d5270abd633eb4169896ecfb0469",
+  "prompts": {
+    "55351e0320bd370f": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_1dd5b6588ffehp8b4HkAoNHUq0",
+        "model": "anthropic/claude-opus-4-7"
+      },
+      "human_author": "mcdays94",
+      "messages": [],
+      "total_additions": 758,
+      "total_deletions": 66,
+      "accepted_lines": 758,
+      "overriden_lines": 0
+    }
+  }
+}
