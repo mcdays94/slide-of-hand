@@ -253,6 +253,40 @@
    */
   "ai": { "binding": "AI" },
   /**
+   * Worker Loader binding (issue #106 — Dynamic Workers, open beta).
+   *
+   * Lets the Slide of Hand worker spin up isolated Dynamic Workers at
+   * runtime to execute arbitrary JavaScript / Python in a sandboxed
+   * V8 isolate. Useful for:
+   *
+   *   - cf-dynamic-workers slide 8: live isolate spawn — show the
+   *     audience an actual `env.LOADER.load(...)` round-trip instead
+   *     of a simulated trace.
+   *   - cf-code-mode slide 12: Code Mode sandbox — execute the model's
+   *     generated tool-orchestration JS in a fresh isolate per turn.
+   *   - Phase 6 of #131: run AI-generated code (from the agent) in
+   *     a per-request sandbox before committing it anywhere.
+   *
+   * The binding has no resource scope — it just provides access to
+   * `env.LOADER.load()` / `env.LOADER.get()`. Each loaded Worker
+   * gets fresh isolation, optional bindings, and optional network
+   * egress (we'll typically set `globalOutbound: null` for sandboxed
+   * untrusted code; demos that need outbound can override per call).
+   *
+   * Per Cloudflare docs, Worker Loader requires explicit account
+   * allowlisting during the beta. Account 1bcef46cbe9172d2569dcf7039048842
+   * was allowlisted on 2026-05-10 (confirmed via dashboard).
+   *
+   * Smoke-tested via `/api/admin/_diag/worker-loader` —
+   * loads a "hello from a dynamic Worker" module and forwards a
+   * synthetic request through it. See `worker/diag-worker-loader.ts`.
+   */
+  "worker_loaders": [
+    {
+      "binding": "LOADER"
+    }
+  ],
+  /**
    * Durable Objects.
    *
    * `DeckAuthorAgent` (issue #131 phase 1) — the in-Studio AI agent.
