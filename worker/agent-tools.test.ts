@@ -903,6 +903,8 @@ describe("buildTools — full tool surface", () => {
     // Issue #168 Wave 1 — AI-driven deck creation + iteration tools.
     expect(tools.createDeckDraft).toBeDefined();
     expect(tools.iterateOnDeckDraft).toBeDefined();
+    // Issue #168 Wave 1 follow-up — publish flow wired post-runPublishDraft.
+    expect(tools.publishDraft).toBeDefined();
     // Sanity: each has a description string for the model.
     expect(typeof tools.commitPatch.description).toBe("string");
     expect(typeof tools.listSourceTree.description).toBe("string");
@@ -910,6 +912,11 @@ describe("buildTools — full tool surface", () => {
     expect(typeof tools.proposeSourceEdit.description).toBe("string");
     expect(typeof tools.createDeckDraft.description).toBe("string");
     expect(typeof tools.iterateOnDeckDraft.description).toBe("string");
+    expect(typeof tools.publishDraft.description).toBe("string");
+    // The publishDraft description should reference the publish flow's
+    // hallmarks so the model can recognise when to call it.
+    expect(tools.publishDraft.description).toMatch(/publish/i);
+    expect(tools.publishDraft.description).toMatch(/draft/i);
   });
 });
 

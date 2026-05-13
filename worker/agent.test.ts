@@ -502,7 +502,7 @@ describe("buildSystemPrompt", () => {
     expect(prompt.length).toBeGreaterThan(500);
   });
 
-  it("still lists all eight tools", () => {
+  it("still lists all nine tools", () => {
     const prompt = buildSystemPrompt("any");
     for (const tool of [
       "readDeck",
@@ -514,6 +514,8 @@ describe("buildSystemPrompt", () => {
       // Issue #168 Wave 1 — AI-driven deck creation + iteration tools.
       "createDeckDraft",
       "iterateOnDeckDraft",
+      // Issue #168 Wave 1 follow-up — publish flow wired post-runPublishDraft.
+      "publishDraft",
     ]) {
       expect(prompt).toContain(tool);
     }
@@ -581,6 +583,19 @@ describe("buildSystemPrompt — new-deck creator branch (issue #171)", () => {
     const prompt = buildSystemPrompt("new-deck-anything");
     expect(prompt).toContain("createDeckDraft");
     expect(prompt).toContain("iterateOnDeckDraft");
+  });
+
+  it("creator prompt also lists publishDraft so the model knows how to ship the draft", () => {
+    // Issue #168 Wave 1 follow-up — publishDraft is the way out of
+    // the draft state. The creator surface is the place where the
+    // user is most likely to ask "publish this" right after iterating,
+    // so the prompt must teach the model what to call.
+    const prompt = buildSystemPrompt("new-deck-anything");
+    expect(prompt).toContain("publishDraft");
+    // Pin some of the trigger phrases the prompt teaches so we don't
+    // accidentally drop them in a future edit.
+    expect(prompt).toMatch(/publish/i);
+    expect(prompt).toMatch(/open a PR|pull request/i);
   });
 });
 

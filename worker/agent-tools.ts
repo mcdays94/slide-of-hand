@@ -75,8 +75,11 @@ import {
 import {
   runCreateDeckDraft,
   runIterateOnDeckDraft,
+  runPublishDraft,
   type DeckDraftError,
   type DeckDraftResult,
+  type PublishDraftError,
+  type PublishDraftResult,
 } from "./sandbox-deck-creation";
 // Pulled from the shared types module rather than from
 // `./sandbox-deck-creation` so type-only imports through this file
@@ -453,7 +456,8 @@ export function buildTools(env: AgentToolsEnv, slug: string) {
         "deck. Pick a kebab-case slug from the prompt (e.g. \"build me " +
         "a deck about CRDT collaboration\" → slug `crdt-collab`). " +
         "Returns the draft ID + commit SHA. The draft is NOT published " +
-        "to GitHub or live decks — call `publishDraft` later for that.",
+        "to GitHub or live decks — call `publishDraft` for that once " +
+        "the user is happy with the draft.",
       inputSchema: z.object({
         slug: z
           .string()
@@ -539,6 +543,53 @@ export function buildTools(env: AgentToolsEnv, slug: string) {
         pinnedElements,
       }): AsyncGenerator<DeckDraftToolStreamItem, void> {
         yield* runIterateOnDeckDraftTool(env, slug, prompt, pinnedElements);
+      },
+    }),
+
+    publishDraft: tool({
+      description:
+        "Publish an existing deck draft to GitHub as a draft pull request. " +
+        "Use when the user wants to SHIP a draft they've been iterating on " +
+        "(\"publish this\", \"open a PR\", \"make it live\", \"deploy\", etc.). " +
+        "Workflow: " +
+        "(1) clone the user's `${userEmail}-${slug}` from Cloudflare Artifacts, " +
+        "(2) clone slide-of-hand from GitHub with the user's OAuth, " +
+        "(3) copy `src/decks/public/<slug>/` from the draft into the GitHub checkout, " +
+        "(4) run the full test gate (`npm ci` → typecheck → vitest → build), " +
+        "(5) commit + push a `deck/<slug>-<timestamp>` branch, " +
+        "(6) open a draft PR against `main`. " +
+        "Requires the user to have connected GitHub via Settings → GitHub → Connect. " +
+        "Returns the PR number + URL on success. The user reviews + merges on " +
+        "GitHub, NOT via chat confirmation. Do NOT claim the deck is live until " +
+        "the user has merged the PR themselves. If the test gate fails (e.g. " +
+        "typecheck red), the model can iterate on the draft via `iterateOnDeckDraft` " +
+        "to fix the issue and re-publish.",
+      inputSchema: z.object({
+        slug: z
+          .string()
+          .min(2)
+          .max(64)
+          .regex(/^[a-z][a-z0-9-]*[a-z0-9]$/, {
+            message:
+              "Slug must be kebab-case: lowercase letters / digits / hyphens, " +
+              "starting with a letter, ending with letter or digit.",
+          })
+          .describe(
+            "Kebab-case slug of the existing draft. Usually matches the slug " +
+              "from the prior `createDeckDraft` call in this conversation.",
+          ),
+      }),
+      execute: async ({
+        slug,
+      }): Promise<PublishDraftResult | PublishDraftError> => {
+        // The user's Access email is resolved at the tool layer, not
+        // passed by the model — the model doesn't have it (and can't
+        // be trusted to forge it). `runPublishDraft` returns the
+        // `phase: "auth"` error when this is empty, so a missing
+        // user email surfaces cleanly through the same channel as
+        // every other failure.
+        const email = currentUserEmail() ?? "";
+        return runPublishDraft(env, { userEmail: email, slug });
       },
     }),
 

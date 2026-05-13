@@ -360,7 +360,11 @@ names or their schemas to the user):
 - Edit build-time JSX or any other source file: \`proposeSourceEdit\`.
 - Create a new deck draft from a prompt: \`createDeckDraft\`.
 - Iterate on a draft the user has been working with:
-  \`iterateOnDeckDraft\`.`;
+  \`iterateOnDeckDraft\`.
+- Publish a draft to GitHub as a draft PR: \`publishDraft\`. Use
+  when the user says "publish", "open a PR", "make it live", or
+  "deploy" referring to a draft they've been iterating on. The
+  user reviews + merges on GitHub.`;
 }
 
 /**
@@ -454,14 +458,34 @@ edit a title, change the colour, restructure. Iterate on the
 existing draft using the slug you picked. Don't create a new draft
 each turn.
 
+PUBLISHING
+
+Once the user is happy with the draft and wants to SHIP it — they
+say "publish", "open a PR", "make it live", "deploy", "save this
+to GitHub", or anything similar — call the publish tool with the
+slug. The publish flow clones the draft from their personal
+scratch space, copies the files into the slide-of-hand repo, runs
+the full test gate, and opens a draft pull request against
+\`main\`. Requires GitHub to be connected (Settings → GitHub →
+Connect); if that's missing the tool returns a friendly error
+the user can act on.
+
+When publish succeeds you'll get a PR number + URL — share the URL
+verbatim so the user can review it. Do NOT claim the deck is "live"
+or "shipped" until the user has actually merged the PR themselves
+on GitHub. If the test gate fails (e.g. a typecheck error in the
+generated code), iterate on the draft to fix it, then publish
+again.
+
 CONFIRMATION DISCIPLINE
 
-- Don't claim the draft is "deployed" or "shipped" — it isn't.
-  It's in the user's Artifacts scratch space until they publish it
-  through a separate flow.
+- Don't claim the draft is "deployed" or "shipped" — it isn't,
+  even after publishing. It's a draft PR sitting on GitHub until
+  the user merges it.
 - When the create-draft tool returns successfully, share the slug
   and the first commit SHA. That's the user's reference for what
   was made.
+- When the publish tool returns successfully, share the PR URL.
 
 TOOL REFERENCE (for your own bookkeeping — do not mention these
 names or their schemas to the user):
@@ -469,6 +493,7 @@ names or their schemas to the user):
 - Create a new draft from a prompt: \`createDeckDraft\`.
 - Iterate on the draft the user has been working with:
   \`iterateOnDeckDraft\`.
+- Publish the draft to GitHub as a draft PR: \`publishDraft\`.
 
 You may also be asked questions that aren't deck creation. Answer
 them concisely without inventing tool calls — the read/edit tools
