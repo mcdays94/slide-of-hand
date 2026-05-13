@@ -53,11 +53,41 @@ vi.mock("./sandbox-artifacts", () => ({
   commitAndPushToArtifactsInSandbox: commitAndPushToArtifactsInSandboxMock,
 }));
 
-const { applyFilesIntoSandboxMock } = vi.hoisted(() => ({
+const {
+  applyFilesIntoSandboxMock,
+  cloneRepoIntoSandboxMock,
+  runSandboxTestGateMock,
+  commitAndPushInSandboxMock,
+} = vi.hoisted(() => ({
   applyFilesIntoSandboxMock: vi.fn(),
+  cloneRepoIntoSandboxMock: vi.fn(),
+  runSandboxTestGateMock: vi.fn(),
+  commitAndPushInSandboxMock: vi.fn(),
 }));
 vi.mock("./sandbox-source-edit", () => ({
   applyFilesIntoSandbox: applyFilesIntoSandboxMock,
+  cloneRepoIntoSandbox: cloneRepoIntoSandboxMock,
+  runSandboxTestGate: runSandboxTestGateMock,
+  commitAndPushInSandbox: commitAndPushInSandboxMock,
+}));
+
+const { openPullRequestMock } = vi.hoisted(() => ({
+  openPullRequestMock: vi.fn(),
+}));
+vi.mock("./github-client", async () => {
+  const actual =
+    await vi.importActual<typeof import("./github-client")>("./github-client");
+  return {
+    ...actual,
+    openPullRequest: openPullRequestMock,
+  };
+});
+
+const { getStoredGitHubTokenMock } = vi.hoisted(() => ({
+  getStoredGitHubTokenMock: vi.fn(),
+}));
+vi.mock("./github-oauth", () => ({
+  getStoredGitHubToken: getStoredGitHubTokenMock,
 }));
 
 const { streamDeckFilesMock } = vi.hoisted(() => ({
@@ -79,6 +109,7 @@ import {
   runIterateOnDeckDraft,
   runPublishDraft,
   type DeckCreationSnapshot,
+  type PublishDraftEnv,
   type SandboxDeckCreationEnv,
 } from "./sandbox-deck-creation";
 import type { AiDeckGenResult, DeckGenPartial } from "./ai-deck-gen";
@@ -90,6 +121,18 @@ function makeEnv(): SandboxDeckCreationEnv {
     Sandbox: {} as unknown as SandboxDeckCreationEnv["Sandbox"],
     ARTIFACTS: {} as unknown as Artifacts,
     AI: {} as unknown as Ai,
+  };
+}
+
+function makePublishEnv(): PublishDraftEnv {
+  return {
+    Sandbox: {} as unknown as PublishDraftEnv["Sandbox"],
+    ARTIFACTS: {
+      // Each test that exercises a get() path overrides this. Default
+      // resolves to a minimal repo handle.
+      get: vi.fn(),
+    } as unknown as Artifacts,
+    GITHUB_TOKENS: {} as KVNamespace,
   };
 }
 
@@ -183,8 +226,13 @@ beforeEach(() => {
   cloneArtifactsRepoIntoSandboxMock.mockReset();
   commitAndPushToArtifactsInSandboxMock.mockReset();
   applyFilesIntoSandboxMock.mockReset();
+  cloneRepoIntoSandboxMock.mockReset();
+  runSandboxTestGateMock.mockReset();
+  commitAndPushInSandboxMock.mockReset();
   streamDeckFilesMock.mockReset();
   getSandboxMock.mockReset();
+  openPullRequestMock.mockReset();
+  getStoredGitHubTokenMock.mockReset();
 });
 
 // ── runCreateDeckDraft ───────────────────────────────────────────────
@@ -801,15 +849,334 @@ describe("runIterateOnDeckDraft — failure modes", () => {
   });
 });
 
-// ── runPublishDraft (still stubbed) ──────────────────────────────────
+// ── runPublishDraft ─────────────────────────────────────────────────
+//
+// The orchestrator stitches a long sequence of collaborators together:
+//
+//   auth → github_token → artifacts_resolve → clone_draft → clone_github
+//        → copy_files → test_gate → github_push → open_pr
+//
+// Each step has its own discriminant on the `ok: false` branch so the
+// caller (and eventually the UI) can render the right next action.
+// Tests below exercise the happy path + each failure mode, mocking
+// every collaborator so the orchestrator's sequencing + error
+// translation can be verified in isolation.
 
-describe("runPublishDraft", () => {
-  it("returns phase:not_implemented", async () => {
-    const result = await runPublishDraft(makeEnv(), {
-      userEmail: "x@y",
-      slug: "x",
+/**
+ * Build a sandbox stub with an `exec` mock that succeeds by default
+ * (used for the cp step in runPublishDraft). Each test that wants
+ * the cp to fail overrides this.
+ */
+function makeSandboxStub(): {
+  exec: ReturnType<typeof vi.fn>;
+} {
+  return {
+    exec: vi.fn(async () => ({
+      success: true,
+      exitCode: 0,
+      stdout: "",
+      stderr: "",
+    })),
+  };
+}
+
+/**
+ * Set up the mocks so every step of `runPublishDraft` succeeds with
+ * representative values. Tests that exercise a specific failure
+ * mode call this first and then override the relevant mock.
+ */
+function setPublishHappyPathMocks(): { sandbox: ReturnType<typeof makeSandboxStub> } {
+  getStoredGitHubTokenMock.mockResolvedValue({
+    token: "ghu_xxx",
+    refreshToken: null,
+    expiresAt: null,
+  });
+  // ARTIFACTS.get(name) → an ArtifactsRepo handle. The handle's
+  // .createToken returns a fresh token; .remote is the bare URL.
+  // We don't use getDraftRepo's helper signature here because the
+  // tests want to control the repo's shape directly.
+  const repoCreateToken = vi.fn(async () => ({
+    plaintext: "art_v1_read?expires=999",
+    expiresAt: new Date(Date.now() + 60_000).toISOString(),
+  }));
+  getDraftRepoMock.mockResolvedValue({
+    name: "alice-example-com-my",
+    remote:
+      "1bcef46c.artifacts.cloudflare.net/git/slide-of-hand-drafts/alice-example-com-my.git",
+    token: "art_v1_initial",
+    defaultBranch: "main",
+    createToken: repoCreateToken,
+  });
+  mintWriteTokenMock.mockResolvedValue({
+    plaintext: "art_v1_read?expires=999",
+    expiresAt: new Date(Date.now() + 60_000).toISOString(),
+  });
+  cloneArtifactsRepoIntoSandboxMock.mockResolvedValue({
+    ok: true,
+    workdir: "/workspace/draft",
+    ref: "main",
+  });
+  cloneRepoIntoSandboxMock.mockResolvedValue({
+    ok: true,
+    workdir: "/workspace/slide-of-hand",
+    ref: "main",
+  });
+  runSandboxTestGateMock.mockResolvedValue({
+    ok: true,
+    phases: [
+      { phase: "install", ok: true, command: "npm ci", stdout: "", stderr: "", exitCode: 0 },
+      { phase: "typecheck", ok: true, command: "npm run typecheck", stdout: "", stderr: "", exitCode: 0 },
+      { phase: "test", ok: true, command: "npm test", stdout: "", stderr: "", exitCode: 0 },
+      { phase: "build", ok: true, command: "npm run build", stdout: "", stderr: "", exitCode: 0 },
+    ],
+  });
+  commitAndPushInSandboxMock.mockResolvedValue({
+    ok: true,
+    sha: "f2a1b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0",
+    branch: "deck/my-1700000000000",
+  });
+  openPullRequestMock.mockResolvedValue({
+    ok: true,
+    result: {
+      number: 42,
+      htmlUrl: "https://github.com/mcdays94/slide-of-hand/pull/42",
+      nodeId: "PR_kw",
+      head: "deck/my-1700000000000",
+      base: "main",
+    },
+  });
+  const sandbox = makeSandboxStub();
+  getSandboxMock.mockReturnValue(sandbox as unknown as ReturnType<typeof getSandboxMock>);
+  return { sandbox };
+}
+
+describe("runPublishDraft — happy path", () => {
+  it("walks the full sequence and returns the new PR number + URL", async () => {
+    setPublishHappyPathMocks();
+    const result = await runPublishDraft(makePublishEnv(), {
+      userEmail: "alice@example.com",
+      slug: "my",
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.prNumber).toBe(42);
+      expect(result.prHtmlUrl).toBe(
+        "https://github.com/mcdays94/slide-of-hand/pull/42",
+      );
+      // The branch echoes back from commitAndPushInSandbox so the UI
+      // can show "we pushed to <branch>" if the PR step fails later.
+      expect(result.branch).toBe("deck/my-1700000000000");
+    }
+    // Sequence sanity: every collaborator was called exactly once,
+    // in order. Verifying call ORDER catches accidental rearranges
+    // that'd skip the test gate or push without commit.
+    expect(getStoredGitHubTokenMock).toHaveBeenCalledTimes(1);
+    expect(getDraftRepoMock).toHaveBeenCalledTimes(1);
+    expect(cloneArtifactsRepoIntoSandboxMock).toHaveBeenCalledTimes(1);
+    expect(cloneRepoIntoSandboxMock).toHaveBeenCalledTimes(1);
+    expect(runSandboxTestGateMock).toHaveBeenCalledTimes(1);
+    expect(commitAndPushInSandboxMock).toHaveBeenCalledTimes(1);
+    expect(openPullRequestMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("opens the PR as a draft against TARGET_REPO", async () => {
+    setPublishHappyPathMocks();
+    await runPublishDraft(makePublishEnv(), {
+      userEmail: "alice@example.com",
+      slug: "my",
+    });
+    expect(openPullRequestMock).toHaveBeenCalledWith(
+      expect.objectContaining({ draft: true, base: "main" }),
+    );
+  });
+
+  it("titles the PR + commit with feat(deck/<slug>) so the message is GitHub-conventional", async () => {
+    setPublishHappyPathMocks();
+    await runPublishDraft(makePublishEnv(), {
+      userEmail: "alice@example.com",
+      slug: "crdt-collab",
+    });
+    expect(commitAndPushInSandboxMock).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({
+        commitMessage: expect.stringContaining("feat(deck/crdt-collab):"),
+      }),
+      expect.any(String),
+    );
+    expect(openPullRequestMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: expect.stringContaining("feat(deck/crdt-collab):"),
+      }),
+    );
+  });
+
+  it("copies the deck folder from the Artifacts clone into the GitHub clone", async () => {
+    const { sandbox } = setPublishHappyPathMocks();
+    await runPublishDraft(makePublishEnv(), {
+      userEmail: "alice@example.com",
+      slug: "my",
+    });
+    // The cp step is what bridges the two clones. It MUST reference
+    // both workdirs by their absolute paths to avoid CWD assumptions.
+    const execCalls = sandbox.exec.mock.calls;
+    const cpCall = execCalls.find((c) => String(c[0]).includes("cp -r"));
+    expect(cpCall).toBeDefined();
+    if (cpCall) {
+      const cmd = String(cpCall[0]);
+      expect(cmd).toContain("/workspace/draft/src/decks/public/my");
+      expect(cmd).toContain("/workspace/slide-of-hand/src/decks/public");
+    }
+  });
+});
+
+describe("runPublishDraft — error phases", () => {
+  it("returns phase:auth when there's no authenticated user", async () => {
+    setPublishHappyPathMocks();
+    const result = await runPublishDraft(
+      makePublishEnv(),
+      { userEmail: "  ", slug: "my" },
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.phase).toBe("auth");
+  });
+
+  it("returns phase:github_token when the user hasn't connected GitHub", async () => {
+    setPublishHappyPathMocks();
+    getStoredGitHubTokenMock.mockResolvedValue(null);
+    const result = await runPublishDraft(makePublishEnv(), {
+      userEmail: "alice@example.com",
+      slug: "my",
     });
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.phase).toBe("not_implemented");
+    if (!result.ok) expect(result.phase).toBe("github_token");
+  });
+
+  it("returns phase:artifacts_resolve when the draft doesn't exist on Artifacts", async () => {
+    setPublishHappyPathMocks();
+    getDraftRepoMock.mockRejectedValue(new Error("ArtifactsError: not_found"));
+    const result = await runPublishDraft(makePublishEnv(), {
+      userEmail: "alice@example.com",
+      slug: "my",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.phase).toBe("artifacts_resolve");
+      expect(result.error).toContain("not_found");
+    }
+  });
+
+  it("returns phase:clone_draft when the Artifacts clone fails", async () => {
+    setPublishHappyPathMocks();
+    cloneArtifactsRepoIntoSandboxMock.mockResolvedValue({
+      ok: false,
+      error: "auth required",
+    });
+    const result = await runPublishDraft(makePublishEnv(), {
+      userEmail: "alice@example.com",
+      slug: "my",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.phase).toBe("clone_draft");
+      expect(result.error).toContain("auth required");
+    }
+  });
+
+  it("returns phase:clone_github when the GitHub clone fails", async () => {
+    setPublishHappyPathMocks();
+    cloneRepoIntoSandboxMock.mockResolvedValue({
+      ok: false,
+      error: "permission denied",
+    });
+    const result = await runPublishDraft(makePublishEnv(), {
+      userEmail: "alice@example.com",
+      slug: "my",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.phase).toBe("clone_github");
+      expect(result.error).toContain("permission denied");
+    }
+  });
+
+  it("returns phase:copy_files when the cp step exits non-zero", async () => {
+    const { sandbox } = setPublishHappyPathMocks();
+    sandbox.exec.mockResolvedValueOnce({
+      success: false,
+      exitCode: 1,
+      stdout: "",
+      stderr: "cp: source not found",
+    });
+    const result = await runPublishDraft(makePublishEnv(), {
+      userEmail: "alice@example.com",
+      slug: "my",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.phase).toBe("copy_files");
+      expect(result.error).toContain("source not found");
+    }
+  });
+
+  it("returns phase:test_gate with the failed gate phase when typecheck fails", async () => {
+    setPublishHappyPathMocks();
+    runSandboxTestGateMock.mockResolvedValue({
+      ok: false,
+      failedPhase: "typecheck",
+      phases: [
+        { phase: "install", ok: true, command: "npm ci", stdout: "", stderr: "", exitCode: 0 },
+        { phase: "typecheck", ok: false, command: "npm run typecheck", stdout: "", stderr: "TS2304", exitCode: 1 },
+      ],
+    });
+    const result = await runPublishDraft(makePublishEnv(), {
+      userEmail: "alice@example.com",
+      slug: "my",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.phase).toBe("test_gate");
+      // Surface which gate phase failed so the UI / model can react.
+      expect(result.failedTestGatePhase).toBe("typecheck");
+    }
+  });
+
+  it("returns phase:github_push when commit fails (e.g. no effective changes)", async () => {
+    setPublishHappyPathMocks();
+    commitAndPushInSandboxMock.mockResolvedValue({
+      ok: false,
+      noEffectiveChanges: true,
+      error: "No changes to commit",
+    });
+    const result = await runPublishDraft(makePublishEnv(), {
+      userEmail: "alice@example.com",
+      slug: "my",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.phase).toBe("github_push");
+      // Pass through the noEffectiveChanges marker so the UI can show
+      // a tailored "the draft is identical to main" message rather
+      // than a generic git failure.
+      expect(result.noEffectiveChanges).toBe(true);
+    }
+  });
+
+  it("returns phase:open_pr when the GitHub PR API rejects the request", async () => {
+    setPublishHappyPathMocks();
+    openPullRequestMock.mockResolvedValue({
+      ok: false,
+      kind: "rate_limit",
+      message: "API rate limit exceeded",
+      status: 403,
+    });
+    const result = await runPublishDraft(makePublishEnv(), {
+      userEmail: "alice@example.com",
+      slug: "my",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.phase).toBe("open_pr");
+      expect(result.error).toContain("rate limit");
+    }
   });
 });

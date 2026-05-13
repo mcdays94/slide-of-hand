@@ -61,7 +61,20 @@ import {
   cloneArtifactsRepoIntoSandbox,
   commitAndPushToArtifactsInSandbox,
 } from "./sandbox-artifacts";
-import { applyFilesIntoSandbox } from "./sandbox-source-edit";
+import {
+  applyFilesIntoSandbox,
+  cloneRepoIntoSandbox,
+  commitAndPushInSandbox,
+  runSandboxTestGate,
+  type TestGatePhase,
+  type PhaseResult as TestGatePhaseResult,
+} from "./sandbox-source-edit";
+import {
+  openPullRequest,
+  SLIDE_OF_HAND_COMMIT_IDENTITY,
+  TARGET_REPO,
+} from "./github-client";
+import { getStoredGitHubToken } from "./github-oauth";
 import { streamDeckFiles, type DeckGenPartial } from "./ai-deck-gen";
 import type { DeckCreationSnapshot } from "../src/lib/deck-creation-snapshot";
 
@@ -747,11 +760,25 @@ export async function readDeckFilesFromSandbox(
   return files;
 }
 
-// ── publishDraft remains stubbed for Wave 1 follow-up ──────────────
+// ── publishDraft ────────────────────────────────────────────────────
+
+/**
+ * Env shape `runPublishDraft` needs. Narrower than
+ * `SandboxDeckCreationEnv` (no AI / AI Gateway — publish doesn't
+ * generate; it just moves files) but adds `GITHUB_TOKENS` for the
+ * per-user OAuth token lookup that authenticates the GitHub clone +
+ * PR.
+ */
+export interface PublishDraftEnv {
+  Sandbox: DurableObjectNamespace<Sandbox>;
+  ARTIFACTS: Artifacts;
+  GITHUB_TOKENS: KVNamespace;
+}
 
 export interface PublishDraftInput {
   userEmail: string;
   slug: string;
+  /** Reserved for future use — squash-merge hint. Ignored for now. */
   squash?: boolean;
 }
 
@@ -768,43 +795,231 @@ export interface PublishDraftError {
     | "auth"
     | "github_token"
     | "artifacts_resolve"
-    | "clone"
+    | "clone_draft"
+    | "clone_github"
+    | "copy_files"
     | "test_gate"
     | "github_push"
-    | "open_pr"
-    | "not_implemented";
+    | "open_pr";
   error: string;
+  /** When phase === "test_gate", the gate sub-phase that failed. */
+  failedTestGatePhase?: TestGatePhase;
+  /** When phase === "test_gate", every gate phase's result (including the failed one). */
+  testGatePhases?: TestGatePhaseResult[];
+  /** When phase === "github_push" and the diff was empty after `git add -A`. */
+  noEffectiveChanges?: boolean;
 }
 
 /**
- * Publish a draft to GitHub. STUB — Wave 1 follow-up. The flow is
- * documented in the file header but the implementation needs:
+ * Publish a draft from Cloudflare Artifacts to a GitHub PR against
+ * `main`. The flow:
  *
- *   1. The user's GitHub OAuth token from `GITHUB_TOKENS` KV.
- *   2. A read token for the Artifacts draft.
- *   3. A two-step clone (Artifacts read into one workdir, then a
- *      separate clone of the slide-of-hand GitHub repo).
- *   4. Copy the draft files into the slide-of-hand checkout.
- *   5. `runSandboxTestGate` against the full project.
- *   6. `commitAndPushInSandbox` to GitHub.
- *   7. `openPullRequest` against `main`.
+ *   1. Auth: confirm the call has a user email (no anonymous publish).
+ *   2. Token: resolve the user's stored GitHub OAuth token.
+ *   3. Artifacts: resolve the draft repo handle (`${email}-${slug}`).
+ *   4. Sandbox: spawn / warm a per-slug container.
+ *   5. Clone draft: pull the Artifacts repo into `/workspace/draft`.
+ *   6. Clone GitHub: pull `slide-of-hand` into `/workspace/slide-of-hand`.
+ *   7. Copy deck folder from draft → GH (`src/decks/public/<slug>/`).
+ *   8. Test gate: install → typecheck → test → build against the GH
+ *      checkout. Any failure short-circuits here.
+ *   9. Commit + push to a fresh `deck/<slug>-<timestamp>` branch.
+ *   10. Open a draft PR against `main`.
  *
- * Building this requires the iteration loop to be exercised in
- * practice first — quality of the publish flow depends on quality of
- * the generated decks. Deferring keeps the Wave 1 PR focused.
+ * Every step has its own discriminant on the `ok: false` branch so the
+ * UI / model can render the right remediation. Underlying errors are
+ * propagated verbatim where possible (clone errors, test-gate stderr,
+ * GitHub API messages) so the caller can show actionable detail.
+ *
+ * **Commit identity** is pinned to `SLIDE_OF_HAND_COMMIT_IDENTITY` for
+ * the GitHub-bound commit — same reasoning as `runProposeSourceEdit`
+ * (see "Cutindah" post-mortem in `worker/github-client.ts`). The user's
+ * OAuth token still authorises the push; the author metadata just
+ * isn't derived from it.
  */
 export async function runPublishDraft(
-  env: SandboxDeckCreationEnv,
+  env: PublishDraftEnv,
   input: PublishDraftInput,
+  getSandboxFn: GetSandboxFn = getSandbox,
 ): Promise<PublishDraftResult | PublishDraftError> {
-  void env;
-  void input;
+  // 1. Auth.
+  const email = (input.userEmail ?? "").trim();
+  if (!email) {
+    return {
+      ok: false,
+      phase: "auth",
+      error:
+        "Publishing a draft requires an authenticated user. Service-token " +
+        "contexts have no user identity to commit on behalf of.",
+    };
+  }
+
+  // 2. GitHub token lookup.
+  const stored = await getStoredGitHubToken(env, email);
+  if (!stored) {
+    return {
+      ok: false,
+      phase: "github_token",
+      error:
+        "GitHub not connected. Ask the user to open Settings → GitHub → " +
+        "Connect, then retry. This flow needs the user's GitHub credentials " +
+        "to clone the repo, push a branch, and open the PR.",
+    };
+  }
+
+  // 3. Resolve the Artifacts draft. `getDraftRepo` throws if the repo
+  // doesn't exist (Artifacts treats not-found as an exception); we
+  // translate to a clean phase here so the model / UI gets a typed
+  // signal rather than a raw thrown error.
+  let repo: Awaited<ReturnType<typeof getDraftRepo>>;
+  try {
+    repo = await getDraftRepo(env.ARTIFACTS, email, input.slug);
+  } catch (err) {
+    return {
+      ok: false,
+      phase: "artifacts_resolve",
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+
+  // 4. Sandbox. Keyed by `publish:<slug>` so subsequent publish
+  // attempts on the same draft reuse the warmed container — saves
+  // the boot cost on retries. Each call starts with fresh clones
+  // anyway (steps 5+6 below) so there's no leakage between attempts.
+  const sandbox = getSandboxFn(env.Sandbox, `publish:${input.slug}`);
+
+  // 5. Clone the Artifacts draft. We use a write token here even
+  // though publish only READS the draft — Artifacts' read-vs-write
+  // tokens both grant clone access, but mintWriteToken is the one
+  // helper that's wired with sensible TTLs across the existing
+  // codebase. The token never leaks out of the Sandbox container,
+  // which is torn down after the test gate finishes.
+  const readToken = await mintWriteToken(repo);
+  const draftAuthUrl = buildAuthenticatedRemoteUrl(
+    repo.remote,
+    stripExpiresSuffix(readToken.plaintext),
+  );
+  const draftClone = await cloneArtifactsRepoIntoSandbox(sandbox, {
+    authenticatedUrl: draftAuthUrl,
+    workdir: "/workspace/draft",
+  });
+  if (!draftClone.ok) {
+    return { ok: false, phase: "clone_draft", error: draftClone.error };
+  }
+
+  // 6. Clone the slide-of-hand GitHub repo into a SEPARATE workdir
+  // so step 7 has both checkouts available at once.
+  const ghClone = await cloneRepoIntoSandbox(sandbox, {
+    token: stored.token,
+    repo: TARGET_REPO,
+    workdir: "/workspace/slide-of-hand",
+  });
+  if (!ghClone.ok) {
+    return { ok: false, phase: "clone_github", error: ghClone.error };
+  }
+
+  // 7. Copy the deck folder from the draft checkout into the GH
+  // checkout. We `mkdir -p` the parent first so the cp lands in the
+  // right place even if the user's adding a NEW deck slug (parent
+  // exists in a fresh checkout but `mkdir -p` is idempotent anyway).
+  const srcDir = `${draftClone.workdir}/src/decks/public/${input.slug}`;
+  const destParent = `${ghClone.workdir}/src/decks/public`;
+  const copyResult = await sandbox.exec(
+    `mkdir -p "${destParent}" && cp -r "${srcDir}" "${destParent}/"`,
+  );
+  if (!copyResult.success || copyResult.exitCode !== 0) {
+    return {
+      ok: false,
+      phase: "copy_files",
+      error:
+        copyResult.stderr ||
+        `Failed to copy draft files from ${srcDir} (exit ${copyResult.exitCode ?? "unknown"}).`,
+    };
+  }
+
+  // 8. Test gate against the GH checkout. This is the slow step
+  // (npm ci alone can be ~30 s; the full gate is 60-120 s).
+  const gate = await runSandboxTestGate(sandbox, ghClone.workdir);
+  if (!gate.ok) {
+    return {
+      ok: false,
+      phase: "test_gate",
+      failedTestGatePhase: gate.failedPhase,
+      testGatePhases: gate.phases,
+      error: `Test gate failed at the \`${gate.failedPhase}\` phase.`,
+    };
+  }
+
+  // 9. Commit + push. Branch name embeds the timestamp so re-running
+  // publish on the same draft creates a fresh branch every time
+  // (avoids GitHub's "already exists" error if the user iterates).
+  const branchName = `deck/${input.slug}-${Date.now()}`;
+  const commitMessage = `feat(deck/${input.slug}): publish AI-generated deck`;
+  const commit = await commitAndPushInSandbox(
+    sandbox,
+    {
+      branchName,
+      authorName: SLIDE_OF_HAND_COMMIT_IDENTITY.name,
+      authorEmail: SLIDE_OF_HAND_COMMIT_IDENTITY.email,
+      commitMessage,
+    },
+    ghClone.workdir,
+  );
+  if (!commit.ok) {
+    return {
+      ok: false,
+      phase: "github_push",
+      error: commit.error,
+      ...(commit.noEffectiveChanges ? { noEffectiveChanges: true } : {}),
+    };
+  }
+
+  // 10. Open the draft PR.
+  const prBody = buildPublishPrBody({
+    slug: input.slug,
+    draftRepoName: repo.name,
+    commitSha: commit.sha,
+  });
+  const pr = await openPullRequest({
+    token: stored.token,
+    head: commit.branch,
+    base: "main",
+    title: commitMessage,
+    body: prBody,
+    draft: true,
+  });
+  if (!pr.ok) {
+    return { ok: false, phase: "open_pr", error: pr.message };
+  }
+
   return {
-    ok: false,
-    phase: "not_implemented",
-    error:
-      "Deck publish is not implemented yet (issue #168 Wave 1 follow-up). " +
-      "Create + iterate flows work end-to-end via createDeckDraft and " +
-      "iterateOnDeckDraft; publish to GitHub is the next slice.",
+    ok: true,
+    branch: commit.branch,
+    prNumber: pr.result.number,
+    prHtmlUrl: pr.result.htmlUrl,
   };
+}
+
+/**
+ * Build the body for the publish PR. Deliberately terse: a one-line
+ * description + structured metadata in a table so the user can scan
+ * "what's being published" without scrolling. The actual review still
+ * happens against the diff in GitHub's UI.
+ */
+function buildPublishPrBody(opts: {
+  slug: string;
+  draftRepoName: string;
+  commitSha: string;
+}): string {
+  return [
+    "Publishing an AI-generated deck draft from Cloudflare Artifacts.",
+    "",
+    "| Field | Value |",
+    "| --- | --- |",
+    `| Deck slug | \`${opts.slug}\` |`,
+    `| Draft repo | \`${opts.draftRepoName}\` |`,
+    `| Commit SHA | \`${opts.commitSha.slice(0, 7)}\` |`,
+    "",
+    `Generated via \`/admin/decks/new\`. Review the diff under \`src/decks/public/${opts.slug}/\` before marking ready.`,
+  ].join("\n");
 }
