@@ -1,0 +1,33 @@
+worker/agent-tools.ts
+  0554d787149f635b 78,81-82,459-460,549-592
+worker/agent.test.ts
+  0554d787149f635b 505,517-518,587-598
+worker/agent.ts
+  0554d787149f635b 363-367,461-478,482-484,488,496
+worker/agent-tools.test.ts
+  0554d787149f635b 906-907,915-919
+src/components/StudioAgentPanel.test.tsx
+  0554d787149f635b 1353-1516
+src/components/StudioAgentPanel.tsx
+  0554d787149f635b 814,1249-1299
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "030a942f82875172a0a6c0ccdc069c1a0eb2510c",
+  "prompts": {
+    "0554d787149f635b": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_1dfb03942ffewo8Z7MIGmTEfOM",
+        "model": "anthropic/claude-opus-4-7"
+      },
+      "human_author": "mcdays94",
+      "messages": [],
+      "total_additions": 321,
+      "total_deletions": 6,
+      "accepted_lines": 321,
+      "overriden_lines": 0
+    }
+  }
+}
