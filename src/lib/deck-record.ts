@@ -48,6 +48,14 @@ export interface DataDeckMeta {
   runtimeMinutes?: number;
   /** Whether the deck appears on the public index. */
   visibility: Visibility;
+  /**
+   * When `true`, this deck is a work-in-progress draft (issue #191).
+   * Orthogonal to `visibility`. UI consumers filter drafts from the
+   * public homepage and show a "Draft" pill in the admin index.
+   * Default: undefined / false. See `DeckMeta` in
+   * `src/framework/viewer/types.ts` for the full semantics.
+   */
+  draft?: boolean;
 }
 
 export interface DataDeck {
@@ -181,6 +189,13 @@ function validateMeta(
     }
   }
 
+  // Issue #191 — `draft` is optional. Boolean only; reject anything
+  // else. Pre-#191 records that omit the field validate cleanly and
+  // are treated as not-drafts downstream.
+  if (meta.draft !== undefined && typeof meta.draft !== "boolean") {
+    errors.push("meta.draft must be a boolean when present");
+  }
+
   if (errors.length > startCount) return null;
 
   // Construct the typed object only when all checks passed.
@@ -197,6 +212,7 @@ function validateMeta(
   if (typeof meta.runtimeMinutes === "number") {
     out.runtimeMinutes = meta.runtimeMinutes;
   }
+  if (typeof meta.draft === "boolean") out.draft = meta.draft;
   return out;
 }
 
