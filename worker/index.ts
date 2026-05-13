@@ -46,6 +46,10 @@ import {
   handleDiagWorkerLoader,
   type DiagWorkerLoaderEnv,
 } from "./diag-worker-loader";
+import {
+  handleCfDynamicWorkers,
+  type CfDynamicWorkersEnv,
+} from "./cf-dynamic-workers";
 import { handleSkills, type SkillsEnv } from "./skill-composer";
 import { handleMcpServers, type McpServersEnv } from "./mcp-servers";
 import { handlePreview, type PreviewEnv } from "./preview-route";
@@ -83,7 +87,8 @@ export interface Env
     PreviewEnv,
     DeckStarterSetupEnv,
     DiagArtifactsEnv,
-    DiagWorkerLoaderEnv {
+    DiagWorkerLoaderEnv,
+    CfDynamicWorkersEnv {
   ASSETS: Fetcher;
 }
 
@@ -152,6 +157,16 @@ export default {
     // `worker/diag-worker-loader.ts`.
     const diagLoaderResponse = await handleDiagWorkerLoader(request, env);
     if (diagLoaderResponse) return diagLoaderResponse;
+    // cf-dynamic-workers live-demo backend (issue #167). Wires slide 08's
+    // spawn/spawn-many/globe demos to the real Worker Loader binding
+    // instead of the simulator stubs. Owns the `/__internal/ai-proxy`
+    // path that the AI snippet's spawned isolate calls back into.
+    // See `worker/cf-dynamic-workers/index.ts`.
+    const cfDynamicWorkersResponse = await handleCfDynamicWorkers(
+      request,
+      env,
+    );
+    if (cfDynamicWorkersResponse) return cfDynamicWorkersResponse;
     // Draft deck preview route (issue #168 Wave 1). Serves preview
     // bundles from Cloudflare Artifacts draft repos so the Studio can
     // iframe each commit's output. STUB — returns 501 until Worker A

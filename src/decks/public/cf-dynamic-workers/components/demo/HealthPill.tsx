@@ -33,19 +33,21 @@ type HealthState =
   | { kind: "error"; message: string };
 
 /**
- * When `simulate` is true (the default in this build), the pill skips
- * the `/api/health` round-trip entirely and renders a static "simulated"
- * label. The Slide of Hand build doesn't ship a Worker Loader binding
- * yet, so there's no backend to probe.
+ * Probes the platform's `/api/cf-dynamic-workers/health` endpoint on
+ * mount (issue #167 — the Worker Loader binding is wired live as of
+ * #190). Renders a coloured pill summarising whether LOADER + AI +
+ * SELF bindings are all reachable.
  *
- * TODO(#101 follow-up): flip simulate=false (or remove the prop) once a
- * Worker Loader binding is added to wrangler.jsonc and a /api/health
- * endpoint is available.
+ * The `simulate` prop is retained as an opt-OUT for the rare case
+ * where the pill is rendered outside the platform (e.g. unit tests
+ * where the test environment doesn't intercept fetch). The default
+ * flipped from `true` to `false` post-#190 + #167 — production calls
+ * the real endpoint.
  */
 export function HealthPill({
-  endpoint = "/api/health",
+  endpoint = "/api/cf-dynamic-workers/health",
   className = "",
-  simulate = true,
+  simulate = false,
 }: HealthPillProps & { simulate?: boolean }) {
   const [state, setState] = useState<HealthState>(() =>
     simulate ? { kind: "simulated" } : { kind: "checking" },

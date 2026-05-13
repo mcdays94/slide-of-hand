@@ -25,22 +25,36 @@ describe("HealthPill", () => {
     );
   }
 
-  it("renders the simulated state by default (no Worker Loader binding)", () => {
+  it("renders the checking state by default (real /api/cf-dynamic-workers/health probe in flight)", () => {
+    // The default flipped from simulate=true → false post-#167 once the
+    // Worker Loader binding shipped. The pill now probes the real
+    // /api/cf-dynamic-workers/health endpoint on mount and renders the
+    // result. Default render with no fetch mock + no explicit simulate
+    // prop should land in the "checking" state while the probe is
+    // in flight.
+    (fetch as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+      () => new Promise(() => {}), // never resolves
+    );
     render(<HealthPill />);
+    const pill = screen.getByTestId("health-pill");
+    expect(pill).toHaveAttribute("data-state", "checking");
+    expect(pill).toHaveTextContent(/checking/i);
+    // Confirms the default endpoint is the namespaced one.
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/cf-dynamic-workers/health",
+      expect.any(Object),
+    );
+  });
+
+  it("renders the simulated state when simulate=true is explicitly passed", () => {
+    // The simulate=true opt-in is retained for the rare case where the
+    // pill is rendered outside the platform (e.g. unit tests that
+    // don't intercept fetch). When set, fetch is never called.
+    render(<HealthPill simulate />);
     const pill = screen.getByTestId("health-pill");
     expect(pill).toHaveAttribute("data-state", "simulated");
     expect(pill).toHaveTextContent(/simulated/i);
     expect(fetch).not.toHaveBeenCalled();
-  });
-
-  it("renders the checking state on first render when simulate=false", () => {
-    (fetch as unknown as ReturnType<typeof vi.fn>).mockImplementation(
-      () => new Promise(() => {}), // never resolves
-    );
-    render(<HealthPill simulate={false} />);
-    const pill = screen.getByTestId("health-pill");
-    expect(pill).toHaveAttribute("data-state", "checking");
-    expect(pill).toHaveTextContent(/checking/i);
   });
 
   it("renders LOADER ✓ AI ✓ on a healthy backend (simulate=false)", async () => {
