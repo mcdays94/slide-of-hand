@@ -1,0 +1,21 @@
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "4f4e74fb6b029c8f5308ecd4b03c7c0807d7c3aa",
+  "prompts": {
+    "0554d787149f635b": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_1dfb03942ffewo8Z7MIGmTEfOM",
+        "model": "anthropic/claude-opus-4-7"
+      },
+      "human_author": "mcdays94",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 3,
+      "overriden_lines": 0
+    }
+  }
+}
