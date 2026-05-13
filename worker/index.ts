@@ -42,6 +42,10 @@ import {
   handleDiagArtifacts,
   type DiagArtifactsEnv,
 } from "./diag-artifacts";
+import {
+  handleDiagWorkerLoader,
+  type DiagWorkerLoaderEnv,
+} from "./diag-worker-loader";
 import { handleSkills, type SkillsEnv } from "./skill-composer";
 import { handleMcpServers, type McpServersEnv } from "./mcp-servers";
 import { handlePreview, type PreviewEnv } from "./preview-route";
@@ -78,7 +82,8 @@ export interface Env
     McpServersEnv,
     PreviewEnv,
     DeckStarterSetupEnv,
-    DiagArtifactsEnv {
+    DiagArtifactsEnv,
+    DiagWorkerLoaderEnv {
   ASSETS: Fetcher;
 }
 
@@ -141,6 +146,12 @@ export default {
     // when something goes wrong. See `worker/diag-artifacts.ts`.
     const diagArtifactsResponse = await handleDiagArtifacts(request, env);
     if (diagArtifactsResponse) return diagArtifactsResponse;
+    // Worker Loader diagnostic endpoint (issue #106). Smoke-tests
+    // the LOADER binding by loading a minimal Dynamic Worker and
+    // forwarding a synthetic request through it. See
+    // `worker/diag-worker-loader.ts`.
+    const diagLoaderResponse = await handleDiagWorkerLoader(request, env);
+    if (diagLoaderResponse) return diagLoaderResponse;
     // Draft deck preview route (issue #168 Wave 1). Serves preview
     // bundles from Cloudflare Artifacts draft repos so the Studio can
     // iframe each commit's output. STUB — returns 501 until Worker A
