@@ -16,11 +16,58 @@ import {
   fireEvent,
   render,
   screen,
+  waitFor,
 } from "@testing-library/react";
+
+// Mock the shared Shiki helper. The real module dynamic-imports
+// `shiki/core` + grammar bundles on first call; we don't want to
+// pay that cost in a unit test, and we need deterministic HTML for
+// assertions. The mock preserves the source code verbatim inside a
+// minimal Shiki-shaped wrapper so `textContent` still matches the
+// original input. Mirrors the pattern in `CodeSlotEditor.test.tsx`
+// + `render.test.tsx`, but at the shared-module boundary rather
+// than the granular shiki imports — simpler for this surface.
+const { highlightSpy, isSupportedLangMock } = vi.hoisted(() => {
+  const SUPPORTED = new Set([
+    "ts",
+    "js",
+    "tsx",
+    "jsx",
+    "json",
+    "html",
+    "css",
+    "sh",
+    "sql",
+    "python",
+    "ruby",
+    "go",
+    "rust",
+    "yaml",
+    "md",
+  ]);
+  return {
+    highlightSpy: vi.fn(async (code: string, lang: string) => {
+      const escaped = code
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+      return `<pre class="shiki" data-lang="${lang}" style="background-color:#fff"><code>${escaped}</code></pre>`;
+    }),
+    isSupportedLangMock: vi.fn((lang: string) => SUPPORTED.has(lang)),
+  };
+});
+vi.mock("@/lib/shiki", () => ({
+  highlight: highlightSpy,
+  isSupportedLang: isSupportedLangMock,
+}));
+
 import { DeckCreationCanvas } from "./index";
 import type { DeckCreationMessage } from "./extractLatestCall";
 
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  highlightSpy.mockClear();
+});
 
 /**
  * Build a synthetic createDeckDraft tool-call message with a single
@@ -331,5 +378,148 @@ describe("<DeckCreationCanvas> — final lean result", () => {
     ).toBe("done");
     expect(screen.getByText(/Deck created/i)).toBeDefined();
     expect(screen.getByText(/abcdef1/i)).toBeDefined();
+  });
+});
+
+// Issue #178 polish — syntax highlighting on the file content panel.
+// First paint renders plain text (so layout doesn't shift on
+// resolution); a useEffect then calls the shared Shiki helper and
+// swaps in the highlighted HTML. Mirrors the lazy-load posture used
+// by <ShikiCodeBlock> in src/framework/templates/render.tsx.
+describe("<DeckCreationCanvas> — syntax highlighting", () => {
+  it("calls highlight() with the file content and a tsx lang for a .tsx path", async () => {
+    const messages = [
+      msgWithSnapshot({
+        phase: "ai_gen",
+        files: [
+          {
+            path: "src/decks/public/my/index.tsx",
+            content: "export default {};",
+            state: "writing",
+          },
+        ],
+        currentFile: "src/decks/public/my/index.tsx",
+      }),
+    ];
+    render(<DeckCreationCanvas messages={messages} slug="my" />);
+    await waitFor(() => {
+      expect(highlightSpy).toHaveBeenCalledWith("export default {};", "tsx");
+    });
+  });
+
+  it("derives lang=ts for .ts paths (e.g. meta.ts)", async () => {
+    const messages = [
+      msgWithSnapshot({
+        phase: "ai_gen",
+        files: [
+          {
+            path: "src/decks/public/my/meta.ts",
+            content: "export const meta = {};",
+            state: "writing",
+          },
+        ],
+        currentFile: "src/decks/public/my/meta.ts",
+      }),
+    ];
+    render(<DeckCreationCanvas messages={messages} slug="my" />);
+    await waitFor(() => {
+      expect(highlightSpy).toHaveBeenCalledWith("export const meta = {};", "ts");
+    });
+  });
+
+  it("does NOT call highlight when the file extension is unsupported (renders plain)", async () => {
+    // .gitkeep or other extensions outside Shiki's allowlist — we
+    // skip the call entirely rather than rely on Shiki's fallback.
+    // Saves a tokenizer round-trip per unknown extension.
+    const messages = [
+      msgWithSnapshot({
+        phase: "ai_gen",
+        files: [
+          {
+            path: "src/decks/public/my/.gitkeep",
+            content: "",
+            state: "done",
+          },
+        ],
+        currentFile: "src/decks/public/my/.gitkeep",
+      }),
+    ];
+    render(<DeckCreationCanvas messages={messages} slug="my" />);
+    // Give the useEffect a microtask to fire. If we were going to
+    // call highlight, it would happen by now.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(highlightSpy).not.toHaveBeenCalled();
+  });
+
+  it("swaps the plain pre/code for highlighted HTML once Shiki resolves", async () => {
+    const messages = [
+      msgWithSnapshot({
+        phase: "ai_gen",
+        files: [
+          {
+            path: "src/decks/public/my/index.tsx",
+            content: "export default {};",
+            state: "writing",
+          },
+        ],
+        currentFile: "src/decks/public/my/index.tsx",
+      }),
+    ];
+    const { container } = render(
+      <DeckCreationCanvas messages={messages} slug="my" />,
+    );
+    // After Shiki resolves, the body should contain a Shiki pre with
+    // the `shiki` class (our mock emits one). Wait for that.
+    await waitFor(() => {
+      expect(container.querySelector("pre.shiki")).not.toBeNull();
+    });
+    // The writing caret is still rendered (outside the highlighted
+    // block) — the streaming indicator must survive the swap.
+    expect(screen.getByTestId("deck-creation-writing-caret")).toBeDefined();
+    // textContent on the body still includes the source code so any
+    // accessibility / scraping consumers still get a readable
+    // transcript.
+    expect(
+      screen
+        .getByTestId("deck-creation-file-content-body")
+        .textContent ?? "",
+    ).toContain("export default {};");
+  });
+
+  it("re-highlights when the file content changes between renders", async () => {
+    const buildMessages = (content: string) => [
+      msgWithSnapshot({
+        phase: "ai_gen",
+        files: [
+          {
+            path: "src/decks/public/my/index.tsx",
+            content,
+            state: "writing",
+          },
+        ],
+        currentFile: "src/decks/public/my/index.tsx",
+      }),
+    ];
+
+    const view = render(
+      <DeckCreationCanvas messages={buildMessages("export default")} slug="my" />,
+    );
+    await waitFor(() => {
+      expect(highlightSpy).toHaveBeenCalledWith("export default", "tsx");
+    });
+    highlightSpy.mockClear();
+
+    // Simulate a streaming update: more content arrives on the next
+    // frame. The useEffect deps include `file.content`, so the
+    // helper should re-fire.
+    view.rerender(
+      <DeckCreationCanvas
+        messages={buildMessages("export default {};")}
+        slug="my"
+      />,
+    );
+    await waitFor(() => {
+      expect(highlightSpy).toHaveBeenCalledWith("export default {};", "tsx");
+    });
   });
 });
