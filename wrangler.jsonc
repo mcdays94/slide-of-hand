@@ -287,6 +287,33 @@
     }
   ],
   /**
+   * Self-service binding (issue #167 — cf-dynamic-workers live demo).
+   *
+   * Provides a `Fetcher` back into this same Worker. Used as the
+   * spawned isolate's `globalOutbound` for snippets that need to call
+   * back into the parent worker:
+   *
+   *   - The AI snippet (cf-dynamic-workers slide 08): spawned isolate
+   *     fetches `/__internal/ai-proxy` via SELF, parent runs
+   *     `env.AI.run(...)`. Worker Loader can't serialise the `AI`
+   *     binding cross-isolate via `env`, so a service binding is the
+   *     cleanest way to expose it.
+   *   - The globe-app snippet: spawned isolate fetches the rendered
+   *     globe-app HTML from the parent's ASSETS via SELF, substitutes
+   *     the isolate id, and returns the personalised page.
+   *
+   * `service: "reaction"` is the Worker's own name (see top-level
+   * `"name"` field). Cloudflare resolves self-bindings at deploy
+   * time — no infinite-loop risk because the spawned isolate's call
+   * goes through the binding's transport, not a direct re-entrancy.
+   */
+  "services": [
+    {
+      "binding": "SELF",
+      "service": "reaction"
+    }
+  ],
+  /**
    * Durable Objects.
    *
    * `DeckAuthorAgent` (issue #131 phase 1) — the in-Studio AI agent.

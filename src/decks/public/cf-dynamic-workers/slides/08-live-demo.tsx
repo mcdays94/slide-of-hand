@@ -159,10 +159,12 @@ function LiveDemoBody() {
 
       try {
         if (isMany) {
-          // TODO(#101 follow-up): wire to real Worker Loader binding when
-          // added to wrangler.jsonc. For now we simulate the response so
-          // the lifecycle viz still demonstrates the concept.
-          const body = await simulateSpawnMany(SPAWN_MANY_COUNT);
+          // Hits the real Worker Loader binding via the platform's
+          // /api/cf-dynamic-workers/spawn-many endpoint (issue #167).
+          // The endpoint runs 10 dynamic isolates in batches of 4
+          // (Worker Loader caps concurrent isolates per parent request
+          // at 4) and returns the aggregate timing + per-isolate ids.
+          const body = await realSpawnMany(SPAWN_MANY_COUNT);
           if (!body.ok) {
             handleFailure(
               body.error ?? "Multi-spawn returned ok:false",
@@ -221,10 +223,14 @@ function LiveDemoBody() {
         }
 
         if (isGlobe) {
-          // TODO(#101 follow-up): wire to real Worker Loader binding +
-          // globe-host endpoint when added to wrangler.jsonc. For now we
-          // simulate the spawn so the lifecycle viz reads correctly; the
-          // result panel renders a placeholder instead of a live iframe.
+          // The worker-side endpoint EXISTS at
+          // `/api/cf-dynamic-workers/spawn/globe` (issue #167), but the
+          // Vite config doesn't yet build the globe-app as a separate
+          // HTML entry — calling it would 404 on the upstream fetch
+          // from the spawned isolate. Keep the simulator until Vite's
+          // multi-entry config lands. The result panel still renders
+          // the placeholder branch (no iframe) so the lifecycle viz
+          // reads correctly. Follow-up tracked under #167.
           const body = await simulateSpawnGlobe();
           if (!body.ok) {
             handleFailure(
@@ -266,12 +272,13 @@ function LiveDemoBody() {
           return;
         }
 
-        // Regular snippets — simulated for static deploy.
-        // TODO(#101 follow-up): wire to real Worker Loader binding when
-        // added to wrangler.jsonc; for now we hard-code the response so
-        // the audience can still see the lifecycle visualisation move.
-        void codeOverride;
-        const body = await simulateSpawnSnippet(active);
+        // Regular snippets — hit the real Worker Loader binding via
+        // the platform's /api/cf-dynamic-workers/spawn endpoint (issue
+        // #167). The endpoint loads the canonical snippet source (or
+        // the speaker's `codeOverride` if the inline editor is open)
+        // into a fresh V8 isolate, invokes its fetch handler, and
+        // returns the parsed JSON body plus timing.
+        const body = await realSpawnSnippet(active, codeOverride);
         if (!body.ok) {
           handleFailure(
             body.error ?? "Spawn returned ok:false",
@@ -623,17 +630,25 @@ function sleep(ms: number): Promise<void> {
 }
 
 /* =====================================================================
- * Simulated spawn responses — Slide of Hand build
+ * Spawn helpers — Slide of Hand build
  *
- * The source deck is backed by a Cloudflare Worker with a Worker Loader
- * binding that genuinely spawns V8 isolates per click. Slide of Hand
- * doesn't ship that binding (yet), so we simulate the responses with a
- * tiny artificial delay. The lifecycle visualisation, counter, recent-
- * ids ribbon, and result panel all still animate exactly as they do in
- * the original deck — only the "is this real" disclaimer differs.
+ * Two paths:
  *
- * TODO(#101 follow-up): once the platform adds a Worker Loader binding,
- * replace these simulators with real `fetch("/api/spawn", …)` calls.
+ *   - `realSpawnSnippet` / `realSpawnMany` hit the real Worker Loader
+ *     binding via the platform's `/api/cf-dynamic-workers/*` endpoints
+ *     (issue #167). When the audience clicks "Run" the actual V8
+ *     isolate spawn happens server-side; the response carries the new
+ *     isolate id + timing + result.
+ *
+ *   - `simulateSpawnGlobe` keeps the lifecycle visualisation moving
+ *     for the globe-app snippet. The platform endpoint
+ *     `/api/cf-dynamic-workers/spawn/globe` IS wired, but the Vite
+ *     config doesn't yet emit a separate `globe-app/index.html` for
+ *     the spawned isolate to fetch — calling the real endpoint would
+ *     fail at the upstream fetch. Follow-up tracked on issue #167.
+ *
+ * Each helper returns the same envelope shape regardless of path, so
+ * the slide's state machine doesn't know (or care) which it called.
  * ===================================================================== */
 
 function isolateId(prefix = "iso"): string {
@@ -641,49 +656,92 @@ function isolateId(prefix = "iso"): string {
   return `${prefix}_${rand}`;
 }
 
-const SIM_RESULTS: Record<SnippetId, () => unknown> = {
-  compute: () => ({
-    kind: "compute",
-    label: "1000th prime number",
-    value: 7919,
-    tested: 9100,
-    computeMs: 14.62,
-  }),
-  fetch: () => ({
-    kind: "fetch",
-    label: "GitHub: cloudflare/workers-sdk",
-    url: "https://github.com/cloudflare/workers-sdk",
-    stars: 3128,
-    openIssues: 412,
-    lastPush: "2026-05-08T12:34:56Z",
-  }),
-  ai: () => ({
-    kind: "ai",
-    label: "Workers AI · llama-3.1-8b-instruct",
-    response:
-      "A Cloudflare Dynamic Worker is a piece of code that can be created and run instantly anywhere on Cloudflare's network. It's like having a tiny program that can be summoned on demand to handle a task, then disappear when it's done.",
-  }),
-  "sandbox-fail": () => ({
-    kind: "sandbox-fail",
-    label: "Untrusted code · sandbox enforcement",
-    error: "ReferenceError: process is not defined",
-    note: "The isolate cannot reach Node-only globals; the sandbox held.",
-  }),
-  "spawn-many": () => ({ kind: "spawn-many" }),
-  "globe-app": () => ({ kind: "globe-app" }),
-};
-
-async function simulateSpawnSnippet(active: SnippetId): Promise<SpawnResponse> {
-  await sleep(380 + Math.random() * 220);
-  return {
-    id: isolateId(),
-    elapsedMs: Math.round(120 + Math.random() * 180),
-    memoryKb: Math.round(620 + Math.random() * 240),
-    ok: true,
-    result: SIM_RESULTS[active](),
-  };
+/**
+ * POST to `/api/cf-dynamic-workers/spawn` and parse the response. The
+ * platform endpoint validates the snippet id against its canonical
+ * `SNIPPETS` table and returns `{ ok: false, error }` for unknowns —
+ * so we don't need to re-validate here. Network errors translate to
+ * an `ok: false` envelope so the slide's error path renders cleanly.
+ */
+async function realSpawnSnippet(
+  snippet: SnippetId,
+  codeOverride?: string,
+): Promise<SpawnResponse> {
+  try {
+    const response = await fetch("/api/cf-dynamic-workers/spawn", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        snippet,
+        ...(codeOverride && codeOverride.trim().length > 0
+          ? { code: codeOverride }
+          : {}),
+      }),
+    });
+    // Spawn endpoint always returns 200 with a structured envelope
+    // (success / failure are both inside the body) — but defensively
+    // handle a non-200 (e.g. edge layer rejected the request) so we
+    // never leak a raw Response into the UI.
+    if (!response.ok) {
+      return {
+        id: isolateId(),
+        elapsedMs: 0,
+        memoryKb: 0,
+        ok: false,
+        error: `spawn endpoint returned status ${response.status}`,
+      };
+    }
+    return (await response.json()) as SpawnResponse;
+  } catch (cause) {
+    return {
+      id: isolateId(),
+      elapsedMs: 0,
+      memoryKb: 0,
+      ok: false,
+      error: cause instanceof Error ? cause.message : String(cause),
+    };
+  }
 }
 
+/**
+ * POST to `/api/cf-dynamic-workers/spawn-many` and parse the response.
+ * The platform endpoint runs the requested count in batches of 4
+ * (Worker Loader's per-request concurrent isolate cap) and returns
+ * the aggregate timing + per-isolate ids.
+ */
+async function realSpawnMany(count: number): Promise<ManySpawnResponse> {
+  try {
+    const response = await fetch("/api/cf-dynamic-workers/spawn-many", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ count }),
+    });
+    if (!response.ok) {
+      return {
+        count,
+        totalElapsedMs: 0,
+        ok: false,
+        isolates: [],
+        error: `spawn-many endpoint returned status ${response.status}`,
+      };
+    }
+    return (await response.json()) as ManySpawnResponse;
+  } catch (cause) {
+    return {
+      count,
+      totalElapsedMs: 0,
+      ok: false,
+      isolates: [],
+      error: cause instanceof Error ? cause.message : String(cause),
+    };
+  }
+}
+
+/**
+ * Globe-spawn — kept as a simulator until Vite emits
+ * `dist/globe-app/index.html` as a separate entry. See the comment
+ * inside `onSpawn` (globe branch) for the rationale.
+ */
 async function simulateSpawnGlobe(): Promise<GlobeSpawnResponse> {
   await sleep(420 + Math.random() * 220);
   return {
@@ -694,16 +752,4 @@ async function simulateSpawnGlobe(): Promise<GlobeSpawnResponse> {
     // placeholder branch instead of a broken iframe.
     sessionUrl: undefined,
   };
-}
-
-async function simulateSpawnMany(count: number): Promise<ManySpawnResponse> {
-  await sleep(460 + Math.random() * 240);
-  const isolates: ManyIsolate[] = Array.from({ length: count }).map(() => ({
-    id: isolateId(),
-    elapsedMs: Math.round(80 + Math.random() * 220),
-    ok: true,
-    result: { kind: "compute", value: 7919 },
-  }));
-  const totalElapsedMs = Math.max(...isolates.map((i) => i.elapsedMs)) + 40;
-  return { count, totalElapsedMs, ok: true, isolates };
 }
