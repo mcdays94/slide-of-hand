@@ -110,6 +110,23 @@ export interface AgentToolsEnv {
    * this binding + the AI Gateway.
    */
   AI: Ai;
+  /**
+   * Cloudflare account ID (from `vars.CF_ACCOUNT_ID` in
+   * `wrangler.jsonc`). Used by `runCreateDeckDraft` /
+   * `runIterateOnDeckDraft` / `runPublishDraft` to deterministically
+   * construct the Artifacts remote URL — see
+   * `buildArtifactsRemoteUrl` for the SDK quirk this works around.
+   *
+   * Typed as optional to match `AnalyticsEnv`; runtime check in the
+   * orchestrator throws if missing.
+   */
+  CF_ACCOUNT_ID?: string;
+  /**
+   * AI Gateway authentication token (optional Worker secret
+   * `CF_AI_GATEWAY_TOKEN`). Forwarded to `streamDeckFiles` when
+   * present so the Workers AI call carries the gateway auth header.
+   */
+  CF_AI_GATEWAY_TOKEN?: string;
 }
 
 const KV_DECK = (slug: string) => `deck:${slug}`;

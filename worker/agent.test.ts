@@ -99,6 +99,12 @@ function makeEnv(): AgentEnv {
     // iterateOnDeckDraft. Routing tests don't hit those flows; a
     // bare stub satisfies the type.
     ARTIFACTS: {} as unknown as Artifacts,
+    // #182 follow-up: CF_ACCOUNT_ID is consumed by the deck-creation
+    // orchestrator to construct the Artifacts remote URL
+    // deterministically. Routing tests don't reach that code path
+    // but the type requires the field (it's marked optional but
+    // including it is more honest about the real env shape).
+    CF_ACCOUNT_ID: "test-account-id-32chars-of-hex00",
   };
 }
 

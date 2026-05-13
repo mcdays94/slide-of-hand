@@ -57,6 +57,7 @@
 
 import { getSandbox, type Sandbox } from "@cloudflare/sandbox";
 import {
+  buildArtifactsRemoteUrl,
   buildAuthenticatedRemoteUrl,
   draftRepoName,
   ensureDraftRepo,
@@ -89,6 +90,20 @@ export interface SandboxDeckCreationEnv {
   Sandbox: DurableObjectNamespace<Sandbox>;
   ARTIFACTS: Artifacts;
   AI: Ai;
+  /**
+   * Cloudflare account ID. Set via `vars.CF_ACCOUNT_ID` in
+   * `wrangler.jsonc`. Used to construct the Artifacts remote URL
+   * deterministically (see `buildArtifactsRemoteUrl` for why we
+   * can't trust `repo.remote` from the SDK). The same value also
+   * powers the analytics SQL endpoint.
+   *
+   * Typed as optional to match `AnalyticsEnv.CF_ACCOUNT_ID`'s
+   * existing convention — the var is always set in production
+   * (wrangler.jsonc enforces it) but the optional type lets the
+   * Worker's top-level `Env` cleanly extend both env interfaces.
+   * Runtime check in the orchestrator throws if it's missing.
+   */
+  CF_ACCOUNT_ID?: string;
   /**
    * AI Gateway authentication token (Worker secret
    * `CF_AI_GATEWAY_TOKEN`). Threaded through to `streamDeckFiles`
@@ -317,11 +332,19 @@ export async function* runCreateDeckDraft(
       input.userEmail,
       input.slug,
     );
+    // SDK quirk workaround: do NOT read `.remote` off the SDK's
+    // result — `Artifacts.get(name)`'s returned handle has
+    // unreliable getters (see `buildArtifactsRemoteUrl`'s docstring
+    // for the diag-confirmed evidence). The handle's METHODS
+    // (`createToken`, etc.) work, so we pluck the token from the
+    // appropriate branch but construct the remote URL ourselves.
+    remoteUrl = buildArtifactsRemoteUrl({
+      accountId: env.CF_ACCOUNT_ID,
+      repoName: draftRepoName(input.userEmail, input.slug),
+    });
     if (draftResult.kind === "created") {
-      remoteUrl = draftResult.result.remote;
       token = draftResult.result.token;
     } else {
-      remoteUrl = draftResult.repo.remote;
       token = draftResult.freshWriteToken.plaintext;
     }
   } catch (err) {
@@ -558,7 +581,12 @@ export async function* runIterateOnDeckDraft(
   try {
     const repo = await getDraftRepo(env.ARTIFACTS, input.userEmail, input.slug);
     const fresh = await mintWriteToken(repo);
-    remoteUrl = repo.remote;
+    // SDK quirk workaround: ignore `repo.remote` — getters on the
+    // handle are unreliable. See `buildArtifactsRemoteUrl`.
+    remoteUrl = buildArtifactsRemoteUrl({
+      accountId: env.CF_ACCOUNT_ID,
+      repoName: draftRepoName(input.userEmail, input.slug),
+    });
     token = fresh.plaintext;
   } catch (err) {
     const errorMsg = `Draft not found for slug "${input.slug}". Use createDeckDraft first. (${err instanceof Error ? err.message : String(err)})`;
@@ -787,6 +815,13 @@ export interface PublishDraftEnv {
   Sandbox: DurableObjectNamespace<Sandbox>;
   ARTIFACTS: Artifacts;
   GITHUB_TOKENS: KVNamespace;
+  /**
+   * Cloudflare account ID — used for the Artifacts remote-URL
+   * construction (see `buildArtifactsRemoteUrl`). Same env var as
+   * `SandboxDeckCreationEnv.CF_ACCOUNT_ID`. Optional in the type
+   * for parity with `AnalyticsEnv`; runtime-checked below.
+   */
+  CF_ACCOUNT_ID?: string;
 }
 
 export interface PublishDraftInput {
@@ -909,8 +944,15 @@ export async function runPublishDraft(
   // codebase. The token never leaks out of the Sandbox container,
   // which is torn down after the test gate finishes.
   const readToken = await mintWriteToken(repo);
+  // SDK quirk workaround: see `buildArtifactsRemoteUrl`. Don't read
+  // `repo.remote` — its getter is unreliable on `Artifacts.get()`
+  // handles.
+  const draftRemoteUrl = buildArtifactsRemoteUrl({
+    accountId: env.CF_ACCOUNT_ID,
+    repoName: draftRepoName(email, input.slug),
+  });
   const draftAuthUrl = buildAuthenticatedRemoteUrl(
-    repo.remote,
+    draftRemoteUrl,
     stripExpiresSuffix(readToken.plaintext),
   );
   const draftClone = await cloneArtifactsRepoIntoSandbox(sandbox, {

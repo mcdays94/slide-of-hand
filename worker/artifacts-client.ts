@@ -83,6 +83,82 @@ export function draftRepoName(userEmail: string, slug: string): string {
 export const DECK_STARTER_REPO = "deck-starter";
 
 /**
+ * Artifacts namespace for slide-of-hand draft repos. Mirrored from
+ * `wrangler.jsonc`'s `artifacts[].namespace` field. Coupled by
+ * convention — if you ever rename the namespace, update both places
+ * and run `npx wrangler types`.
+ */
+export const ARTIFACTS_NAMESPACE = "slide-of-hand-drafts";
+
+/**
+ * Construct the canonical HTTPS remote URL for an Artifacts repo
+ * deterministically, without relying on the SDK's `repo.remote`
+ * field.
+ *
+ * ## Why we don't trust `repo.remote`
+ *
+ * `Artifacts.get(name)` returns a repo handle whose getters (`name`,
+ * `id`, `remote`, `defaultBranch`) are not reliably accessible at
+ * runtime — they return `undefined` despite the handle's METHODS
+ * (`fork`, `createToken`, etc.) working fine. This was observed
+ * empirically via the `/api/admin/_diag/artifacts` endpoint added in
+ * PR #195: `get(<unique>)` returned `result: {}` even after a
+ * successful `create()` of the same name.
+ *
+ * The earlier docstring on `createDraftRepo`'s recovery path
+ * (artifacts-client.ts L223-227 pre-#199, and `deck-starter-setup.ts`
+ * L76-89) speculated that the quirk was only a `JSON.stringify`
+ * issue and direct property access would still work. Today's e2e
+ * Playwright run proved that wrong: a model-driven retry of
+ * `createDeckDraft` on an existing draft slot returned a handle
+ * whose `existing.remote` was `undefined`, then
+ * `buildAuthenticatedRemoteUrl(undefined, token)` threw
+ * `TypeError: Invalid URL string`.
+ *
+ * ## The fix
+ *
+ * Skip the SDK's `remote` field entirely. The URL pattern is
+ * documented + stable:
+ *
+ *   `https://{accountId}.artifacts.cloudflare.net/git/{namespace}/{repoName}.git`
+ *
+ * All three components are knowable without calling the SDK:
+ *   - `accountId`: `env.CF_ACCOUNT_ID` (set in wrangler.jsonc vars)
+ *   - `namespace`: `ARTIFACTS_NAMESPACE` (constant, mirrored from
+ *     wrangler.jsonc)
+ *   - `repoName`: `draftRepoName(userEmail, slug)` (computed)
+ *
+ * This makes the orchestrators robust to the SDK quirk AND removes
+ * an unnecessary dependency on the SDK's response shape. If/when the
+ * SDK fixes the getters, this helper still returns the correct URL.
+ *
+ * Cross-check at first use: if you ever see a different remote-URL
+ * format come back from `Artifacts.create()` (which IS a POJO with
+ * a reliable `remote`), update this helper. Today's diag confirms
+ * `create()` returns exactly this pattern.
+ */
+export function buildArtifactsRemoteUrl(opts: {
+  /**
+   * `string | undefined` accepted so call sites can pass
+   * `env.CF_ACCOUNT_ID` directly — the env type is optional (parity
+   * with `AnalyticsEnv`) but the value is always set in production.
+   * Throws if missing/empty so misconfigured deploys fail loudly.
+   */
+  accountId: string | undefined;
+  repoName: string;
+}): string {
+  if (!opts.accountId || !opts.accountId.trim()) {
+    throw new Error(
+      "buildArtifactsRemoteUrl: missing CF_ACCOUNT_ID — check wrangler.jsonc vars",
+    );
+  }
+  if (!opts.repoName.trim()) {
+    throw new Error("buildArtifactsRemoteUrl: missing repoName");
+  }
+  return `https://${opts.accountId}.artifacts.cloudflare.net/git/${ARTIFACTS_NAMESPACE}/${opts.repoName}.git`;
+}
+
+/**
  * Detect whether an error from the Artifacts API indicates a
  * duplicate-name collision (the repo already exists). Diagnosed
  * during the post-#179 verification — the Artifacts beta surfaces
