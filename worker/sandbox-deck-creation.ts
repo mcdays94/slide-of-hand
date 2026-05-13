@@ -15,10 +15,17 @@
  * ## Three orchestrators
  *
  *   1. `runCreateDeckDraft` — first turn for a new (or resumed) draft.
- *      Forks the deck-starter baseline (idempotent), spawns a Sandbox,
- *      clones the fork, asks Workers AI to write JSX files, applies
- *      them, commits + pushes back to the Artifacts repo, returns the
- *      resulting commit SHA + a draft ID.
+ *      Creates a new (empty) Artifacts repo for the draft (idempotent),
+ *      spawns a Sandbox, clones the repo, asks Workers AI to write JSX
+ *      files, applies them, commits + pushes back to the Artifacts
+ *      repo, returns the resulting commit SHA + a draft ID.
+ *
+ *      Note: this used to literally fork the `deck-starter` baseline
+ *      via `starter.fork()`, but switched to `Artifacts.create()`
+ *      in the #182 workaround. See `artifacts-client.ts`
+ *      `createDraftRepo` for the rationale. The phase strip's "fork"
+ *      label is preserved as a semantic name for the "draft repo
+ *      creation" step.
  *
  *   2. `runIterateOnDeckDraft` — subsequent turns on an existing
  *      draft. Resolves the existing fork, clones HEAD, runs AI gen
@@ -52,7 +59,7 @@ import { getSandbox, type Sandbox } from "@cloudflare/sandbox";
 import {
   buildAuthenticatedRemoteUrl,
   draftRepoName,
-  forkDeckStarterIdempotent,
+  ensureDraftRepo,
   getDraftRepo,
   mintWriteToken,
   stripExpiresSuffix,
@@ -253,9 +260,9 @@ function aiGenSnapshotFromPartial(
 }
 
 /**
- * First-turn deck creation. Forks `deck-starter` (idempotent), clones
- * the fork into a fresh Sandbox, asks Workers AI for the deck files
- * (streaming), applies + commits + pushes them.
+ * First-turn deck creation. Creates the draft Artifacts repo
+ * (idempotent), clones it into a fresh Sandbox, asks Workers AI for
+ * the deck files (streaming), applies + commits + pushes them.
  *
  * **Async generator**: yields a `DeckCreationSnapshot` at every phase
  * boundary AND for each partial yielded by `streamDeckFiles` during
@@ -290,28 +297,35 @@ export async function* runCreateDeckDraft(
     return { ok: false, phase: "validation", error: "Missing prompt." };
   }
 
-  // Phase 1: fork. Yield the boundary BEFORE the call so the canvas
-  // can show "fork in progress" while the (currently upstream-broken,
-  // see #182) Artifacts API churns.
+  // Phase 1: "fork". Yield the boundary BEFORE the call so the
+  // canvas can show "draft creation in progress" while Artifacts
+  // provisions the empty repo.
+  //
+  // Note: the phase name "fork" is preserved for backwards
+  // compatibility with the existing canvas phase strip + chip UI.
+  // The implementation switched from `starter.fork()` to
+  // `Artifacts.create()` in #182's workaround (see
+  // `artifacts-client.ts` `createDraftRepo` for the rationale).
+  // Semantically the phase still means "draft repo creation".
   yield { phase: "fork", files: [] };
 
   let remoteUrl: string;
   let token: string;
   try {
-    const forkResult = await forkDeckStarterIdempotent(
+    const draftResult = await ensureDraftRepo(
       env.ARTIFACTS,
       input.userEmail,
       input.slug,
     );
-    if (forkResult.kind === "created") {
-      remoteUrl = forkResult.result.remote;
-      token = forkResult.result.token;
+    if (draftResult.kind === "created") {
+      remoteUrl = draftResult.result.remote;
+      token = draftResult.result.token;
     } else {
-      remoteUrl = forkResult.repo.remote;
-      token = forkResult.freshWriteToken.plaintext;
+      remoteUrl = draftResult.repo.remote;
+      token = draftResult.freshWriteToken.plaintext;
     }
   } catch (err) {
-    const errorMsg = `Failed to fork deck-starter: ${err instanceof Error ? err.message : String(err)}`;
+    const errorMsg = `Failed to create draft repo: ${err instanceof Error ? err.message : String(err)}`;
     yield { phase: "error", files: [], error: errorMsg, failedPhase: "fork" };
     return { ok: false, phase: "fork", error: errorMsg };
   }

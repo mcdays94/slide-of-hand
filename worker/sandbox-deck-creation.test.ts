@@ -15,14 +15,14 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // ── Mocks ────────────────────────────────────────────────────────────
 
 const {
-  forkDeckStarterIdempotentMock,
+  ensureDraftRepoMock,
   getDraftRepoMock,
   mintWriteTokenMock,
   buildAuthenticatedRemoteUrlMock,
   draftRepoNameMock,
   stripExpiresSuffixMock,
 } = vi.hoisted(() => ({
-  forkDeckStarterIdempotentMock: vi.fn(),
+  ensureDraftRepoMock: vi.fn(),
   getDraftRepoMock: vi.fn(),
   mintWriteTokenMock: vi.fn(),
   buildAuthenticatedRemoteUrlMock: vi.fn(
@@ -35,7 +35,7 @@ const {
   stripExpiresSuffixMock: vi.fn((t: string) => t.replace(/\?expires=.*$/, "")),
 }));
 vi.mock("./artifacts-client", () => ({
-  forkDeckStarterIdempotent: forkDeckStarterIdempotentMock,
+  ensureDraftRepo: ensureDraftRepoMock,
   getDraftRepo: getDraftRepoMock,
   mintWriteToken: mintWriteTokenMock,
   buildAuthenticatedRemoteUrl: buildAuthenticatedRemoteUrlMock,
@@ -174,7 +174,7 @@ async function runGen<TYield, TReturn>(
 }
 
 function setHappyPathMocks() {
-  forkDeckStarterIdempotentMock.mockResolvedValue({
+  ensureDraftRepoMock.mockResolvedValue({
     kind: "created",
     result: {
       remote:
@@ -220,7 +220,7 @@ function setHappyPathMocks() {
 }
 
 beforeEach(() => {
-  forkDeckStarterIdempotentMock.mockReset();
+  ensureDraftRepoMock.mockReset();
   getDraftRepoMock.mockReset();
   mintWriteTokenMock.mockReset();
   cloneArtifactsRepoIntoSandboxMock.mockReset();
@@ -299,7 +299,7 @@ describe("runCreateDeckDraft — happy path", () => {
     }
 
     // Verify the chain was called in order with the right args.
-    expect(forkDeckStarterIdempotentMock).toHaveBeenCalledWith(
+    expect(ensureDraftRepoMock).toHaveBeenCalledWith(
       expect.anything(),
       "alice@example.com",
       "my",
@@ -311,7 +311,7 @@ describe("runCreateDeckDraft — happy path", () => {
   });
 
   it("uses the existing fork token when fork is idempotent (kind=existed)", async () => {
-    forkDeckStarterIdempotentMock.mockResolvedValueOnce({
+    ensureDraftRepoMock.mockResolvedValueOnce({
       kind: "existed",
       repo: {
         remote:
@@ -484,7 +484,7 @@ describe("runCreateDeckDraft — yields", () => {
   });
 
   it("yields an error snapshot on fork failure (before returning the DeckDraftError)", async () => {
-    forkDeckStarterIdempotentMock.mockRejectedValueOnce(
+    ensureDraftRepoMock.mockRejectedValueOnce(
       new Error("artifacts down"),
     );
 
@@ -588,7 +588,7 @@ describe("runCreateDeckDraft — failure modes", () => {
   beforeEach(() => setHappyPathMocks());
 
   it("returns phase:fork when fork throws", async () => {
-    forkDeckStarterIdempotentMock.mockRejectedValueOnce(
+    ensureDraftRepoMock.mockRejectedValueOnce(
       new Error("artifacts down"),
     );
     const { result } = await runGen(
