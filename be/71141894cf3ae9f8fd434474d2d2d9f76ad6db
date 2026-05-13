@@ -1,0 +1,57 @@
+worker/cf-code-mode/lib/run-mcp.ts
+  0554d787149f635b 1-413
+worker/cf-code-mode/lib/token-counter.ts
+  0554d787149f635b 1-91
+src/decks/public/cf-code-mode/slides/live-demo/LiveDemo.tsx
+  0554d787149f635b 631-639,644,657-662,740,755
+worker/cf-code-mode/run-events.ts
+  0554d787149f635b 1-75
+worker/cf-code-mode/lib/prompts.ts
+  0554d787149f635b 1-52
+src/decks/public/cf-code-mode/index.tsx
+  0554d787149f635b 10-13
+worker/cf-code-mode/lib/run-code-mode.ts
+  0554d787149f635b 1-214
+worker/cf-code-mode/types.ts
+  0554d787149f635b 1-52
+worker/cf-code-mode/lib/dynamic-code-runner.ts
+  0554d787149f635b 1-331
+worker/cf-code-mode/lib/ai-call.ts
+  0554d787149f635b 1-173
+worker/cf-code-mode/index.test.ts
+  0554d787149f635b 1-321
+worker/cf-code-mode/index.ts
+  0554d787149f635b 1-207
+worker/cf-code-mode/lib/sse.ts
+  0554d787149f635b 1-44
+worker/cf-code-mode/lib/summarize-tool-result.ts
+  0554d787149f635b 1-172
+worker/cf-code-mode/lib/code-mode-plans.ts
+  0554d787149f635b 1-173
+worker/cf-code-mode/lib/cf-api.ts
+  0554d787149f635b 1-269
+worker/cf-code-mode/lib/models.ts
+  0554d787149f635b 1-98
+worker/index.ts
+  0554d787149f635b 53-63,102-103,108-112,186-192
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "be71141894cf3ae9f8fd434474d2d2d9f76ad6db",
+  "prompts": {
+    "0554d787149f635b": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_1dfb03942ffewo8Z7MIGmTEfOM",
+        "model": "anthropic/claude-opus-4-7"
+      },
+      "human_author": "mcdays94",
+      "messages": [],
+      "total_additions": 2732,
+      "total_deletions": 14,
+      "accepted_lines": 2732,
+      "overriden_lines": 0
+    }
+  }
+}
