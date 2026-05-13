@@ -1350,3 +1350,167 @@ describe("<StudioAgentPanel> — proposeSourceEdit tool-call rendering", () => {
     expect(pill.textContent).toMatch(/Settings/);
   });
 });
+
+// ─── publishDraft summary card (issue #168 Wave 1 follow-up) ──────────
+//
+// Mirror of the proposeSourceEdit rendering tests. publishDraft has the
+// same overall shape (success → PR URL + branch + "View →"; failure →
+// phase-aware error label) but additional failure phases unique to the
+// publish flow (artifacts_resolve, clone_draft, clone_github,
+// copy_files, github_push).
+
+describe("<StudioAgentPanel> — publishDraft tool-call rendering", () => {
+  it("renders the success card with PR number, branch, and a 'View →' link", () => {
+    setupHooks({
+      messages: [
+        {
+          id: "a1",
+          role: "assistant",
+          parts: [
+            {
+              type: "tool-publishDraft",
+              toolCallId: "call-1",
+              state: "output-available",
+              input: { slug: "my-crdt-deck" },
+              output: {
+                ok: true,
+                prNumber: 42,
+                prHtmlUrl: "https://github.com/mcdays94/slide-of-hand/pull/42",
+                branch: "deck/my-crdt-deck-1700000000000",
+              },
+            },
+          ],
+        },
+      ],
+    });
+    render(<StudioAgentPanel deckSlug="hello" onClose={vi.fn()} />);
+    const pill = screen.getByTestId("studio-agent-tool-part");
+    expect(pill.dataset.tool).toBe("publishDraft");
+    expect(pill.textContent).toMatch(/opened publish pr/i);
+    expect(pill.textContent).toMatch(/#42/);
+    expect(pill.textContent).toMatch(/deck\/my-crdt-deck-/);
+    const link = screen.getByTestId("studio-agent-tool-link");
+    expect(link.getAttribute("href")).toBe(
+      "https://github.com/mcdays94/slide-of-hand/pull/42",
+    );
+    expect(link.getAttribute("target")).toBe("_blank");
+    expect(link.getAttribute("rel")).toMatch(/noopener/);
+    expect(link.hasAttribute("data-interactive")).toBe(true);
+  });
+
+  it("renders the test-gate failure card with the failed gate phase surfaced", () => {
+    setupHooks({
+      messages: [
+        {
+          id: "a1",
+          role: "assistant",
+          parts: [
+            {
+              type: "tool-publishDraft",
+              toolCallId: "call-1",
+              state: "output-available",
+              input: { slug: "my-crdt-deck" },
+              output: {
+                ok: false,
+                phase: "test_gate",
+                failedTestGatePhase: "typecheck",
+                error: "Test gate failed at the `typecheck` phase.",
+              },
+            },
+          ],
+        },
+      ],
+    });
+    render(<StudioAgentPanel deckSlug="hello" onClose={vi.fn()} />);
+    const pill = screen.getByTestId("studio-agent-tool-part");
+    expect(pill.textContent).toMatch(/test gate failed/i);
+    expect(pill.textContent).toMatch(/typecheck/);
+    // No "View →" link on failure cards.
+    expect(screen.queryByTestId("studio-agent-tool-link")).toBeNull();
+  });
+
+  it("renders the draft-not-found branch when artifacts_resolve fails", () => {
+    // The most common publish failure during early adoption: the user
+    // asks publish without having created a draft (no Artifacts repo
+    // by that slug). Surface that explicitly.
+    setupHooks({
+      messages: [
+        {
+          id: "a1",
+          role: "assistant",
+          parts: [
+            {
+              type: "tool-publishDraft",
+              toolCallId: "call-1",
+              state: "output-available",
+              input: { slug: "never-created" },
+              output: {
+                ok: false,
+                phase: "artifacts_resolve",
+                error: "ArtifactsError: not_found",
+              },
+            },
+          ],
+        },
+      ],
+    });
+    render(<StudioAgentPanel deckSlug="hello" onClose={vi.fn()} />);
+    const pill = screen.getByTestId("studio-agent-tool-part");
+    expect(pill.textContent).toMatch(/draft not found/i);
+  });
+
+  it("renders the github-not-connected branch with a friendly label", () => {
+    setupHooks({
+      messages: [
+        {
+          id: "a1",
+          role: "assistant",
+          parts: [
+            {
+              type: "tool-publishDraft",
+              toolCallId: "call-1",
+              state: "output-available",
+              input: { slug: "my-crdt-deck" },
+              output: {
+                ok: false,
+                phase: "github_token",
+                error: "GitHub not connected. Open Settings → GitHub → Connect.",
+              },
+            },
+          ],
+        },
+      ],
+    });
+    render(<StudioAgentPanel deckSlug="hello" onClose={vi.fn()} />);
+    const pill = screen.getByTestId("studio-agent-tool-part");
+    expect(pill.textContent).toMatch(/github not connected/i);
+  });
+
+  it("renders the no-effective-changes branch (rare: draft matches main exactly)", () => {
+    setupHooks({
+      messages: [
+        {
+          id: "a1",
+          role: "assistant",
+          parts: [
+            {
+              type: "tool-publishDraft",
+              toolCallId: "call-1",
+              state: "output-available",
+              input: { slug: "my-crdt-deck" },
+              output: {
+                ok: false,
+                phase: "github_push",
+                noEffectiveChanges: true,
+                error: "No changes to commit.",
+              },
+            },
+          ],
+        },
+      ],
+    });
+    render(<StudioAgentPanel deckSlug="hello" onClose={vi.fn()} />);
+    const pill = screen.getByTestId("studio-agent-tool-part");
+    expect(pill.textContent).toMatch(/no effective changes/i);
+  });
+});

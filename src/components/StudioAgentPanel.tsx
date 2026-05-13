@@ -811,6 +811,7 @@ const FRIENDLY_TOOL_LABEL: Record<string, string> = {
   proposeSourceEdit: "Building a pull request",
   createDeckDraft: "Creating a new deck",
   iterateOnDeckDraft: "Updating the deck",
+  publishDraft: "Publishing to GitHub",
 };
 
 export function friendlyToolLabel(toolName: string): string {
@@ -1244,6 +1245,58 @@ function summariseToolOutput(
           : o.failedPath
             ? `${o.error ?? ""}${o.error ? " · " : ""}Path: ${o.failedPath}`
             : o.error;
+      return { icon: "⚠️", label: phaseLabel, detail };
+    }
+  }
+  if (toolName === "publishDraft" && output && typeof output === "object") {
+    // Issue #168 — publishDraft tool. Same shape language as
+    // proposeSourceEdit: success carries the PR URL + number, failure
+    // carries a `phase` discriminant that tells the user (and the
+    // model) which step of the 9-phase pipeline tripped.
+    const o = output as {
+      ok?: boolean;
+      prNumber?: number;
+      prHtmlUrl?: string;
+      branch?: string;
+      phase?: string;
+      error?: string;
+      noEffectiveChanges?: boolean;
+      failedTestGatePhase?: string;
+    };
+    if (
+      o.ok === true &&
+      typeof o.prNumber === "number" &&
+      typeof o.prHtmlUrl === "string"
+    ) {
+      return {
+        icon: "🚀",
+        label: "Opened publish PR",
+        detail: `#${o.prNumber}${o.branch ? ` · ${o.branch}` : ""}`,
+        href: o.prHtmlUrl,
+      };
+    }
+    if (o.ok === false) {
+      // Phase-aware error labels so the user can see whether this is
+      // a setup issue (GitHub not connected, draft missing) or a
+      // recoverable code issue (test gate red — iterate on the draft
+      // and republish).
+      const reasonByPhase: Record<string, string> = {
+        auth: "Auth missing",
+        github_token: "GitHub not connected",
+        artifacts_resolve: "Draft not found",
+        clone_draft: "Draft clone failed",
+        clone_github: "GitHub clone failed",
+        copy_files: "Copy failed",
+        test_gate: "Test gate failed",
+        github_push: o.noEffectiveChanges
+          ? "No effective changes"
+          : "Push failed",
+        open_pr: "PR open failed",
+      };
+      const phaseLabel = reasonByPhase[o.phase ?? ""] ?? "Publish failed";
+      const detail = o.failedTestGatePhase
+        ? `${o.error ?? ""}${o.error ? " · " : ""}Failed phase: ${o.failedTestGatePhase}`
+        : o.error;
       return { icon: "⚠️", label: phaseLabel, detail };
     }
   }
