@@ -19,6 +19,7 @@ const {
   getDraftRepoMock,
   mintWriteTokenMock,
   buildAuthenticatedRemoteUrlMock,
+  buildArtifactsRemoteUrlMock,
   draftRepoNameMock,
   stripExpiresSuffixMock,
 } = vi.hoisted(() => ({
@@ -27,6 +28,15 @@ const {
   mintWriteTokenMock: vi.fn(),
   buildAuthenticatedRemoteUrlMock: vi.fn(
     (remote: string, token: string) => `https://x:${token}@${remote}`,
+  ),
+  // Mirror the real helper's URL shape so the constructed URL the
+  // orchestrator passes to clone+commit reflects what production
+  // would build. The real helper hardcodes
+  // `artifacts.cloudflare.net/git/slide-of-hand-drafts/...` but the
+  // test only cares that the URL is non-empty and stable.
+  buildArtifactsRemoteUrlMock: vi.fn(
+    (opts: { accountId: string; repoName: string }) =>
+      `https://${opts.accountId}.artifacts.cloudflare.net/git/slide-of-hand-drafts/${opts.repoName}.git`,
   ),
   draftRepoNameMock: vi.fn(
     (email: string, slug: string) =>
@@ -39,6 +49,7 @@ vi.mock("./artifacts-client", () => ({
   getDraftRepo: getDraftRepoMock,
   mintWriteToken: mintWriteTokenMock,
   buildAuthenticatedRemoteUrl: buildAuthenticatedRemoteUrlMock,
+  buildArtifactsRemoteUrl: buildArtifactsRemoteUrlMock,
   draftRepoName: draftRepoNameMock,
   stripExpiresSuffix: stripExpiresSuffixMock,
 }));
@@ -116,11 +127,17 @@ import type { AiDeckGenResult, DeckGenPartial } from "./ai-deck-gen";
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
+// Stable test value for the Cloudflare account ID. Used to verify
+// the constructed Artifacts remote URL (see `buildArtifactsRemoteUrl`)
+// is plumbed through correctly.
+const TEST_ACCOUNT_ID = "test-account-id-32chars-of-hex00";
+
 function makeEnv(): SandboxDeckCreationEnv {
   return {
     Sandbox: {} as unknown as SandboxDeckCreationEnv["Sandbox"],
     ARTIFACTS: {} as unknown as Artifacts,
     AI: {} as unknown as Ai,
+    CF_ACCOUNT_ID: TEST_ACCOUNT_ID,
   };
 }
 
@@ -133,6 +150,7 @@ function makePublishEnv(): PublishDraftEnv {
       get: vi.fn(),
     } as unknown as Artifacts,
     GITHUB_TOKENS: {} as KVNamespace,
+    CF_ACCOUNT_ID: TEST_ACCOUNT_ID,
   };
 }
 
