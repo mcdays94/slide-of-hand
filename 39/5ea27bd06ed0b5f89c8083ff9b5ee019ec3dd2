@@ -1,0 +1,29 @@
+src/routes/admin/decks.new.tsx
+  0554d787149f635b 51,195-209
+src/routes/admin/decks.new.test.tsx
+  0554d787149f635b 270-390
+src/components/deck-creation-canvas/extractLatestCall.test.ts
+  0554d787149f635b 21,244-335
+src/components/deck-creation-canvas/extractLatestCall.ts
+  0554d787149f635b 53-69,71-72,144-188
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "395ea27bd06ed0b5f89c8083ff9b5ee019ec3dd2",
+  "prompts": {
+    "0554d787149f635b": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_1dfb03942ffewo8Z7MIGmTEfOM",
+        "model": "anthropic/claude-opus-4-7"
+      },
+      "human_author": "mcdays94",
+      "messages": [],
+      "total_additions": 296,
+      "total_deletions": 5,
+      "accepted_lines": 294,
+      "overriden_lines": 0
+    }
+  }
+}
