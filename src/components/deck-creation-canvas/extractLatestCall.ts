@@ -50,9 +50,26 @@ export interface DeckCreationToolPart {
   errorText?: string;
 }
 
-/** Minimum shape of a message we walk. */
+/**
+ * Minimal shape of an AI SDK text part — what a user's chat message
+ * carries when they type something. Captured here so the retry-button
+ * helper can find the most recent user prompt without coupling to
+ * the full SDK type. (Issue #178 retry-button polish.)
+ */
+export interface DeckCreationTextPart {
+  type: "text";
+  text: string;
+}
+
+/**
+ * Minimum shape of a message we walk. `role` is optional so existing
+ * canvas tests (which only care about tool-parts and don't bother
+ * setting role) keep type-checking. The route's retry helper relies
+ * on role to discriminate user prompts from assistant tool-calls.
+ */
 export interface DeckCreationMessage {
-  parts: Array<DeckCreationToolPart | { type: string }>;
+  role?: "user" | "assistant" | "system";
+  parts: Array<DeckCreationToolPart | DeckCreationTextPart | { type: string }>;
 }
 
 export type DeckCreationToolName = "createDeckDraft" | "iterateOnDeckDraft";
@@ -124,3 +141,48 @@ function deckCreationToolName(
 
 // `isDeckCreationSnapshot` / `isDeckDraftToolResult` re-exported
 // from `@/lib/deck-creation-snapshot` at the top of this file.
+
+/**
+ * Walk `messages` newest-first and return the text of the most
+ * recent user prompt, or `null` if none exists. Used by
+ * `/admin/decks/new` to wire the canvas's Retry button — clicking
+ * Retry re-sends the original prompt without making the user retype.
+ *
+ * "Most recent" because the chat history might contain multiple
+ * exchanges before a tool-call error lands (e.g. user iterated on
+ * an earlier draft before the current one failed). The latest
+ * user-typed text is the one a "retry" naturally refers to.
+ *
+ * Trims whitespace and skips empty-text parts so we never return a
+ * value that would produce `sendMessage({ text: "" })`.
+ */
+export function findLastUserPromptText(
+  messages: ReadonlyArray<DeckCreationMessage>,
+): string | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (!msg || msg.role !== "user") continue;
+    for (let j = msg.parts.length - 1; j >= 0; j--) {
+      const part = msg.parts[j];
+      if (!isTextPart(part)) continue;
+      if (part.text.trim().length === 0) continue;
+      return part.text;
+    }
+  }
+  return null;
+}
+
+/**
+ * Type-guard for the SDK's text-part shape. `DeckCreationToolPart`
+ * has `type: string` (not a literal), so a structural narrowing on
+ * `part.type === "text"` doesn't discriminate — we need an explicit
+ * runtime check that the `text` field is present and a string.
+ */
+function isTextPart(
+  part: DeckCreationMessage["parts"][number] | undefined,
+): part is DeckCreationTextPart {
+  if (!part) return false;
+  if (part.type !== "text") return false;
+  const maybeText = (part as { text?: unknown }).text;
+  return typeof maybeText === "string";
+}

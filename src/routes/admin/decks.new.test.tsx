@@ -267,6 +267,127 @@ describe("<NewDeckRoute>", () => {
     });
   });
 
+  // Issue #178 polish — the canvas's ErrorOverlay shows a Retry
+  // button when the route wires `onRetry`. The route's job is to
+  // remember the last user prompt so a click re-sends it without
+  // making the user retype.
+  describe("retry button wiring", () => {
+    it("re-sends the most recent user prompt when Retry is clicked on the error overlay", async () => {
+      const sendMessage = vi.fn();
+      useAgentMock.mockReturnValue({
+        agent: "DeckAuthorAgent",
+        name: "new-deck-test-uuid",
+        getHttpUrl: () => "https://example.com/api/admin/agents/...",
+      });
+      useAgentChatMock.mockReturnValue({
+        messages: [
+          // Prior user prompt — the one we want re-sent.
+          {
+            id: "msg-user",
+            role: "user",
+            parts: [
+              { type: "text", text: "Build me a deck about CRDT collaborative editing" },
+            ],
+          },
+          // Assistant's tool-call landed in an error phase.
+          {
+            id: "msg-assistant",
+            role: "assistant",
+            parts: [
+              {
+                type: "tool-createDeckDraft",
+                toolCallId: "call-1",
+                state: "output-available",
+                output: {
+                  phase: "error",
+                  files: [],
+                  error: "Fork failed: ArtifactsError: An internal error occurred.",
+                  failedPhase: "fork",
+                  draftId: "test-com-crdt",
+                },
+              },
+            ],
+          },
+        ],
+        sendMessage,
+        clearHistory: vi.fn(),
+        stop: vi.fn(),
+        status: "ready",
+        addToolOutput: vi.fn(),
+        addToolApprovalResponse: vi.fn(),
+        setMessages: vi.fn(),
+        isStreaming: false,
+        isServerStreaming: false,
+        isToolContinuation: false,
+      });
+      useAccessAuthMock.mockReturnValue("authenticated");
+
+      await renderRoute();
+      // Sanity: the error overlay is on screen with the Retry button.
+      expect(screen.getByTestId("deck-creation-error-overlay")).toBeDefined();
+      fireEvent.click(screen.getByTestId("deck-creation-error-retry"));
+      // The route plumbed sendMessage from useAgentChat into the
+      // canvas's onRetry handler, with the original user prompt.
+      expect(sendMessage).toHaveBeenCalledTimes(1);
+      expect(sendMessage).toHaveBeenCalledWith({
+        text: "Build me a deck about CRDT collaborative editing",
+      });
+    });
+
+    it("hides the Retry button when there's no prior user prompt to re-send", async () => {
+      // Defensive: in the (unlikely) case the chat history has an
+      // assistant tool-call error but no preceding user text part,
+      // we shouldn't render a Retry button — clicking it would
+      // sendMessage("") which is just noise. The canvas already
+      // hides the button when onRetry is undefined; this asserts
+      // the route doesn't manufacture an empty-string onRetry.
+      useAgentMock.mockReturnValue({
+        agent: "DeckAuthorAgent",
+        name: "new-deck-test-uuid",
+        getHttpUrl: () => "https://example.com/api/admin/agents/...",
+      });
+      useAgentChatMock.mockReturnValue({
+        messages: [
+          {
+            id: "msg-assistant",
+            role: "assistant",
+            parts: [
+              {
+                type: "tool-createDeckDraft",
+                toolCallId: "call-1",
+                state: "output-available",
+                output: {
+                  phase: "error",
+                  files: [],
+                  error: "boom",
+                  failedPhase: "ai_gen",
+                  draftId: "test-com-orphan",
+                },
+              },
+            ],
+          },
+        ],
+        sendMessage: vi.fn(),
+        clearHistory: vi.fn(),
+        stop: vi.fn(),
+        status: "ready",
+        addToolOutput: vi.fn(),
+        addToolApprovalResponse: vi.fn(),
+        setMessages: vi.fn(),
+        isStreaming: false,
+        isServerStreaming: false,
+        isToolContinuation: false,
+      });
+      useAccessAuthMock.mockReturnValue("authenticated");
+
+      await renderRoute();
+      expect(screen.getByTestId("deck-creation-error-overlay")).toBeDefined();
+      // No retry button — overlay still shows the heading + message,
+      // just not the affordance.
+      expect(screen.queryByTestId("deck-creation-error-retry")).toBeNull();
+    });
+  });
+
   // Issue #178 sub-pieces 1 + 3 — the deck-creation canvas mounts
   // as a left-pane slot the moment the model fires a
   // `createDeckDraft` or `iterateOnDeckDraft` tool call.
