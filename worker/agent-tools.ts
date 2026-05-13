@@ -448,11 +448,11 @@ export function buildTools(env: AgentToolsEnv, slug: string) {
 
     createDeckDraft: tool({
       description:
-        "Start a NEW deck draft. Forks the `deck-starter` Cloudflare " +
-        "Artifacts repo (creating `${userEmail}-${slug}` if it doesn't " +
-        "exist), spawns a Sandbox, asks Workers AI to write a complete " +
-        "set of JSX files for a deck about the user's prompt, commits " +
-        "+ pushes to the fork. Use when the user wants to START a new " +
+        "Start a NEW deck draft. Creates a Cloudflare Artifacts repo " +
+        "named `${userEmail}-${slug}` (or resolves the existing one), " +
+        "spawns a Sandbox, asks Workers AI to write a complete set of " +
+        "JSX files for a deck about the user's prompt, commits " +
+        "+ pushes to the repo. Use when the user wants to START a new " +
         "deck. Pick a kebab-case slug from the prompt (e.g. \"build me " +
         "a deck about CRDT collaboration\" → slug `crdt-collab`). " +
         "Returns the draft ID + commit SHA. The draft is NOT published " +
