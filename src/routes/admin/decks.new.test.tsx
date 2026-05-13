@@ -199,6 +199,72 @@ describe("<NewDeckRoute>", () => {
       expect(privateBtn.getAttribute("aria-checked")).toBe("false");
       expect(publicBtn.getAttribute("aria-checked")).toBe("true");
     });
+
+    // Issue #178 polish — once the canvas pivots (the model fired a
+    // `createDeckDraft` or `iterateOnDeckDraft` tool-call) the
+    // visibility toggle becomes a no-op: the draft has already been
+    // created with the chosen value, and changing it from the UI
+    // wouldn't propagate. Replace the interactive segmented control
+    // with a static chip showing the chosen value so the user can
+    // see what they picked but can't pointlessly fiddle with it.
+    describe("post-pivot chip", () => {
+      it("hides the interactive selector and renders a static chip once a deck-creation tool-call lands", async () => {
+        useAgentMock.mockReturnValue({
+          agent: "DeckAuthorAgent",
+          name: "new-deck-test-uuid",
+          getHttpUrl: () => "https://example.com/api/admin/agents/...",
+        });
+        useAgentChatMock.mockReturnValue({
+          messages: [
+            {
+              id: "msg-1",
+              role: "assistant",
+              parts: [
+                {
+                  type: "tool-createDeckDraft",
+                  toolCallId: "call-1",
+                  state: "output-available",
+                  output: {
+                    phase: "ai_gen",
+                    files: [],
+                    draftId: "test-com-hello",
+                  },
+                },
+              ],
+            },
+          ],
+          sendMessage: vi.fn(),
+          clearHistory: vi.fn(),
+          stop: vi.fn(),
+          status: "streaming",
+          addToolOutput: vi.fn(),
+          addToolApprovalResponse: vi.fn(),
+          setMessages: vi.fn(),
+          isStreaming: true,
+          isServerStreaming: false,
+          isToolContinuation: false,
+        });
+        useAccessAuthMock.mockReturnValue("authenticated");
+
+        await renderRoute();
+
+        // Interactive segmented control is gone (its testid'd root
+        // and both button testids disappear together so we can't
+        // accidentally pass on a "container kept, buttons removed"
+        // half-implementation).
+        expect(screen.queryByTestId("new-deck-visibility")).toBeNull();
+        expect(screen.queryByTestId("new-deck-visibility-private")).toBeNull();
+        expect(screen.queryByTestId("new-deck-visibility-public")).toBeNull();
+
+        // Static chip is present, showing the default Private value.
+        const chip = screen.getByTestId("new-deck-visibility-chip");
+        expect(chip.textContent ?? "").toMatch(/private/i);
+        // It must NOT be a button or a radio control — it's purely
+        // informational. (No `role="radio"`, no `<button>`.)
+        expect(chip.getAttribute("role")).not.toBe("radio");
+        expect(chip.tagName.toLowerCase()).not.toBe("button");
+      });
+    });
   });
 
   // Issue #178 sub-pieces 1 + 3 — the deck-creation canvas mounts

@@ -102,6 +102,14 @@ export default function NewDeckRoute() {
   // through `useAgentChat({ body })` so the agent sees the current
   // selection on every turn and can pass it to `createDeckDraft`.
   const [visibility, setVisibility] = useState<DeckVisibility>("private");
+  // Mirrors the panel's internal split-layout state via the panel's
+  // `onPivotChange` callback (issue #178 polish). Once the model
+  // fires its first deck-creation tool-call the panel pivots to a
+  // two-column layout AND we replace the interactive visibility
+  // selector with a static chip — the choice has already been baked
+  // into the in-flight draft, so further toggling would just be a
+  // confusing no-op.
+  const [hasPivoted, setHasPivoted] = useState(false);
 
   return (
     <main
@@ -138,8 +146,19 @@ export default function NewDeckRoute() {
           modal so the affordance reads as "pick one". The chosen
           value rides along on every chat turn via `body.visibility`
           (see useAgentChat wiring in StudioAgentPanel.tsx) and lands
-          on the generated `meta.ts.visibility` field. */}
-      <VisibilitySelector value={visibility} onChange={setVisibility} />
+          on the generated `meta.ts.visibility` field.
+
+          Post-pivot (the canvas has materialized — a deck-creation
+          tool-call exists in chat history) the selector is replaced
+          with a static chip showing the chosen value. The draft was
+          already created with that visibility; toggling it from the
+          UI wouldn't propagate. The chip is a read-only summary, not
+          a control. */}
+      {hasPivoted ? (
+        <VisibilityChip value={visibility} />
+      ) : (
+        <VisibilitySelector value={visibility} onChange={setVisibility} />
+      )}
 
       {/* The panel. `flex-1` so it fills the rest of the viewport
           below the page header. The lazy boundary mirrors the
@@ -175,6 +194,12 @@ export default function NewDeckRoute() {
             renderLeftPane={({ messages }) => (
               <DeckCreationCanvas messages={messages} />
             )}
+            // Mirror the panel's internal pivot state up to the
+            // route so we can swap the visibility selector for a
+            // static chip. Fires after the panel has actually
+            // pivoted (useEffect inside the panel), so the chip
+            // appears on the same frame as the canvas.
+            onPivotChange={setHasPivoted}
           />
         </Suspense>
       </div>
@@ -254,6 +279,37 @@ function VisibilitySelector({
           );
         })}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Static chip that replaces the interactive `<VisibilitySelector>`
+ * once the deck-creation canvas pivots in (issue #178 polish). Purely
+ * informational — no role, no button, no click handler. Shows the
+ * chosen visibility so the user can still see what they picked, but
+ * makes clear it's no longer changeable from this surface.
+ *
+ * Visually distinct from the active state of the segmented control:
+ * a muted pill (border + muted text) rather than the orange fill, so
+ * the eye reads it as "summary" not "active choice in a control".
+ */
+function VisibilityChip({ value }: { value: DeckVisibility }) {
+  const Icon = value === "private" ? Lock : Globe;
+  const label = value === "private" ? "Private" : "Public";
+  return (
+    <div className="flex flex-col gap-2">
+      <p className="font-mono text-[10px] uppercase tracking-[0.25em] text-cf-text-muted">
+        Visibility
+      </p>
+      <span
+        data-testid="new-deck-visibility-chip"
+        data-value={value}
+        className="inline-flex w-fit items-center gap-1.5 rounded-md border border-cf-border bg-cf-bg-200 px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.2em] text-cf-text-muted"
+      >
+        <Icon size={11} aria-hidden="true" />
+        {label}
+      </span>
     </div>
   );
 }

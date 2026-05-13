@@ -106,6 +106,22 @@ export interface StudioAgentPanelProps {
    * its own underlying surface).
    */
   renderLeftPane?: (state: PanelChatState) => ReactNode;
+  /**
+   * Fires when the panel's split-layout state changes (issue #178
+   * polish — visibility chip post-pivot). The argument is `true`
+   * once the chat history contains a deck-creation tool-call AND
+   * `renderLeftPane` is set AND `variant === "page"`, matching the
+   * condition that drives the two-column layout. `false` otherwise.
+   *
+   * Called via `useEffect` so the callback fires AFTER the panel
+   * has actually pivoted, never during render. The route can use
+   * this to swap its visibility selector for a static chip once the
+   * draft is in flight.
+   *
+   * No effect in `variant === "side-panel"` (there's no pivot to
+   * observe there).
+   */
+  onPivotChange?: (pivoted: boolean) => void;
 }
 
 /**
@@ -160,6 +176,7 @@ export function StudioAgentPanel({
   emptyState,
   body,
   renderLeftPane,
+  onPivotChange,
 }: StudioAgentPanelProps) {
   // Visibility state powers the slide-out exit animation in
   // `side-panel` variant. In `page` variant the visibility is
@@ -199,6 +216,7 @@ export function StudioAgentPanel({
         emptyState={emptyState}
         body={body}
         {...(renderLeftPane ? { renderLeftPane } : {})}
+        {...(onPivotChange ? { onPivotChange } : {})}
       />
     );
   }
@@ -233,6 +251,7 @@ interface PanelInnerProps {
   emptyState?: { title: string; description: string };
   body?: Record<string, unknown>;
   renderLeftPane?: (state: PanelChatState) => ReactNode;
+  onPivotChange?: (pivoted: boolean) => void;
 }
 
 function PanelInner({
@@ -242,6 +261,7 @@ function PanelInner({
   emptyState,
   body: extraBody,
   renderLeftPane,
+  onPivotChange,
 }: PanelInnerProps) {
   const isPageVariant = variant === "page";
   // `useAgent` opens the WebSocket. Setting `prefix` here lines up
@@ -380,6 +400,17 @@ function PanelInner({
     isPageVariant &&
     renderLeftPane !== undefined &&
     extractLatestDeckCreationCall(messages) !== null;
+
+  // Notify the route whenever the split-layout state changes (issue
+  // #178 polish — the route swaps its visibility selector for a
+  // static chip post-pivot). Fires AFTER the panel has actually
+  // pivoted so the route's re-render lands on the same frame as the
+  // canvas. `onPivotChange` is intentionally NOT a dep we read from
+  // a ref — the panel doesn't care about identity stability, only
+  // the latest value at the time of the flip.
+  useEffect(() => {
+    onPivotChange?.(isSplitLayout);
+  }, [isSplitLayout, onPivotChange]);
 
   // Page-variant root is a plain block-level element (no fixed
   // positioning, no slide-in, no backdrop, no shadow). The
