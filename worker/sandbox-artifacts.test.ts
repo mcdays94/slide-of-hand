@@ -31,15 +31,17 @@ const FAKE_URL =
   "https://x:art_v1_xxxx@1bcef46c.artifacts.cloudflare.net/git/slide-of-hand-drafts/alice-my.git";
 
 describe("cloneArtifactsRepoIntoSandbox", () => {
-  it("calls sandbox.gitCheckout with the authenticated URL + defaults", async () => {
-    const gitCheckoutMock = vi.fn().mockResolvedValue({
+  it("issues raw `git clone` + `git checkout -B main` (no -b on clone — unborn-branch safe)", async () => {
+    // Both exec calls succeed: clone produces an empty (or
+    // non-empty) working tree; checkout force-creates/resets main.
+    const execMock = vi.fn().mockResolvedValue({
       success: true,
       stdout: "",
       stderr: "",
       exitCode: 0,
     });
     const sandbox = makeSandboxStub({
-      gitCheckout: gitCheckoutMock as SandboxLike["gitCheckout"],
+      exec: execMock as SandboxLike["exec"],
     });
 
     const result = await cloneArtifactsRepoIntoSandbox(sandbox, {
@@ -50,48 +52,76 @@ describe("cloneArtifactsRepoIntoSandbox", () => {
       expect(result.workdir).toBe("/workspace/repo");
       expect(result.ref).toBe("main");
     }
-    expect(gitCheckoutMock).toHaveBeenCalledWith(FAKE_URL, {
-      branch: "main",
-      targetDir: "/workspace/repo",
-      depth: 1,
-      cloneTimeoutMs: 60_000,
-    });
+    expect(execMock).toHaveBeenCalledTimes(2);
+    // First call: clone. Critically, NO `-b <ref>` — that's the
+    // whole point of the post-#182 fix.
+    const cloneCall = execMock.mock.calls[0][0] as string;
+    expect(cloneCall).toContain(`git clone "${FAKE_URL}" "/workspace/repo"`);
+    expect(cloneCall).not.toMatch(/-b\s/);
+    // Second call: ensure local main branch.
+    const checkoutCall = execMock.mock.calls[1][0] as string;
+    expect(checkoutCall).toBe(
+      `git -C "/workspace/repo" checkout -B "main"`,
+    );
   });
 
-  it("honours custom workdir + ref + timeout + depth", async () => {
-    const gitCheckoutMock = vi.fn().mockResolvedValue({
+  it("honours custom workdir + ref", async () => {
+    const execMock = vi.fn().mockResolvedValue({
       success: true,
       stdout: "",
       stderr: "",
       exitCode: 0,
     });
     const sandbox = makeSandboxStub({
-      gitCheckout: gitCheckoutMock as SandboxLike["gitCheckout"],
+      exec: execMock as SandboxLike["exec"],
     });
 
     await cloneArtifactsRepoIntoSandbox(sandbox, {
       authenticatedUrl: FAKE_URL,
       workdir: "/tmp/foo",
       ref: "feature",
-      cloneTimeoutMs: 10_000,
-      depth: 5,
     });
-    expect(gitCheckoutMock).toHaveBeenCalledWith(FAKE_URL, {
-      branch: "feature",
-      targetDir: "/tmp/foo",
-      depth: 5,
-      cloneTimeoutMs: 10_000,
-    });
+    const cloneCall = execMock.mock.calls[0][0] as string;
+    expect(cloneCall).toBe(`git clone "${FAKE_URL}" "/tmp/foo"`);
+    const checkoutCall = execMock.mock.calls[1][0] as string;
+    expect(checkoutCall).toBe(`git -C "/tmp/foo" checkout -B "feature"`);
   });
 
-  it("returns error when gitCheckout fails", async () => {
+  it("succeeds on an empty/unborn-branch remote (the bug this fix targets)", async () => {
+    // Plain `git clone` on an empty remote prints the empty-repo
+    // warning to stderr but exits 0. The subsequent `git checkout -B
+    // main` force-creates the local branch since `main` is unborn
+    // locally too. Both should be treated as success.
+    const execMock = vi.fn().mockImplementation(async (cmd: string) => ({
+      success: true,
+      stdout: "",
+      stderr: cmd.includes("clone")
+        ? "warning: You appear to have cloned an empty repository.\n"
+        : "Switched to a new branch 'main'\n",
+      exitCode: 0,
+    }));
     const sandbox = makeSandboxStub({
-      gitCheckout: vi.fn().mockResolvedValue({
-        success: false,
-        stdout: "",
-        stderr: "authentication failed",
-        exitCode: 128,
-      }) as SandboxLike["gitCheckout"],
+      exec: execMock as SandboxLike["exec"],
+    });
+
+    const result = await cloneArtifactsRepoIntoSandbox(sandbox, {
+      authenticatedUrl: FAKE_URL,
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.ref).toBe("main");
+    }
+  });
+
+  it("returns an error when `git clone` fails (e.g. auth)", async () => {
+    const execMock = vi.fn().mockResolvedValue({
+      success: false,
+      stdout: "",
+      stderr: "fatal: authentication failed",
+      exitCode: 128,
+    });
+    const sandbox = makeSandboxStub({
+      exec: execMock as SandboxLike["exec"],
     });
 
     const result = await cloneArtifactsRepoIntoSandbox(sandbox, {
@@ -101,13 +131,48 @@ describe("cloneArtifactsRepoIntoSandbox", () => {
     if (!result.ok) {
       expect(result.error).toMatch(/git clone failed/);
     }
+    // Only the clone was attempted — we don't proceed to checkout
+    // on a failed clone.
+    expect(execMock).toHaveBeenCalledTimes(1);
   });
 
-  it("returns error when gitCheckout throws", async () => {
+  it("returns an error when `git checkout -B` fails", async () => {
+    // Clone succeeded, but the checkout failed somehow (corrupt
+    // working tree, fs error, etc.). Surface as a distinct error so
+    // operators know which phase failed.
+    const execMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        success: true,
+        stdout: "",
+        stderr: "",
+        exitCode: 0,
+      })
+      .mockResolvedValueOnce({
+        success: false,
+        stdout: "",
+        stderr: "fatal: invalid reference: main",
+        exitCode: 128,
+      });
     const sandbox = makeSandboxStub({
-      gitCheckout: vi
+      exec: execMock as SandboxLike["exec"],
+    });
+
+    const result = await cloneArtifactsRepoIntoSandbox(sandbox, {
+      authenticatedUrl: FAKE_URL,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toMatch(/git checkout -B main failed/);
+    }
+    expect(execMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("returns an error when exec throws", async () => {
+    const sandbox = makeSandboxStub({
+      exec: vi
         .fn()
-        .mockRejectedValue(new Error("network down")) as SandboxLike["gitCheckout"],
+        .mockRejectedValue(new Error("network down")) as SandboxLike["exec"],
     });
 
     const result = await cloneArtifactsRepoIntoSandbox(sandbox, {
