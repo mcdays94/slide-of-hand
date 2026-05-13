@@ -7,8 +7,10 @@
  *
  * Source repo: gitlab.cfdata.org/mdias/cf-code-mode-and-dynamic-workers
  *
- * Live-demo note: slide 12 calls `/api/health`, `/api/models`,
- * `/api/prompts`, `/api/run-mcp` (SSE), and `/api/run-code-mode` (SSE).
+ * Live-demo note: slide 12 calls `/api/cf-code-mode/health`,
+ * `/api/cf-code-mode/models`, `/api/cf-code-mode/prompts`,
+ * `/api/cf-code-mode/run-mcp` (SSE), and
+ * `/api/cf-code-mode/run-code-mode` (SSE).
  * Slide of Hand's worker doesn't yet host those endpoints — the slide
  * gracefully falls back to its bundled "recorded" run when the health
  * probe fails, so it remains presentable. To restore full live demo

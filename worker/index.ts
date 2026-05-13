@@ -50,6 +50,17 @@ import {
   handleCfDynamicWorkers,
   type CfDynamicWorkersEnv,
 } from "./cf-dynamic-workers";
+import {
+  handleCfCodeMode,
+  type CfCodeModeEnv,
+} from "./cf-code-mode";
+
+// Re-export the Code Mode loopback class so `ctx.exports.CodemodeFetcher()`
+// inside `worker/cf-code-mode/lib/dynamic-code-runner.ts` resolves at
+// runtime. Worker Loader's custom-binding feature requires the
+// `WorkerEntrypoint` class to be exported from the same module
+// Cloudflare loads as the worker's entry point (this file).
+export { CodemodeFetcher } from "./cf-code-mode/lib/dynamic-code-runner";
 import { handleSkills, type SkillsEnv } from "./skill-composer";
 import { handleMcpServers, type McpServersEnv } from "./mcp-servers";
 import { handlePreview, type PreviewEnv } from "./preview-route";
@@ -88,12 +99,17 @@ export interface Env
     DeckStarterSetupEnv,
     DiagArtifactsEnv,
     DiagWorkerLoaderEnv,
-    CfDynamicWorkersEnv {
+    CfDynamicWorkersEnv,
+    CfCodeModeEnv {
   ASSETS: Fetcher;
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(
+    request: Request,
+    env: Env,
+    ctx: ExecutionContext,
+  ): Promise<Response> {
     const authStatusResponse = await handleAuthStatus(request, env);
     if (authStatusResponse) return authStatusResponse;
     const themesResponse = await handleThemes(request, env);
@@ -167,6 +183,13 @@ export default {
       env,
     );
     if (cfDynamicWorkersResponse) return cfDynamicWorkersResponse;
+    // cf-code-mode live-demo backend (issue #167). Wires slide 12's
+    // MCP-vs-Code-Mode side-by-side comparison: /health, /models,
+    // /prompts, /run-mcp (SSE), /run-code-mode (SSE). Code Mode uses
+    // the LOADER + the re-exported CodemodeFetcher class above.
+    // See `worker/cf-code-mode/index.ts`.
+    const cfCodeModeResponse = await handleCfCodeMode(request, env, ctx);
+    if (cfCodeModeResponse) return cfCodeModeResponse;
     // Draft deck preview route (issue #168 Wave 1). Serves preview
     // bundles from Cloudflare Artifacts draft repos so the Studio can
     // iframe each commit's output. STUB — returns 501 until Worker A

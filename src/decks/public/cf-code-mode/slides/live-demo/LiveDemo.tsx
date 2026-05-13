@@ -628,16 +628,20 @@ export function LiveDemoBody() {
   /* ── Probe health + load catalogues on mount ──────────────────────
      If anything fails or comes back empty, set `degraded` so the UI
      can show a "Poor connection" warning. The slide degrades to its
-     recorded fallback if `/api/health` rejects entirely.
-     TODO(#102 follow-up): wire to real Worker endpoints when added to
-     wrangler.jsonc — /api/health, /api/models, /api/prompts,
-     /api/run-mcp (SSE), /api/run-code-mode (SSE). Until then this
-     slide auto-falls-back to the bundled recorded run. */
+     recorded fallback if /health rejects entirely.
+
+     Live endpoints (wired in #167 / cf-code-mode slice):
+       /api/cf-code-mode/health         — binding probe
+       /api/cf-code-mode/models         — demo model catalogue
+       /api/cf-code-mode/prompts        — demo prompt presets
+       /api/cf-code-mode/run-mcp        — traditional MCP run (SSE)
+       /api/cf-code-mode/run-code-mode  — Code Mode run (SSE)
+  */
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const r = await fetch("/api/health", { cache: "no-store" });
+        const r = await fetch("/api/cf-code-mode/health", { cache: "no-store" });
         const payload = r.ok ? await r.json() : null;
         if (cancelled) return;
         setMode(selectMode(payload));
@@ -650,8 +654,12 @@ export function LiveDemoBody() {
     (async () => {
       try {
         const [mRes, pRes] = await Promise.all([
-          fetch("/api/models").then((r) => (r.ok ? r.json() : null)),
-          fetch("/api/prompts").then((r) => (r.ok ? r.json() : null)),
+          fetch("/api/cf-code-mode/models").then((r) =>
+            r.ok ? r.json() : null,
+          ),
+          fetch("/api/cf-code-mode/prompts").then((r) =>
+            r.ok ? r.json() : null,
+          ),
         ]);
         if (cancelled) return;
         const mList = mRes?.models as DemoModel[] | undefined;
@@ -729,7 +737,7 @@ export function LiveDemoBody() {
           dispatch({ type: "event", mode: "code-mode", event });
 
         const mcpRun = streamRun({
-          url: "/api/run-mcp",
+          url: "/api/cf-code-mode/run-mcp",
           prompt,
           modelId,
           promptId,
@@ -744,7 +752,7 @@ export function LiveDemoBody() {
           });
         });
         const codeRun = streamRun({
-          url: "/api/run-code-mode",
+          url: "/api/cf-code-mode/run-code-mode",
           prompt,
           modelId,
           promptId,
