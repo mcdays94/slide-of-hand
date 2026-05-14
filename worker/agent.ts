@@ -129,6 +129,17 @@ export interface AgentEnv {
    * is the load-bearing security boundary here, not this header.
    */
   CF_AI_GATEWAY_TOKEN?: string;
+  /**
+   * Cloudflare account ID (from `vars.CF_ACCOUNT_ID` in
+   * `wrangler.jsonc`). Forwarded to the deck-creation orchestrator
+   * so it can deterministically construct the Artifacts remote URL
+   * — see `buildArtifactsRemoteUrl` in `artifacts-client.ts` for
+   * why we can't trust the SDK's `repo.remote` getter.
+   *
+   * Typed as optional to match `AnalyticsEnv`'s convention; runtime
+   * check in the orchestrator throws if missing.
+   */
+  CF_ACCOUNT_ID?: string;
 }
 
 /**

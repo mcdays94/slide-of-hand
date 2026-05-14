@@ -181,6 +181,9 @@ function makeEnv(initial: Record<string, unknown> = {}): {
       Sandbox: sandbox,
       ARTIFACTS: artifacts,
       AI: ai,
+      // Stable test value — matches what the deck-creation tests use
+      // for verifying the constructed Artifacts remote URL.
+      CF_ACCOUNT_ID: "test-account-id-32chars-of-hex00",
     },
     puts,
   };
