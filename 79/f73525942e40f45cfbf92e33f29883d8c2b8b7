@@ -1,0 +1,33 @@
+docs/agents/triage-labels.md
+  d70e22376149f279 1-26
+AGENTS.md
+  d70e22376149f279 17-34
+docs/adr/0003-deck-state-cursor-keyed-to-effective-slides.md
+  d70e22376149f279 1-99
+docs/agents/domain.md
+  d70e22376149f279 1-61
+docs/agents/issue-tracker.md
+  d70e22376149f279 1-45
+CONTEXT.md
+  d70e22376149f279 1-155
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "79f73525942e40f45cfbf92e33f29883d8c2b8b7",
+  "prompts": {
+    "d70e22376149f279": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_1da295040ffe0rdRIXDpbOYcYo",
+        "model": "anthropic/claude-opus-4-7"
+      },
+      "human_author": "mcdays94",
+      "messages": [],
+      "total_additions": 404,
+      "total_deletions": 0,
+      "accepted_lines": 404,
+      "overriden_lines": 0
+    }
+  }
+}
