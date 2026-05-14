@@ -99,6 +99,27 @@ export async function cloneArtifactsRepoIntoSandbox(
     (options.workdir ?? DEFAULT_WORKDIR).trim() || DEFAULT_WORKDIR;
   const ref = (options.ref ?? "main").trim() || "main";
   try {
+    // Clean any prior state in the workdir. The Sandbox is keyed
+    // per-draft (`deck-draft:${draftId}` in `sandbox-deck-creation.ts`)
+    // so a retry after a previous failed attempt finds the workdir
+    // already populated. `git clone` then fails with exit 128
+    // ("destination path already exists and is not an empty
+    // directory"). The model-retry path triggers this routinely —
+    // surfaced 2026-05-13 in the post-#200 e2e Playwright run.
+    //
+    // `rm -rf` is idempotent: succeeds whether the dir exists or
+    // not, removes everything under it if it does. Cheap to do
+    // unconditionally on every clone — the alternative (detect-
+    // existing-clone-and-fetch) couples this helper to the SDK's
+    // workdir-state assumptions.
+    const cleanResult = await sandbox.exec(`rm -rf "${workdir}"`);
+    if (!cleanResult.success || cleanResult.exitCode !== 0) {
+      return {
+        ok: false,
+        error: `Failed to clean workdir ${workdir} (exit ${cleanResult.exitCode ?? "unknown"})`,
+      };
+    }
+
     // Plain `git clone` — see the function's doc comment for the
     // rationale (unborn-branch handling).
     //
