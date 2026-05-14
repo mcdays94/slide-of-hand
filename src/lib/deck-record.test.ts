@@ -115,6 +115,47 @@ describe("validateDataDeck — happy paths", () => {
     if (!out.ok) return;
     expect(out.value.meta.visibility).toBe("public");
   });
+
+  // Issue #191 — the draft field is optional and orthogonal to
+  // visibility. The validator accepts boolean values + omits the field
+  // entirely when undefined.
+
+  it("accepts draft = true", () => {
+    const out = validateDataDeck({
+      ...validDeck,
+      meta: { ...validDeck.meta, draft: true },
+    });
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    expect(out.value.meta.draft).toBe(true);
+  });
+
+  it("accepts draft = false", () => {
+    const out = validateDataDeck({
+      ...validDeck,
+      meta: { ...validDeck.meta, draft: false },
+    });
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    expect(out.value.meta.draft).toBe(false);
+  });
+
+  it("omits draft from the validated output when undefined (back-compat)", () => {
+    const out = validateDataDeck(validDeck);
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    expect("draft" in out.value.meta).toBe(false);
+  });
+
+  it("treats explicit undefined draft as not-set (back-compat for pre-#191 records)", () => {
+    const out = validateDataDeck({
+      ...validDeck,
+      meta: { ...validDeck.meta, draft: undefined },
+    });
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    expect("draft" in out.value.meta).toBe(false);
+  });
 });
 
 describe("validateDataDeck — meta validation", () => {
@@ -163,6 +204,10 @@ describe("validateDataDeck — meta validation", () => {
     ["non-string description", { ...validDeck.meta, description: 1 }],
     ["non-string cover", { ...validDeck.meta, cover: 5 }],
     ["non-string event", { ...validDeck.meta, event: false }],
+    // Issue #191 — draft must be boolean when present.
+    ["non-boolean draft (string)", { ...validDeck.meta, draft: "true" }],
+    ["non-boolean draft (number)", { ...validDeck.meta, draft: 1 }],
+    ["non-boolean draft (object)", { ...validDeck.meta, draft: {} }],
   ])("rejects meta with %s", (_, badMeta) => {
     const out = validateDataDeck({ meta: badMeta, slides: [] });
     expect(out.ok).toBe(false);

@@ -52,6 +52,24 @@ export interface DeckMeta {
   tags?: string[];
   /** Total expected talk runtime, in minutes. Drives presenter timer. */
   runtimeMinutes?: number;
+  /**
+   * When `true`, this deck is a work-in-progress draft (issue #191).
+   *
+   * Orthogonal to `visibility` (which controls who sees the deck once
+   * published). A deck can be a public-visibility draft, or a private
+   * already-published deck, or any combination.
+   *
+   * UI semantics (introduced in slices per #191):
+   *   - Public homepage `/` filters out drafts.
+   *   - Admin `/admin` shows drafts with a "Draft" pill + a toggle to
+   *     show/hide drafts in the grid.
+   *   - The deck still renders at `/decks/<slug>` for anyone with the
+   *     link — the draft flag is about discoverability, not access.
+   *
+   * Default: undefined / false (treated as "not a draft" — fully
+   * published). Pre-existing decks need no migration.
+   */
+  draft?: boolean;
 }
 
 export interface Deck {
