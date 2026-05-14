@@ -3,15 +3,26 @@
  * list of a deck. Triggered by the `M` key in `<Deck>` and gated by
  * `usePresenterMode()` so it never appears on the public viewer.
  *
+ * The user-facing name is the "ToC sidebar" (per CONTEXT.md); the file
+ * keeps the historical `SlideManager` identifier.
+ *
  * Capabilities (v1, locked by the orchestrator):
  *   - Reorder slides (drag handles)
  *   - Hide / show a slide (eye toggle)
- *   - Rename a slide (text input)
- *   - Edit speaker notes as markdown (inline textarea + preview)
+ *   - Rename a slide (pencil → inline input)
+ *   - Edit speaker notes as markdown (note icon → accordion editor)
  *
  * Out of scope: duplicate / delete (those create or remove source files,
  * which fights the manifest-override pattern). The author opens the IDE
  * for those operations — there's a footer hint in the sidebar.
+ *
+ * Row layout (issue #208):
+ *   Default: `[NN] [thumb] title-span` — clean, low-density.
+ *   Hover:   a compact affordance cluster fades in on the right edge:
+ *            [grip] [eye] [pencil] [note].
+ *   Pencil click: swaps the title span for an inline rename input.
+ *   Note click: expands an accordion notes editor BELOW the row,
+ *               animated with `easeEntrance` from `@/lib/motion`.
  *
  * Live-preview model:
  *   - The component owns a local `draft` state mirroring the form.
@@ -146,6 +157,102 @@ function rowsToManifest(rows: DraftRow[]): Manifest {
   };
 }
 
+// ── Affordance cluster icons ──────────────────────────────────────────────
+//
+// Inline SVGs keep us off any icon-library dependency. All icons are
+// 14×14 stroke-currentColor so they inherit the row's text color and
+// the cluster button's hover color.
+
+function GripIcon() {
+  return (
+    <svg viewBox="0 0 12 16" aria-hidden="true" className="h-3.5 w-3 fill-current">
+      <circle cx="3" cy="3" r="1.2" />
+      <circle cx="9" cy="3" r="1.2" />
+      <circle cx="3" cy="8" r="1.2" />
+      <circle cx="9" cy="8" r="1.2" />
+      <circle cx="3" cy="13" r="1.2" />
+      <circle cx="9" cy="13" r="1.2" />
+    </svg>
+  );
+}
+
+function EyeOpenIcon() {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      aria-hidden="true"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="h-3.5 w-3.5"
+    >
+      <path d="M1.5 8s2.4-4.5 6.5-4.5S14.5 8 14.5 8s-2.4 4.5-6.5 4.5S1.5 8 1.5 8Z" />
+      <circle cx="8" cy="8" r="1.8" />
+    </svg>
+  );
+}
+
+function EyeClosedIcon() {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      aria-hidden="true"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="h-3.5 w-3.5"
+    >
+      <path d="M2 4.5s1.6 2.2 3.7 3.3" />
+      <path d="M14 4.5s-1.6 2.2-3.7 3.3" />
+      <path d="M6 8.3l-0.7 2.2" />
+      <path d="M10 8.3l0.7 2.2" />
+      <path d="M8 8.6V11" />
+    </svg>
+  );
+}
+
+function PencilIcon() {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      aria-hidden="true"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="h-3.5 w-3.5"
+    >
+      <path d="M11.2 2.8l2 2-7.6 7.6-2.6.6.6-2.6 7.6-7.6Z" />
+      <path d="M10.2 3.8l2 2" />
+    </svg>
+  );
+}
+
+function NoteIcon() {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      aria-hidden="true"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="h-3.5 w-3.5"
+    >
+      <path d="M3 2.5h7l3 3v8H3v-11Z" />
+      <path d="M10 2.5v3h3" />
+      <path d="M5.5 8.5h5" />
+      <path d="M5.5 10.8h4" />
+    </svg>
+  );
+}
+
 // ── Sortable row ──────────────────────────────────────────────────────────
 
 interface RowProps {
@@ -153,14 +260,17 @@ interface RowProps {
   index: number;
   slug: string;
   notesOpen: boolean;
+  editingTitle: boolean;
   onToggleNotes: () => void;
+  onBeginEditingTitle: () => void;
+  onEndEditingTitle: () => void;
   onTitleChange: (next: string) => void;
   onNotesChange: (next: string) => void;
   onToggleHidden: () => void;
   /**
    * ToC nav: invoked when the row's "navigate" surface is clicked. The
    * row delegates to `<SlideManager>`'s `onNavigateToSlide`, which the
-   * parent (`<Deck>`) wires to `gotoWithBeacon(effectiveIndex)`.
+   * parent (`<Deck>`) wires to `gotoEffectiveWithBeacon(effectiveIndex)`.
    *
    * The rename input, drag handle, hide button, and notes button each
    * carry `data-interactive` (or are native interactive elements) so
@@ -201,7 +311,10 @@ function SlideRow({
   index,
   slug,
   notesOpen,
+  editingTitle,
   onToggleNotes,
+  onBeginEditingTitle,
+  onEndEditingTitle,
   onTitleChange,
   onNotesChange,
   onToggleHidden,
@@ -235,6 +348,26 @@ function SlideRow({
     setImageFailed(false);
   }, [index, slug]);
 
+  // Focus the input the moment we flip into edit mode. Select-all so
+  // the author can immediately replace the title with one keystroke.
+  const titleInputRef = useRef<HTMLInputElement>(null);
+  // The text we'd revert to on Esc — captured on entry to edit mode.
+  const titleAtEditStart = useRef<string>("");
+  useEffect(() => {
+    if (editingTitle) {
+      titleAtEditStart.current = titleValue;
+      // Use a microtask so the input has actually mounted.
+      requestAnimationFrame(() => {
+        const el = titleInputRef.current;
+        if (!el) return;
+        el.focus();
+        el.select();
+      });
+    }
+    // We intentionally only react to the editingTitle flip, not value churn.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editingTitle]);
+
   // ── Row click ⇒ ToC nav ────────────────────────────────────────────
   // The row delegates to `onNavigate` only when the click missed every
   // inner interactive control (rename input, drag handle, hide / notes
@@ -258,12 +391,28 @@ function SlideRow({
     }
   };
 
+  // Inline rename input keyboard handling: Esc cancels (revert), Enter
+  // commits (blur). Blur is wired via onBlur to also commit.
+  const handleTitleKeyDown = (e: ReactKeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      onTitleChange(titleAtEditStart.current);
+      onEndEditingTitle();
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      e.stopPropagation();
+      onEndEditingTitle();
+    }
+  };
+
   return (
     <div
       ref={setNodeRef}
       data-testid="slide-manager-row"
       data-slide-id={row.id}
       data-hidden={hidden ? "true" : undefined}
+      data-editing-title={editingTitle ? "true" : undefined}
       style={style}
       onClick={onNavigate ? handleRowClick : undefined}
       onKeyDown={onNavigate ? handleRowKeyDown : undefined}
@@ -275,41 +424,31 @@ function SlideRow({
           : undefined
       }
       // Hidden styling: muted text color across the whole row, but
-      // strike-through is scoped to the title input below (and the
-      // thumbnail kicker) — applying line-through to the row would
-      // cross out the HIDE / NOTES buttons, which the author still
-      // needs to be able to read and click.
-      className={`flex flex-col gap-2 border-b border-cf-border px-4 py-3 ${
+      // strike-through is scoped to the title (input / span) below —
+      // applying line-through to the row would cross out HIDE / NOTES
+      // affordances, which the author still needs to read.
+      //
+      // `group` enables the hover-revealed affordance cluster below.
+      // `relative` anchors the absolutely-positioned cluster to the row.
+      className={`group flex flex-col border-b border-cf-border ${
         onNavigate ? "cursor-pointer hover:bg-cf-bg-200/40" : ""
       } ${hidden ? "text-cf-text-subtle" : ""}`}
     >
-      <div className="flex items-center gap-3">
-        {/* Drag handle. Only this triggers a sort. */}
-        <button
-          type="button"
-          data-interactive
-          data-testid="slide-manager-drag-handle"
-          aria-label={`Drag slide ${row.source.title ?? row.id}`}
-          {...attributes}
-          {...listeners}
-          className="flex h-8 w-6 shrink-0 cursor-grab items-center justify-center text-cf-text-subtle hover:text-cf-text active:cursor-grabbing"
+      {/* Default row content: [NN] [thumb] title — clean baseline.
+          `relative` here anchors the affordance cluster to JUST the
+          title strip (not the row + accordion combined, which would
+          cause the cluster to float over the notes editor below). */}
+      <div className="relative flex items-center gap-3 px-4 py-3">
+        {/* Slide number — fixed-width mono so the column lines up. */}
+        <span
+          aria-hidden="true"
+          className="w-6 shrink-0 font-mono text-[10px] uppercase tracking-[0.25em] text-cf-text-subtle"
         >
-          <svg
-            viewBox="0 0 12 16"
-            aria-hidden="true"
-            className="h-4 w-3 fill-current"
-          >
-            <circle cx="3" cy="3" r="1.2" />
-            <circle cx="9" cy="3" r="1.2" />
-            <circle cx="3" cy="8" r="1.2" />
-            <circle cx="9" cy="8" r="1.2" />
-            <circle cx="3" cy="13" r="1.2" />
-            <circle cx="9" cy="13" r="1.2" />
-          </svg>
-        </button>
+          {String(index + 1).padStart(2, "0")}
+        </span>
 
         {/* Thumbnail. */}
-        <div className="flex h-12 w-20 shrink-0 items-center justify-center overflow-hidden rounded border border-cf-border bg-cf-bg-200">
+        <div className="flex h-10 w-16 shrink-0 items-center justify-center overflow-hidden rounded border border-cf-border bg-cf-bg-200">
           {imageFailed ? (
             <span className="font-mono text-[9px] uppercase tracking-[0.25em] text-cf-text-subtle">
               {String(index + 1).padStart(2, "0")}
@@ -325,25 +464,164 @@ function SlideRow({
           )}
         </div>
 
-        {/* Title. */}
-        <input
-          type="text"
-          data-interactive
-          data-testid="slide-manager-title-input"
-          aria-label={`Title for slide ${row.id}`}
-          value={titleValue}
-          maxLength={MAX_TITLE}
-          spellCheck={false}
-          onChange={(e) => onTitleChange(e.target.value)}
-          // Hidden rows: muted color + strike-through baked onto the input
-          // itself, since form controls don't inherit text-decoration from
-          // their parent in most browsers.
-          className={`flex-1 rounded border border-cf-border bg-transparent px-2 py-1 text-sm ${
-            hidden ? "text-cf-text-subtle line-through" : "text-cf-text"
-          }`}
-        />
+        {/* Title — span by default, input when editing.
+            min-w-0 lets flex truncate the span on narrow widths. */}
+        <div className="relative flex min-w-0 flex-1 items-center">
+          {editingTitle ? (
+            <input
+              ref={titleInputRef}
+              type="text"
+              data-interactive
+              data-testid="slide-manager-title-input"
+              aria-label={`Title for slide ${row.id}`}
+              value={titleValue}
+              maxLength={MAX_TITLE}
+              spellCheck={false}
+              onChange={(e) => onTitleChange(e.target.value)}
+              onBlur={onEndEditingTitle}
+              onKeyDown={handleTitleKeyDown}
+              // Hidden rows: muted + strike-through baked onto the input
+              // itself, since form controls don't inherit text-decoration
+              // from their parent in most browsers.
+              className={`w-full rounded border border-cf-border bg-cf-bg-100 px-2 py-1 text-sm ${
+                hidden ? "text-cf-text-subtle line-through" : "text-cf-text"
+              }`}
+            />
+          ) : (
+            <span
+              data-testid="slide-manager-title-display"
+              className={`block truncate text-sm ${
+                hidden ? "text-cf-text-subtle line-through" : "text-cf-text"
+              }`}
+              title={titleValue}
+            >
+              {titleValue || (
+                <em className="text-cf-text-subtle">(untitled)</em>
+              )}
+            </span>
+          )}
+        </div>
 
-        {/* Hidden toggle. */}
+        {/* Hover-revealed affordance cluster.
+            Absolutely positioned at the right edge of the TITLE STRIP
+            so the default row stays clean and the accordion below isn't
+            covered. A subtle gradient on the left edge softens the title
+            behind it on hover. Invisible until the row is hovered or
+            focus enters one of its buttons. */}
+        <HoverAffordanceCluster
+          hidden={hidden}
+          editingTitle={editingTitle}
+          notesOpen={notesOpen}
+          rowTitle={row.source.title ?? row.id}
+          dragAttributes={attributes}
+          dragListeners={listeners}
+          onToggleHidden={onToggleHidden}
+          onBeginEditingTitle={onBeginEditingTitle}
+          onToggleNotes={onToggleNotes}
+        />
+      </div>
+
+      {/* Notes accordion — expands below the row when toggled. */}
+      <AnimatePresence initial={false}>
+        {notesOpen && (
+          <motion.div
+            key="notes"
+            data-testid="slide-manager-notes-accordion"
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.22, ease: easeEntrance }}
+            className="overflow-hidden"
+          >
+            <div className="px-4 pb-3">
+              <NotesEditor
+                slideId={row.id}
+                value={notesValue}
+                onChange={onNotesChange}
+              />
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
+// ── Hover-revealed affordance cluster ─────────────────────────────────────
+
+interface HoverAffordanceClusterProps {
+  hidden: boolean;
+  editingTitle: boolean;
+  notesOpen: boolean;
+  rowTitle: string;
+  dragAttributes: ReturnType<typeof useSortable>["attributes"];
+  dragListeners: ReturnType<typeof useSortable>["listeners"];
+  onToggleHidden: () => void;
+  onBeginEditingTitle: () => void;
+  onToggleNotes: () => void;
+}
+
+function HoverAffordanceCluster({
+  hidden,
+  editingTitle,
+  notesOpen,
+  rowTitle,
+  dragAttributes,
+  dragListeners,
+  onToggleHidden,
+  onBeginEditingTitle,
+  onToggleNotes,
+}: HoverAffordanceClusterProps) {
+  // The cluster sits absolutely positioned over the right edge of the
+  // row. We keep it in the DOM (no mount/unmount) so focusing a button
+  // via the keyboard (Tab) doesn't surprise-jump layout. The visual
+  // reveal is opacity + a tiny x slide; pointer-events flip in sync so
+  // the icons don't intercept clicks while invisible.
+  //
+  // `focus-within:opacity-100` keeps the cluster visible when a button
+  // inside it is keyboard-focused, even if the cursor isn't over the row.
+  //
+  // While the rename input is active OR the notes accordion is open we
+  // keep the cluster visible too — both modes are mid-task and hiding
+  // the affordance the author just clicked would be disorienting.
+  const forceVisible = editingTitle || notesOpen;
+  return (
+    <div
+      data-testid="slide-manager-affordances"
+      data-visible={forceVisible ? "true" : undefined}
+      // Soft gradient fade so the title text dissolves under the icons
+      // on hover instead of being cut off by a hard edge. Uses the same
+      // `--color-cf-bg-200` token as the row hover background so the
+      // cluster blends with whatever's behind it.
+      style={{
+        background: forceVisible
+          ? undefined
+          : "linear-gradient(to right, transparent, var(--color-cf-bg-200) 28%)",
+      }}
+      className={`pointer-events-none absolute inset-y-0 right-0 flex items-center gap-1 pl-8 pr-3 transition-opacity duration-150 ease-out group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100 ${
+        forceVisible
+          ? "pointer-events-auto opacity-100"
+          : "opacity-0"
+      }`}
+    >
+      {/* The pointer-events-auto on the inner div lets the buttons take
+          clicks even though the gradient backdrop is decorative. */}
+      <div className="pointer-events-auto flex items-center gap-0.5">
+        {/* Drag handle. The @dnd-kit listeners are attached here, so
+            the grip in the hover cluster IS the drag affordance. */}
+        <button
+          type="button"
+          data-interactive
+          data-testid="slide-manager-drag-handle"
+          aria-label={`Drag slide ${rowTitle}`}
+          {...dragAttributes}
+          {...dragListeners}
+          className="flex h-7 w-7 cursor-grab items-center justify-center rounded text-cf-text-muted hover:bg-cf-bg-200 hover:text-cf-text active:cursor-grabbing"
+        >
+          <GripIcon />
+        </button>
+
+        {/* Eye toggle. */}
         <button
           type="button"
           data-interactive
@@ -351,12 +629,27 @@ function SlideRow({
           aria-label={hidden ? "Show slide" : "Hide slide"}
           aria-pressed={hidden}
           onClick={onToggleHidden}
-          className="cf-btn-ghost h-8 px-2"
+          className="flex h-7 w-7 items-center justify-center rounded text-cf-text-muted hover:bg-cf-bg-200 hover:text-cf-text"
         >
-          {hidden ? "Show" : "Hide"}
+          {hidden ? <EyeClosedIcon /> : <EyeOpenIcon />}
         </button>
 
-        {/* Notes toggle. */}
+        {/* Pencil — opens inline rename input. */}
+        <button
+          type="button"
+          data-interactive
+          data-testid="slide-manager-edit-title"
+          aria-label={`Rename slide ${rowTitle}`}
+          aria-pressed={editingTitle}
+          onClick={onBeginEditingTitle}
+          className={`flex h-7 w-7 items-center justify-center rounded hover:bg-cf-bg-200 hover:text-cf-text ${
+            editingTitle ? "text-cf-orange" : "text-cf-text-muted"
+          }`}
+        >
+          <PencilIcon />
+        </button>
+
+        {/* Note icon — toggles the inline notes editor. */}
         <button
           type="button"
           data-interactive
@@ -364,19 +657,13 @@ function SlideRow({
           aria-label={notesOpen ? "Collapse notes" : "Edit notes"}
           aria-pressed={notesOpen}
           onClick={onToggleNotes}
-          className="cf-btn-ghost h-8 px-2"
+          className={`flex h-7 w-7 items-center justify-center rounded hover:bg-cf-bg-200 hover:text-cf-text ${
+            notesOpen ? "text-cf-orange" : "text-cf-text-muted"
+          }`}
         >
-          Notes
+          <NoteIcon />
         </button>
       </div>
-
-      {notesOpen && (
-        <NotesEditor
-          slideId={row.id}
-          value={notesValue}
-          onChange={onNotesChange}
-        />
-      )}
     </div>
   );
 }
@@ -395,7 +682,7 @@ function NotesEditor({ slideId, value, onChange }: NotesEditorProps) {
   const overLimit = charCount > MAX_NOTES_LENGTH;
 
   return (
-    <div className="ml-9 flex flex-col gap-2 rounded border border-cf-border bg-cf-bg-200/40 p-3">
+    <div className="flex flex-col gap-2 rounded border border-cf-border bg-cf-bg-200/40 p-3">
       <div className="flex items-center justify-between">
         <div className="flex gap-1">
           <button
@@ -482,6 +769,9 @@ export function SlideManager({
   const [saveState, setSaveState] = useState<SaveState>("idle");
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [openNotesId, setOpenNotesId] = useState<string | null>(null);
+  // Single-row edit at a time. Clicking pencil on another row commits
+  // the prior one (blur fires naturally) and opens the new one.
+  const [editingTitleId, setEditingTitleId] = useState<string | null>(null);
 
   // Re-seed when the sidebar opens, or when persisted state changes
   // (Save / Reset / refetch). Mirrors ThemeSidebar's pattern.
@@ -492,6 +782,7 @@ export function SlideManager({
       setSaveState("idle");
       setStatusMessage(null);
       setOpenNotesId(null);
+      setEditingTitleId(null);
     }
     prevOpen.current = open;
   }, [open, persisted, sourceSlides]);
@@ -685,7 +976,7 @@ export function SlideManager({
           animate={{ opacity: 1, x: 0 }}
           exit={{ opacity: 0, x: 24 }}
           transition={{ duration: 0.2, ease: easeEntrance }}
-          className="absolute right-0 top-0 z-50 flex h-full w-[480px] flex-col border-l border-cf-border bg-cf-bg-100 text-cf-text shadow-[0_0_0_1px_var(--color-cf-border)]"
+          className="absolute right-0 top-0 z-50 flex h-full w-[420px] flex-col border-l border-cf-border bg-cf-bg-100 text-cf-text shadow-[0_0_0_1px_var(--color-cf-border)]"
         >
           <header className="flex items-start justify-between gap-3 border-b border-cf-border px-5 py-4">
             <div>
@@ -736,8 +1027,15 @@ export function SlideManager({
                       index={index}
                       slug={slug}
                       notesOpen={openNotesId === row.id}
+                      editingTitle={editingTitleId === row.id}
                       onToggleNotes={() =>
                         setOpenNotesId((cur) => (cur === row.id ? null : row.id))
+                      }
+                      onBeginEditingTitle={() => setEditingTitleId(row.id)}
+                      onEndEditingTitle={() =>
+                        setEditingTitleId((cur) =>
+                          cur === row.id ? null : cur,
+                        )
                       }
                       onTitleChange={(next) => onTitleChange(row.id, next)}
                       onNotesChange={(next) => onNotesChange(row.id, next)}
