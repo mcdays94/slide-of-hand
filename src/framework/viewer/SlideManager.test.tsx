@@ -285,6 +285,213 @@ describe("<SlideManager>", () => {
     expect(onClose).toHaveBeenCalled();
   });
 
+  // ── ToC nav row click (#207) ──────────────────────────────────────
+  // The admin sidebar lets the author click any row — including a
+  // Hidden one — to jump the deck cursor to that slide's effective
+  // index. Per ADR 0003, the cursor is keyed against the effective
+  // slides list (Hidden included), so clicking a Hidden row navigates
+  // WITHOUT un-hiding it.
+
+  it("clicking a non-hidden row calls onNavigateToSlide with its effective index", () => {
+    const onNavigateToSlide = vi.fn();
+    render(
+      <SlideManager
+        open={true}
+        slug="hello"
+        sourceSlides={sourceSlides}
+        manifest={makeManifestHook()}
+        onClose={() => {}}
+        onNavigateToSlide={onNavigateToSlide}
+      />,
+    );
+    const rows = screen.getAllByTestId("slide-manager-row");
+    // Click the second row's container directly (not via an inner control).
+    fireEvent.click(rows[1]);
+    expect(onNavigateToSlide).toHaveBeenCalledTimes(1);
+    expect(onNavigateToSlide).toHaveBeenCalledWith(1);
+  });
+
+  it("clicking a Hidden row navigates AND keeps the manifest hidden flag", () => {
+    const onNavigateToSlide = vi.fn();
+    const applyDraft = vi.fn();
+    const applied: Manifest = {
+      version: 1,
+      order: ["title", "intro", "end"],
+      overrides: { intro: { hidden: true } },
+      updatedAt: "2026-05-14T00:00:00.000Z",
+    };
+    render(
+      <SlideManager
+        open={true}
+        slug="hello"
+        sourceSlides={sourceSlides}
+        manifest={makeManifestHook({ manifest: applied, applied, applyDraft })}
+        onClose={() => {}}
+        onNavigateToSlide={onNavigateToSlide}
+      />,
+    );
+
+    // applyDraft fires once on mount with the seeded rows; capture the
+    // baseline call count so we can prove the row click did not push a
+    // fresh draft that mutates the hidden flag.
+    const baselineDraftCalls = applyDraft.mock.calls.length;
+
+    const rows = screen.getAllByTestId("slide-manager-row");
+    // intro is index 1 in the applied manifest order.
+    const hiddenRow = rows[1];
+    expect(hiddenRow).toHaveAttribute("data-hidden", "true");
+
+    fireEvent.click(hiddenRow);
+
+    expect(onNavigateToSlide).toHaveBeenCalledTimes(1);
+    expect(onNavigateToSlide).toHaveBeenCalledWith(1);
+    // Click must NOT push a manifest draft (would mean the hidden flag
+    // mutated as a side-effect of nav).
+    expect(applyDraft.mock.calls.length).toBe(baselineDraftCalls);
+  });
+
+  it("clicking the rename input focuses it without navigating", () => {
+    const onNavigateToSlide = vi.fn();
+    render(
+      <SlideManager
+        open={true}
+        slug="hello"
+        sourceSlides={sourceSlides}
+        manifest={makeManifestHook()}
+        onClose={() => {}}
+        onNavigateToSlide={onNavigateToSlide}
+      />,
+    );
+    const input = screen.getByDisplayValue("Intro");
+    fireEvent.click(input);
+    expect(onNavigateToSlide).not.toHaveBeenCalled();
+  });
+
+  it("clicking the Hide button toggles hidden without navigating", () => {
+    const onNavigateToSlide = vi.fn();
+    const applyDraft = vi.fn();
+    render(
+      <SlideManager
+        open={true}
+        slug="hello"
+        sourceSlides={sourceSlides}
+        manifest={makeManifestHook({ applyDraft })}
+        onClose={() => {}}
+        onNavigateToSlide={onNavigateToSlide}
+      />,
+    );
+    const hideButton = screen.getAllByTestId("slide-manager-toggle-hidden")[1];
+    fireEvent.click(hideButton);
+    expect(onNavigateToSlide).not.toHaveBeenCalled();
+    const last = applyDraft.mock.calls.at(-1)?.[0] as Manifest;
+    expect(last.overrides.intro?.hidden).toBe(true);
+  });
+
+  it("clicking the Notes button expands notes without navigating", () => {
+    const onNavigateToSlide = vi.fn();
+    render(
+      <SlideManager
+        open={true}
+        slug="hello"
+        sourceSlides={sourceSlides}
+        manifest={makeManifestHook()}
+        onClose={() => {}}
+        onNavigateToSlide={onNavigateToSlide}
+      />,
+    );
+    const notesButton = screen.getAllByTestId("slide-manager-toggle-notes")[1];
+    fireEvent.click(notesButton);
+    expect(onNavigateToSlide).not.toHaveBeenCalled();
+    expect(screen.getByTestId("slide-manager-notes-editor")).toBeInTheDocument();
+  });
+
+  it("clicking the drag handle does not navigate", () => {
+    const onNavigateToSlide = vi.fn();
+    render(
+      <SlideManager
+        open={true}
+        slug="hello"
+        sourceSlides={sourceSlides}
+        manifest={makeManifestHook()}
+        onClose={() => {}}
+        onNavigateToSlide={onNavigateToSlide}
+      />,
+    );
+    const dragHandle = screen.getAllByTestId("slide-manager-drag-handle")[1];
+    fireEvent.click(dragHandle);
+    expect(onNavigateToSlide).not.toHaveBeenCalled();
+  });
+
+  it("renders rows with no navigate affordance when onNavigateToSlide is omitted", () => {
+    render(
+      <SlideManager
+        open={true}
+        slug="hello"
+        sourceSlides={sourceSlides}
+        manifest={makeManifestHook()}
+        onClose={() => {}}
+      />,
+    );
+    const rows = screen.getAllByTestId("slide-manager-row");
+    // No role="button" / aria-label when nav isn't wired.
+    expect(rows[0]).not.toHaveAttribute("role", "button");
+    // Click should be a no-op (no crash, no callback to call).
+    fireEvent.click(rows[0]);
+  });
+
+  it("hidden rows get muted text + line-through styling on the title", () => {
+    const applied: Manifest = {
+      version: 1,
+      order: ["title", "intro", "end"],
+      overrides: { intro: { hidden: true } },
+      updatedAt: "2026-05-14T00:00:00.000Z",
+    };
+    render(
+      <SlideManager
+        open={true}
+        slug="hello"
+        sourceSlides={sourceSlides}
+        manifest={makeManifestHook({ manifest: applied, applied })}
+        onClose={() => {}}
+      />,
+    );
+    const rows = screen.getAllByTestId("slide-manager-row");
+    expect(rows[0]).not.toHaveAttribute("data-hidden");
+    expect(rows[1]).toHaveAttribute("data-hidden", "true");
+    // The row itself carries the muted color; line-through is scoped
+    // to the title input so HIDE / NOTES buttons stay readable.
+    expect(rows[1].className).toContain("text-cf-text-subtle");
+
+    const inputs = screen.getAllByTestId("slide-manager-title-input");
+    expect(inputs[1].className).toContain("line-through");
+    expect(inputs[1].className).toContain("text-cf-text-subtle");
+    // Non-hidden rows keep the default text-cf-text color, no strike.
+    expect(inputs[0].className).not.toContain("line-through");
+    expect(inputs[0].className).toContain("text-cf-text");
+  });
+
+  it("source-level Hidden slides (no manifest override) are also rendered muted", () => {
+    const sourceWithHidden: SlideDef[] = [
+      s("title", "Title"),
+      { ...s("intro", "Intro"), hidden: true },
+      s("end", "End"),
+    ];
+    render(
+      <SlideManager
+        open={true}
+        slug="hello"
+        sourceSlides={sourceWithHidden}
+        manifest={makeManifestHook()}
+        onClose={() => {}}
+      />,
+    );
+    const rows = screen.getAllByTestId("slide-manager-row");
+    expect(rows[1]).toHaveAttribute("data-hidden", "true");
+    expect(rows[1].className).toContain("text-cf-text-subtle");
+    const inputs = screen.getAllByTestId("slide-manager-title-input");
+    expect(inputs[1].className).toContain("line-through");
+  });
+
   it("renders applied manifest order when one exists", () => {
     const applied: Manifest = {
       version: 1,
