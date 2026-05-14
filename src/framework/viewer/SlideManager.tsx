@@ -114,6 +114,17 @@ export interface SlideManagerProps {
    */
   onNavigateToSlide?: (effectiveIndex: number) => void;
   /**
+   * Position of the deck's current cursor slide in the unfiltered
+   * effective list. Drives `aria-current="page"` on the matching row +
+   * a subtle highlight, so screen-readers + sighted users can tell at
+   * a glance which row corresponds to the slide on stage.
+   *
+   * Optional so unit tests that only exercise editing affordances
+   * don't have to pass a stub. In `<Deck>` it's always wired to
+   * `cursor.slide`.
+   */
+  currentSlideEffectiveIndex?: number;
+  /**
    * Viewer role. Defaults to `"admin"` so existing call sites (and the
    * #207/#208 admin tests) keep working unchanged. The audience render
    * path (#209) passes `"audience"` to filter out Hidden slides and
@@ -296,6 +307,11 @@ interface RowProps {
   slug: string;
   notesOpen: boolean;
   editingTitle: boolean;
+  /**
+   * True when this row corresponds to the deck's current cursor slide.
+   * Drives `aria-current="page"` on the row + a subtle visual marker.
+   */
+  isCurrent: boolean;
   onToggleNotes: () => void;
   onBeginEditingTitle: () => void;
   onEndEditingTitle: () => void;
@@ -347,6 +363,7 @@ function SlideRow({
   slug,
   notesOpen,
   editingTitle,
+  isCurrent,
   onToggleNotes,
   onBeginEditingTitle,
   onEndEditingTitle,
@@ -375,6 +392,17 @@ function SlideRow({
   const notesValue = row.override.notes ?? "";
   const hidden = row.override.hidden ?? row.source.hidden ?? false;
   const thumbSrc = `/thumbnails/${slug}/${String(index + 1).padStart(2, "0")}.png`;
+  // Section detection: a row is a "section slide" iff its layout is
+  // `"section"` — these are full-bleed chapter dividers. Many body
+  // slides ALSO carry `sectionLabel` / `sectionNumber` (the chrome
+  // kicker on the slide itself), so detecting via `sectionLabel` alone
+  // would conflate body slides with dividers and break the hierarchy.
+  // The ToC always indents non-section rows (rather than computing
+  // "which section am I under"), which is both simpler and behaves
+  // correctly even before the first section divider.
+  const isSection = row.source.layout === "section";
+  const sectionLabel = row.source.sectionLabel;
+  const sectionNumber = row.source.sectionNumber;
   // Local fallback flag so we don't try to render a missing image.
   const [imageFailed, setImageFailed] = useState(false);
 
@@ -448,11 +476,14 @@ function SlideRow({
       data-slide-id={row.id}
       data-hidden={hidden ? "true" : undefined}
       data-editing-title={editingTitle ? "true" : undefined}
+      data-section={isSection ? "true" : undefined}
+      data-current={isCurrent ? "true" : undefined}
       style={style}
       onClick={onNavigate ? handleRowClick : undefined}
       onKeyDown={onNavigate ? handleRowKeyDown : undefined}
       role={onNavigate ? "button" : undefined}
       tabIndex={onNavigate ? 0 : undefined}
+      aria-current={onNavigate && isCurrent ? "page" : undefined}
       aria-label={
         onNavigate
           ? `Go to slide ${row.source.title ?? row.id}${hidden ? " (hidden)" : ""}`
@@ -465,15 +496,28 @@ function SlideRow({
       //
       // `group` enables the hover-revealed affordance cluster below.
       // `relative` anchors the absolutely-positioned cluster to the row.
+      //
+      // Section rows: get a slightly thicker top border separator + a
+      // mt-1 spacer so chapters visually breathe apart from the rows
+      // above. Non-section rows nested under a section get pl-4 so the
+      // outline hierarchy reads at a glance.
       className={`group flex flex-col border-b border-cf-border ${
         onNavigate ? "cursor-pointer hover:bg-cf-bg-200/40" : ""
-      } ${hidden ? "text-cf-text-subtle" : ""}`}
+      } ${hidden ? "text-cf-text-subtle" : ""} ${
+        isSection ? "mt-1 border-t border-cf-border" : ""
+      } ${isCurrent ? "bg-cf-bg-200/30" : ""}`}
     >
       {/* Default row content: [NN] [thumb] title — clean baseline.
           `relative` here anchors the affordance cluster to JUST the
           title strip (not the row + accordion combined, which would
-          cause the cluster to float over the notes editor below). */}
-      <div className="relative flex items-center gap-3 px-4 py-3">
+          cause the cluster to float over the notes editor below).
+          Non-section rows: pl-8 (vs px-4 = pl-4) indents the row body
+          to nest under the most recent section heading. */}
+      <div
+        className={`relative flex items-center gap-3 ${
+          isSection ? "px-4 py-3.5" : "py-3 pl-8 pr-4"
+        }`}
+      >
         {/* Slide number — fixed-width mono so the column lines up. */}
         <span
           aria-hidden="true"
@@ -500,8 +544,22 @@ function SlideRow({
         </div>
 
         {/* Title — span by default, input when editing.
-            min-w-0 lets flex truncate the span on narrow widths. */}
-        <div className="relative flex min-w-0 flex-1 items-center">
+            min-w-0 lets flex truncate the span on narrow widths.
+
+            Section rows render the uppercase mono kicker above a
+            slightly larger title so the deck's chapter divider and the
+            ToC speak the same visual language (matches the `cf-tag`
+            class used on the slide chrome). */}
+        <div className="relative flex min-w-0 flex-1 flex-col">
+          {isSection && (sectionNumber || sectionLabel) && (
+            <span
+              data-testid="slide-manager-section-kicker"
+              className="flex items-baseline gap-2 font-mono text-[10px] uppercase tracking-[0.25em] text-cf-text-subtle"
+            >
+              {sectionNumber && <span>{sectionNumber}</span>}
+              {sectionLabel && <span>{sectionLabel}</span>}
+            </span>
+          )}
           {editingTitle ? (
             <input
               ref={titleInputRef}
@@ -525,7 +583,11 @@ function SlideRow({
           ) : (
             <span
               data-testid="slide-manager-title-display"
-              className={`block truncate text-sm ${
+              className={`block truncate ${
+                isSection
+                  ? "text-base tracking-[-0.02em]"
+                  : "text-sm"
+              } ${
                 hidden ? "text-cf-text-subtle line-through" : "text-cf-text"
               }`}
               title={titleValue}
@@ -534,6 +596,12 @@ function SlideRow({
                 <em className="text-cf-text-subtle">(untitled)</em>
               )}
             </span>
+          )}
+          {hidden && (
+            // Screen-reader-only suffix — the muted + strikethrough
+            // styling is visual-only, this exposes the same information
+            // to assistive tech.
+            <span className="sr-only">(hidden)</span>
           )}
         </div>
 
@@ -795,6 +863,7 @@ export function SlideManager({
   manifest,
   onClose,
   onNavigateToSlide,
+  currentSlideEffectiveIndex,
   role = "admin",
   side = "right",
 }: SlideManagerProps) {
@@ -808,6 +877,7 @@ export function SlideManager({
         onClose={onClose}
         onNavigateToSlide={onNavigateToSlide}
         side={side}
+        currentSlideEffectiveIndex={currentSlideEffectiveIndex}
       />
     );
   }
@@ -820,6 +890,7 @@ export function SlideManager({
       onClose={onClose}
       onNavigateToSlide={onNavigateToSlide}
       side={side}
+      currentSlideEffectiveIndex={currentSlideEffectiveIndex}
     />
   );
 }
@@ -832,7 +903,16 @@ function AdminSlideManager({
   onClose,
   onNavigateToSlide,
   side = "right",
+  currentSlideEffectiveIndex,
 }: Omit<SlideManagerProps, "role">) {
+  // Click-outside-close: when the sidebar is open, a `mousedown`
+  // landing OUTSIDE the aside dismisses it. We use `mousedown` (not
+  // `click`) so a drag started outside the sidebar — e.g. selecting
+  // text in the slide — doesn't surprise-close it on mouseup. Clicks
+  // INSIDE the sidebar (rows, header buttons, the notes editor) are
+  // ignored. The listener is registered on `document`, not `window`,
+  // for parity with `<ThemeSidebar>` + every other React popover.
+  const asideRef = useRef<HTMLElement>(null);
   const { manifest: persisted, applyDraft, clearDraft, refetch } = manifest;
 
   const [rows, setRows] = useState<DraftRow[]>(() =>
@@ -875,6 +955,53 @@ function AdminSlideManager({
     applyDraft(rowsToManifest(rows));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows]);
+
+  // Click-outside-close.
+  //
+  // We listen for `mousedown` in capture phase. When the mousedown
+  // lands outside the sidebar we BOTH dismiss AND suppress the
+  // subsequent `click` event on the Deck surface — otherwise the same
+  // gesture both closes the sidebar AND advances the slide, which is
+  // surprising. The suppression is a one-shot `click` capture listener
+  // that calls `stopImmediatePropagation` + `preventDefault` and then
+  // self-removes; this keeps later, intentional clicks working.
+  //
+  // We only arm the listener while open, and defer one frame so the
+  // same toolbar / M-key click that opened the sidebar doesn't
+  // immediately re-close it.
+  useEffect(() => {
+    if (!open) return;
+    const isOutside = (target: EventTarget | null) => {
+      const aside = asideRef.current;
+      if (!aside) return false;
+      if (!(target instanceof Node)) return false;
+      return !aside.contains(target);
+    };
+    const onDocMouseDown = (e: MouseEvent) => {
+      if (!isOutside(e.target)) return;
+      // One-shot click swallower for THIS mousedown's matching click.
+      const swallow = (ev: MouseEvent) => {
+        ev.stopImmediatePropagation();
+        ev.preventDefault();
+        document.removeEventListener("click", swallow, true);
+      };
+      document.addEventListener("click", swallow, true);
+      // Safety net: drop the swallower if no click fires (e.g. the
+      // user dragged off the body between down and up).
+      window.setTimeout(() => {
+        document.removeEventListener("click", swallow, true);
+      }, 300);
+      onClose();
+    };
+    let id: number | null = window.requestAnimationFrame(() => {
+      id = null;
+      document.addEventListener("mousedown", onDocMouseDown, true);
+    });
+    return () => {
+      if (id !== null) window.cancelAnimationFrame(id);
+      document.removeEventListener("mousedown", onDocMouseDown, true);
+    };
+  }, [open, onClose]);
 
   const baselineRows = useMemo(
     () => buildInitialRows(sourceSlides, persisted),
@@ -1041,10 +1168,12 @@ function AdminSlideManager({
       {open && (
         <motion.aside
           key="slide-manager"
+          ref={asideRef}
           data-testid="slide-manager"
           data-side={side}
           data-no-advance
-          aria-label="Slide manager"
+          role="region"
+          aria-label="Slide list"
           initial={{ opacity: 0, x: side === "left" ? -24 : 24 }}
           animate={{ opacity: 1, x: 0 }}
           exit={{ opacity: 0, x: side === "left" ? -24 : 24 }}
@@ -1075,7 +1204,7 @@ function AdminSlideManager({
               data-interactive
               data-testid="slide-manager-close"
               onClick={onClose}
-              aria-label="Close slide manager"
+              aria-label="Close slide list"
               className="cf-btn-ghost"
             >
               Esc
@@ -1105,6 +1234,7 @@ function AdminSlideManager({
                       slug={slug}
                       notesOpen={openNotesId === row.id}
                       editingTitle={editingTitleId === row.id}
+                      isCurrent={currentSlideEffectiveIndex === index}
                       onToggleNotes={() =>
                         setOpenNotesId((cur) => (cur === row.id ? null : row.id))
                       }
@@ -1210,6 +1340,11 @@ interface AudienceRowProps {
   /** Display position in the audience list (1-indexed). */
   displayNumber: number;
   slug: string;
+  /**
+   * True when this row corresponds to the deck's current cursor slide.
+   * Drives `aria-current="page"` + a subtle visual highlight.
+   */
+  isCurrent: boolean;
   onNavigate?: (effectiveIndex: number) => void;
 }
 
@@ -1218,12 +1353,21 @@ function AudienceSlideRow({
   effectiveIndex,
   displayNumber,
   slug,
+  isCurrent,
   onNavigate,
 }: AudienceRowProps) {
   const thumbSrc = `/thumbnails/${slug}/${String(displayNumber).padStart(2, "0")}.png`;
   const [imageFailed, setImageFailed] = useState(false);
   const titleValue = slide.title ?? slide.id;
   const clickable = Boolean(onNavigate);
+  // Section detection — same rule as the admin sidebar: a row is a
+  // "section slide" iff its layout is `"section"` (full-bleed chapter
+  // divider). Section rows render with the kicker + a slightly larger
+  // title; non-section rows get a small left padding so the outline
+  // hierarchy reads as a ToC.
+  const isSection = slide.layout === "section";
+  const sectionLabel = slide.sectionLabel;
+  const sectionNumber = slide.sectionNumber;
 
   const handleClick = () => {
     if (!onNavigate) return;
@@ -1246,16 +1390,21 @@ function AudienceSlideRow({
       data-testid="slide-manager-row"
       data-slide-id={slide.id}
       data-audience-row
+      data-section={isSection ? "true" : undefined}
+      data-current={isCurrent ? "true" : undefined}
       role={clickable ? "button" : undefined}
       tabIndex={clickable ? 0 : undefined}
+      aria-current={clickable && isCurrent ? "page" : undefined}
       aria-label={
         clickable ? `Go to slide ${titleValue}` : undefined
       }
       onClick={clickable ? handleClick : undefined}
       onKeyDown={clickable ? handleKeyDown : undefined}
-      className={`flex items-center gap-3 border-b border-cf-border px-4 py-3 ${
+      className={`flex items-center gap-3 border-b border-cf-border ${
+        isSection ? "mt-1 border-t border-cf-border px-4 py-3.5" : "py-3 pl-8 pr-4"
+      } ${
         clickable ? "cursor-pointer hover:bg-cf-bg-200/40" : ""
-      }`}
+      } ${isCurrent ? "bg-cf-bg-200/30" : ""}`}
     >
       <span
         aria-hidden="true"
@@ -1280,10 +1429,21 @@ function AudienceSlideRow({
         )}
       </div>
 
-      <div className="flex min-w-0 flex-1 items-center">
+      <div className="flex min-w-0 flex-1 flex-col">
+        {isSection && (sectionNumber || sectionLabel) && (
+          <span
+            data-testid="slide-manager-section-kicker"
+            className="flex items-baseline gap-2 font-mono text-[10px] uppercase tracking-[0.25em] text-cf-text-subtle"
+          >
+            {sectionNumber && <span>{sectionNumber}</span>}
+            {sectionLabel && <span>{sectionLabel}</span>}
+          </span>
+        )}
         <span
           data-testid="slide-manager-title-display"
-          className="block truncate text-sm text-cf-text"
+          className={`block truncate ${
+            isSection ? "text-base tracking-[-0.02em]" : "text-sm"
+          } text-cf-text`}
           title={titleValue}
         >
           {titleValue || (
@@ -1303,8 +1463,10 @@ function AudienceSlideManager({
   onClose,
   onNavigateToSlide,
   side = "right",
+  currentSlideEffectiveIndex,
 }: Omit<SlideManagerProps, "role">) {
   const { applied } = manifest;
+  const asideRef = useRef<HTMLElement>(null);
 
   // Mirror the same effective-slides derivation `<Deck>` uses. We don't
   // import it from `<Deck>` because `<SlideManager>` is mounted as a
@@ -1319,16 +1481,53 @@ function AudienceSlideManager({
     [effectiveSlides],
   );
 
+  // Click-outside-close — same shape as the admin sidebar. We listen
+  // for `mousedown` to dismiss and arm a one-shot `click` swallower
+  // so the same gesture doesn't ALSO trigger the Deck's click-to-
+  // advance.
+  useEffect(() => {
+    if (!open) return;
+    const isOutside = (target: EventTarget | null) => {
+      const aside = asideRef.current;
+      if (!aside) return false;
+      if (!(target instanceof Node)) return false;
+      return !aside.contains(target);
+    };
+    const onDocMouseDown = (e: MouseEvent) => {
+      if (!isOutside(e.target)) return;
+      const swallow = (ev: MouseEvent) => {
+        ev.stopImmediatePropagation();
+        ev.preventDefault();
+        document.removeEventListener("click", swallow, true);
+      };
+      document.addEventListener("click", swallow, true);
+      window.setTimeout(() => {
+        document.removeEventListener("click", swallow, true);
+      }, 300);
+      onClose();
+    };
+    let id: number | null = window.requestAnimationFrame(() => {
+      id = null;
+      document.addEventListener("mousedown", onDocMouseDown, true);
+    });
+    return () => {
+      if (id !== null) window.cancelAnimationFrame(id);
+      document.removeEventListener("mousedown", onDocMouseDown, true);
+    };
+  }, [open, onClose]);
+
   return (
     <AnimatePresence>
       {open && (
         <motion.aside
           key="slide-manager"
+          ref={asideRef}
           data-testid="slide-manager"
           data-audience
           data-side={side}
           data-no-advance
-          aria-label="Slides"
+          role="region"
+          aria-label="Slide list"
           initial={{ opacity: 0, x: side === "left" ? -24 : 24 }}
           animate={{ opacity: 1, x: 0 }}
           exit={{ opacity: 0, x: side === "left" ? -24 : 24 }}
@@ -1353,7 +1552,7 @@ function AudienceSlideManager({
               data-interactive
               data-testid="slide-manager-close"
               onClick={onClose}
-              aria-label="Close slides"
+              aria-label="Close slide list"
               className="cf-btn-ghost"
             >
               Esc
@@ -1367,6 +1566,7 @@ function AudienceSlideManager({
                 effectiveIndex={row.effectiveIndex}
                 displayNumber={i + 1}
                 slug={slug}
+                isCurrent={currentSlideEffectiveIndex === row.effectiveIndex}
                 onNavigate={onNavigateToSlide}
               />
             ))}

@@ -1067,6 +1067,7 @@ export function Deck({ slug, title, slides }: DeckProps) {
           manifest={manifestHook}
           onClose={closeSlideManager}
           onNavigateToSlide={gotoEffectiveWithBeacon}
+          currentSlideEffectiveIndex={cursor.slide}
           role={presenterMode ? "admin" : "audience"}
           side={sidebarSide}
         />
