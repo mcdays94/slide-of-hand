@@ -1,0 +1,25 @@
+worker/sandbox-artifacts.ts
+  55351e0320bd370f 102-122
+worker/sandbox-artifacts.test.ts
+  55351e0320bd370f 34-37,56-63,66-67,89-92,94,98-165,195-209,221,223,232,239,246,264
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "47c58f4d71f295df4c364f4128a6feea57f45bc4",
+  "prompts": {
+    "55351e0320bd370f": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_1dd5b6588ffehp8b4HkAoNHUq0",
+        "model": "anthropic/claude-opus-4-7"
+      },
+      "human_author": "mcdays94",
+      "messages": [],
+      "total_additions": 137,
+      "total_deletions": 20,
+      "accepted_lines": 129,
+      "overriden_lines": 0
+    }
+  }
+}
