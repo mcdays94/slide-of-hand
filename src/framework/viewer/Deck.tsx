@@ -52,6 +52,7 @@ import {
 } from "./useElementOverrides";
 import { computeSelector, fingerprint, findBySelector } from "@/lib/element-selector";
 import { mergeSlides } from "@/lib/manifest-merge";
+import { findNextNonHiddenSlide } from "./findNextNonHiddenSlide";
 import { usePresenterMode } from "@/framework/presenter/mode";
 import { PresenterAffordances } from "@/framework/presenter/PresenterAffordances";
 import { PresenterTools } from "@/framework/tools/PresenterTools";
@@ -250,6 +251,40 @@ export function Deck({ slug, title, slides }: DeckProps) {
   // sidebar that EDITS the override is gated by `usePresenterMode()` below.
   const themeOverride = useDeckTheme(slug);
   const presenterMode = usePresenterMode();
+
+  // ── Audience deep-link clamp (#209) ────────────────────────────────────
+  // Per ADR 0003 the URL `?slide=N` indexes into effective slides, so a
+  // handcrafted deep link can land on a Hidden slide. Admins want this
+  // (ToC nav to a hidden slide for Q&A). Audiences shouldn't see it.
+  //
+  // When the initial cursor for an audience viewer points at a Hidden
+  // slide, scan forward via `findNextNonHiddenSlide` (then backward as
+  // fallback, then to index 0 if both yield null) and silently `goto`
+  // the clamped index. Fires AT MOST ONCE per mount — once the audience
+  // is steered onto a visible slide we leave the cursor alone so
+  // subsequent navigation isn't fought.
+  const clampedOnceRef = useRef(false);
+  useEffect(() => {
+    if (presenterMode) return; // admin can navigate to hidden slides
+    if (clampedOnceRef.current) return;
+    if (effectiveSlides.length === 0) return;
+    const current = effectiveSlides[cursor.slide];
+    if (!current?.hidden) {
+      // Nothing to clamp — mark done so we don't fire later when an
+      // unrelated cursor change happens to land on a hidden slide.
+      clampedOnceRef.current = true;
+      return;
+    }
+    const fwd = findNextNonHiddenSlide(effectiveSlides, cursor.slide, 1);
+    const back = fwd === null
+      ? findNextNonHiddenSlide(effectiveSlides, cursor.slide, -1)
+      : null;
+    const clamped = fwd ?? back ?? 0;
+    clampedOnceRef.current = true;
+    // eslint-disable-next-line no-console
+    console.warn(`[deck] requested slide is hidden; clamped to ${clamped}`);
+    goto(clamped);
+  }, [presenterMode, effectiveSlides, cursor.slide, goto]);
 
   // ── Per-deck element overrides (issue #14 / Slice 3, #45) ──────────────
   // Both public + admin viewers fetch + apply: the audience also sees a
@@ -513,11 +548,12 @@ export function Deck({ slug, title, slides }: DeckProps) {
           break;
         case "m":
         case "M":
-          // Slide manifest manager — admin (presenter mode) only.
-          if (presenterMode) {
-            e.preventDefault();
-            toggleSlideManager();
-          }
+          // ToC sidebar — opens for BOTH roles (#209). Audience gets a
+          // read-only `[NN] [thumb] title` list with Hidden slides
+          // filtered out; admin gets the full editing surface. The
+          // `<SlideManager>` itself branches on `role` internally.
+          e.preventDefault();
+          toggleSlideManager();
           break;
         case "i":
         case "I":
@@ -956,16 +992,21 @@ export function Deck({ slug, title, slides }: DeckProps) {
             onClose={closeThemeSidebar}
           />
         )}
-        {presenterMode && (
-          <SlideManager
-            open={slideManagerOpen}
-            slug={slug}
-            sourceSlides={slides}
-            manifest={manifestHook}
-            onClose={closeSlideManager}
-            onNavigateToSlide={gotoEffectiveWithBeacon}
-          />
-        )}
+        {/* ToC sidebar — mounted for BOTH roles (#209). The component
+            branches internally on `role`: admin gets the full editing
+            surface from #207/#208 (drag, hide, rename, notes), audience
+            gets a read-only `[NN] [thumb] title` list with Hidden slides
+            filtered out. */}
+        <SlideManager
+          open={slideManagerOpen}
+          slug={slug}
+          sourceSlides={slides}
+          manifest={manifestHook}
+          onClose={closeSlideManager}
+          onNavigateToSlide={gotoEffectiveWithBeacon}
+          role={presenterMode ? "admin" : "audience"}
+        />
+
         {presenterMode && (
           <ElementInspector
             open={inspectorOpen}

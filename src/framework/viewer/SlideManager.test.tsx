@@ -759,3 +759,184 @@ describe("<SlideManager>", () => {
     ).toBeInTheDocument();
   });
 });
+
+// ── #209: audience role ─────────────────────────────────────────────────
+//
+// On the public route the `<Deck>` mounts `<SlideManager role="audience">`
+// for everyone. The sidebar shows a read-only ToC: rows of
+// `[NN] [thumb] title` clickable for nav. Hidden slides are filtered out
+// entirely. None of the admin affordances (drag handle, eye toggle,
+// pencil, note icon) render — even on hover — and there is no save /
+// reset footer.
+
+describe("<SlideManager role='audience'>", () => {
+  it("renders all source slides as rows when none are hidden", () => {
+    render(
+      <SlideManager
+        open={true}
+        slug="hello"
+        sourceSlides={sourceSlides}
+        manifest={makeManifestHook()}
+        onClose={() => {}}
+        role="audience"
+      />,
+    );
+    const rows = screen.getAllByTestId("slide-manager-row");
+    expect(rows).toHaveLength(3);
+    const titles = screen.getAllByTestId("slide-manager-title-display");
+    expect(titles[0]).toHaveTextContent("Title");
+    expect(titles[1]).toHaveTextContent("Intro");
+    expect(titles[2]).toHaveTextContent("End");
+    // The aside still mounts.
+    expect(screen.getByTestId("slide-manager")).toHaveAttribute(
+      "data-audience",
+    );
+  });
+
+  it("filters out source-level Hidden slides entirely", () => {
+    const withHidden: SlideDef[] = [
+      s("title", "Title"),
+      { ...s("intro", "Intro"), hidden: true },
+      s("end", "End"),
+    ];
+    render(
+      <SlideManager
+        open={true}
+        slug="hello"
+        sourceSlides={withHidden}
+        manifest={makeManifestHook()}
+        onClose={() => {}}
+        role="audience"
+      />,
+    );
+    const rows = screen.getAllByTestId("slide-manager-row");
+    expect(rows).toHaveLength(2);
+    const titles = screen.getAllByTestId("slide-manager-title-display");
+    expect(titles[0]).toHaveTextContent("Title");
+    expect(titles[1]).toHaveTextContent("End");
+    // Hidden row's id is absent.
+    expect(
+      rows.find((r) => r.getAttribute("data-slide-id") === "intro"),
+    ).toBeUndefined();
+  });
+
+  it("filters out manifest-Hidden slides entirely", () => {
+    const applied: Manifest = {
+      version: 1,
+      order: ["title", "intro", "end"],
+      overrides: { intro: { hidden: true } },
+      updatedAt: "2026-05-14T00:00:00.000Z",
+    };
+    render(
+      <SlideManager
+        open={true}
+        slug="hello"
+        sourceSlides={sourceSlides}
+        manifest={makeManifestHook({ manifest: applied, applied })}
+        onClose={() => {}}
+        role="audience"
+      />,
+    );
+    const rows = screen.getAllByTestId("slide-manager-row");
+    expect(rows).toHaveLength(2);
+    expect(
+      rows.find((r) => r.getAttribute("data-slide-id") === "intro"),
+    ).toBeUndefined();
+  });
+
+  it("does NOT render any admin affordances (drag, eye, pencil, note)", () => {
+    render(
+      <SlideManager
+        open={true}
+        slug="hello"
+        sourceSlides={sourceSlides}
+        manifest={makeManifestHook()}
+        onClose={() => {}}
+        role="audience"
+      />,
+    );
+    expect(screen.queryByTestId("slide-manager-affordances")).toBeNull();
+    expect(screen.queryByTestId("slide-manager-drag-handle")).toBeNull();
+    expect(screen.queryByTestId("slide-manager-toggle-hidden")).toBeNull();
+    expect(screen.queryByTestId("slide-manager-edit-title")).toBeNull();
+    expect(screen.queryByTestId("slide-manager-toggle-notes")).toBeNull();
+    // No save / reset footer either.
+    expect(screen.queryByTestId("slide-manager-save")).toBeNull();
+    expect(screen.queryByTestId("slide-manager-reset")).toBeNull();
+  });
+
+  it("clicking an audience row calls onNavigateToSlide with the slide's effective index", () => {
+    const onNavigateToSlide = vi.fn();
+    const withHidden: SlideDef[] = [
+      s("title", "Title"),
+      { ...s("intro", "Intro"), hidden: true },
+      s("end", "End"),
+    ];
+    render(
+      <SlideManager
+        open={true}
+        slug="hello"
+        sourceSlides={withHidden}
+        manifest={makeManifestHook()}
+        onClose={() => {}}
+        onNavigateToSlide={onNavigateToSlide}
+        role="audience"
+      />,
+    );
+    const rows = screen.getAllByTestId("slide-manager-row");
+    // Row 0 is the "title" slide → effective index 0.
+    fireEvent.click(rows[0]);
+    expect(onNavigateToSlide).toHaveBeenLastCalledWith(0);
+    // Row 1 is the "end" slide — its effective index is 2 (intro at 1
+    // is hidden and was filtered out of the audience row list).
+    fireEvent.click(rows[1]);
+    expect(onNavigateToSlide).toHaveBeenLastCalledWith(2);
+  });
+
+  it("does not call onNavigateToSlide when the callback is omitted", () => {
+    render(
+      <SlideManager
+        open={true}
+        slug="hello"
+        sourceSlides={sourceSlides}
+        manifest={makeManifestHook()}
+        onClose={() => {}}
+        role="audience"
+      />,
+    );
+    // Sanity — no role="button" assigned when nav isn't wired.
+    const rows = screen.getAllByTestId("slide-manager-row");
+    expect(rows[0]).not.toHaveAttribute("role", "button");
+    fireEvent.click(rows[0]); // Should not throw.
+  });
+
+  it("Close button calls onClose (audience)", () => {
+    const onClose = vi.fn();
+    render(
+      <SlideManager
+        open={true}
+        slug="hello"
+        sourceSlides={sourceSlides}
+        manifest={makeManifestHook()}
+        onClose={onClose}
+        role="audience"
+      />,
+    );
+    fireEvent.click(screen.getByTestId("slide-manager-close"));
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it("does not render when closed (audience)", () => {
+    render(
+      <SlideManager
+        open={false}
+        slug="hello"
+        sourceSlides={sourceSlides}
+        manifest={makeManifestHook()}
+        onClose={() => {}}
+        role="audience"
+      />,
+    );
+    expect(screen.queryByTestId("slide-manager")).not.toBeInTheDocument();
+  });
+});
