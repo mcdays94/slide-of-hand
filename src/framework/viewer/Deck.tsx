@@ -38,6 +38,8 @@ import { ThemeSidebar } from "./ThemeSidebar";
 import { TopToolbar } from "./TopToolbar";
 import { useDeckTheme } from "./useDeckTheme";
 import { SlideManager } from "./SlideManager";
+import { ToCEdgeHandle } from "./ToCEdgeHandle";
+import { useToCEdgeHover } from "./useToCEdgeHover";
 import { useDeckManifest } from "./useDeckManifest";
 import { useDeckAnalytics } from "./useDeckAnalytics";
 import {
@@ -56,6 +58,7 @@ import { findNextNonHiddenSlide } from "./findNextNonHiddenSlide";
 import { usePresenterMode } from "@/framework/presenter/mode";
 import { PresenterAffordances } from "@/framework/presenter/PresenterAffordances";
 import { PresenterTools } from "@/framework/tools/PresenterTools";
+import type { ActiveTool } from "@/framework/tools/ToolActivePill";
 import { AudienceToolMirror } from "@/framework/tools/AudienceToolMirror";
 import { slideTransition } from "@/lib/motion";
 
@@ -346,6 +349,31 @@ export function Deck({ slug, title, slides }: DeckProps) {
   const [themeSidebarOpen, setThemeSidebarOpen] = useState(false);
   const [slideManagerOpen, setSlideManagerOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // ── ToC sidebar edge (#210) ───────────────────────────────────────────
+  // Which side the sidebar anchors to when it opens. Default `"right"`
+  // matches the prior single-side behaviour; clicking a left-edge handle
+  // (added below) flips this to `"left"` before opening. The per-user
+  // `tocSidebarEdge` preference that lets the audience pick a default
+  // lands in the next slice (#211).
+  const [sidebarSide, setSidebarSide] = useState<"left" | "right">("right");
+  // ── Active presenter tool (#210) ──────────────────────────────────────
+  // Mirrored from `<PresenterTools>` via `onActiveToolChange`. Used to
+  // suppress the ToC edge handles while a laser / magnifier / marker
+  // overlay is engaged — the floating chrome would compete with the
+  // overlay cursor.
+  const [activeTool, setActiveTool] = useState<ActiveTool>(null);
+  // ── Fullscreen mirror (#210) ──────────────────────────────────────────
+  // Used by `useToCEdgeHover` to tighten the proximity threshold so
+  // sub-pixel browser quirks don't flicker the handle during a
+  // fullscreen talk.
+  const [fullscreen, setFullscreen] = useState(false);
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    const onChange = () => setFullscreen(Boolean(document.fullscreenElement));
+    document.addEventListener("fullscreenchange", onChange);
+    onChange();
+    return () => document.removeEventListener("fullscreenchange", onChange);
+  }, []);
 
   // ── In-Studio AI agent (#131 phase 1) ──────────────────────────────────
   // Toggled from `<TopToolbar>`'s right cluster (visible only in
@@ -439,6 +467,41 @@ export function Deck({ slug, title, slides }: DeckProps) {
   }, []);
 
   const closeSettings = useCallback(() => {
+    setSettingsOpen(false);
+  }, []);
+
+  // ── ToC edge handles (#210) ───────────────────────────────────────────
+  // Aggregate the suppression flags for the proximity hook. We INCLUDE
+  // `inspectorOpen` (right-side admin sidebar) and `slideManagerOpen`
+  // via the dedicated `sidebarOpen` arg — the latter is named
+  // explicitly so the hook can document its semantics, even though
+  // it's structurally just another "something occupies the edge"
+  // flag. `slideManagerOpen` is intentionally NOT folded into
+  // `anyModalOpen` here for the same reason.
+  const anyModalOpen =
+    overviewOpen ||
+    helpOpen ||
+    settingsOpen ||
+    themeSidebarOpen ||
+    inspectorOpen;
+  const { leftHover, rightHover } = useToCEdgeHover({
+    toolActive: activeTool !== null,
+    modalOpen: anyModalOpen,
+    sidebarOpen: slideManagerOpen,
+    fullscreen,
+  });
+
+  // Open the sidebar from the matching edge. Anchors `sidebarSide` to
+  // the clicked side BEFORE flipping `slideManagerOpen`, so the
+  // `<SlideManager>` mounts with the correct positioning on first
+  // paint (no left-then-right pop). Other overlays are closed so the
+  // sidebar has the edge to itself.
+  const openSidebarFromSide = useCallback((side: "left" | "right") => {
+    setSidebarSide(side);
+    setSlideManagerOpen(true);
+    setOverviewOpen(false);
+    setHelpOpen(false);
+    setThemeSidebarOpen(false);
     setSettingsOpen(false);
   }, []);
 
@@ -1005,6 +1068,23 @@ export function Deck({ slug, title, slides }: DeckProps) {
           onClose={closeSlideManager}
           onNavigateToSlide={gotoEffectiveWithBeacon}
           role={presenterMode ? "admin" : "audience"}
+          side={sidebarSide}
+        />
+
+        {/* Floating ToC edge handles (#210). Fade in when the cursor
+            is within 12 px of the left/right viewport edge AND no
+            suppression flag (active tool, modal open, sidebar
+            already open, fullscreen-not-at-edge) is set. Clicking
+            opens the ToC sidebar from the matching side. */}
+        <ToCEdgeHandle
+          visible={leftHover}
+          side="left"
+          onClick={() => openSidebarFromSide("left")}
+        />
+        <ToCEdgeHandle
+          visible={rightHover}
+          side="right"
+          onClick={() => openSidebarFromSide("right")}
         />
 
         {presenterMode && (
@@ -1080,7 +1160,7 @@ export function Deck({ slug, title, slides }: DeckProps) {
             (NOT inside <PresenterAffordances>, which is auth-gated)
             so they're available on every deck viewer regardless of
             authentication. 2026-05-11. */}
-        <PresenterTools />
+        <PresenterTools onActiveToolChange={setActiveTool} />
         {/* Item F (#111): on the AUDIENCE-facing deck (i.e. NOT the
             presenter window — distinguished by the `?presenter=1` URL
             param being absent), subscribe to broadcast tool cursors so

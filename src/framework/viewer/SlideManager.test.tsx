@@ -940,3 +940,83 @@ describe("<SlideManager role='audience'>", () => {
     expect(screen.queryByTestId("slide-manager")).not.toBeInTheDocument();
   });
 });
+
+// ── side prop (#210) ─────────────────────────────────────────────────────
+//
+// `side` controls which edge the sidebar anchors to. Default `"right"`
+// preserves the original behaviour. `"left"` flips the positioning +
+// border so the sidebar slides in from the left for the matching edge
+// handle (`<ToCEdgeHandle side="left">`).
+
+describe("<SlideManager side> (admin)", () => {
+  it("defaults to side='right' (right-anchored, left border)", () => {
+    render(
+      <SlideManager
+        open={true}
+        slug="hello"
+        sourceSlides={sourceSlides}
+        manifest={makeManifestHook()}
+        onClose={() => {}}
+      />,
+    );
+    const aside = screen.getByTestId("slide-manager");
+    expect(aside.getAttribute("data-side")).toBe("right");
+    expect(aside.className).toMatch(/right-0/);
+    expect(aside.className).toMatch(/border-l/);
+    expect(aside.className).not.toMatch(/left-0/);
+  });
+
+  it("anchors to the left when side='left' (left border)", () => {
+    render(
+      <SlideManager
+        open={true}
+        slug="hello"
+        sourceSlides={sourceSlides}
+        manifest={makeManifestHook()}
+        onClose={() => {}}
+        side="left"
+      />,
+    );
+    const aside = screen.getByTestId("slide-manager");
+    expect(aside.getAttribute("data-side")).toBe("left");
+    expect(aside.className).toMatch(/left-0/);
+    expect(aside.className).toMatch(/border-r/);
+    expect(aside.className).not.toMatch(/right-0/);
+  });
+});
+
+describe("<SlideManager side> (audience)", () => {
+  it("defaults to side='right'", () => {
+    render(
+      <SlideManager
+        open={true}
+        slug="hello"
+        sourceSlides={sourceSlides}
+        manifest={makeManifestHook()}
+        onClose={() => {}}
+        role="audience"
+      />,
+    );
+    const aside = screen.getByTestId("slide-manager");
+    expect(aside.getAttribute("data-side")).toBe("right");
+    expect(aside.className).toMatch(/right-0/);
+  });
+
+  it("anchors to the left when side='left'", () => {
+    render(
+      <SlideManager
+        open={true}
+        slug="hello"
+        sourceSlides={sourceSlides}
+        manifest={makeManifestHook()}
+        onClose={() => {}}
+        role="audience"
+        side="left"
+      />,
+    );
+    const aside = screen.getByTestId("slide-manager");
+    expect(aside.getAttribute("data-side")).toBe("left");
+    expect(aside.className).toMatch(/left-0/);
+    expect(aside.className).toMatch(/border-r/);
+  });
+});

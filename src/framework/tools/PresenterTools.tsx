@@ -36,7 +36,17 @@ import { Marker } from "./Marker";
 import { AutoHideChrome } from "./AutoHideChrome";
 import { ToolActivePill, type ActiveTool } from "./ToolActivePill";
 
-export function PresenterTools() {
+export interface PresenterToolsProps {
+  /**
+   * Optional callback notifying the parent when the active tool
+   * (laser / magnifier / marker) changes. Used by `<Deck>` to
+   * suppress the ToC edge handles while a tool is engaged (#210).
+   * `null` ⇒ no tool active.
+   */
+  onActiveToolChange?: (tool: ActiveTool) => void;
+}
+
+export function PresenterTools({ onActiveToolChange }: PresenterToolsProps = {}) {
   const [laserActive, setLaserActive] = useState(false);
   const [magnifierActive, setMagnifierActive] = useState(false);
   const [markerActive, setMarkerActive] = useState(false);
@@ -51,6 +61,13 @@ export function PresenterTools() {
       : laserActive
         ? "laser"
         : null;
+
+  // Notify the parent on changes. We fire in an effect so subscribers
+  // don't observe state mid-render (and so we can include this in the
+  // dep array cleanly).
+  useEffect(() => {
+    onActiveToolChange?.(activeTool);
+  }, [activeTool, onActiveToolChange]);
 
   // Mirror activeTool + legacy markerActive flag onto the deck root so CSS
   // can scope cursor visibility.
