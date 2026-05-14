@@ -48,7 +48,7 @@ export default function Root() {
     <main className="mx-auto flex min-h-screen w-full max-w-6xl flex-col gap-12 px-6 py-16 sm:px-8 sm:py-24">
       <header className="flex flex-col gap-4">
         <div className="flex items-start justify-between gap-4">
-          <p className="cf-tag">Slide of Hand</p>
+          <p className="cf-tag text-cf-orange">Slide of Hand</p>
           <div className="flex items-center gap-2">
             <Link
               to="/admin"

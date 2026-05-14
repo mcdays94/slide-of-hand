@@ -66,7 +66,7 @@ function AdminAuthChecking() {
       data-testid="admin-auth-checking"
       className="flex min-h-screen flex-col items-center justify-center gap-4 bg-cf-bg-100 px-6 text-center"
     >
-      <p className="cf-tag">Slide of Hand · Admin</p>
+      <p className="cf-tag text-cf-orange">Slide of Hand · Admin</p>
       <p className="text-sm text-cf-text-muted">Checking session…</p>
     </main>
   );
@@ -87,7 +87,7 @@ function AdminAuthRequired() {
       data-testid="admin-auth-required"
       className="flex min-h-screen flex-col items-center justify-center gap-5 bg-cf-bg-100 px-6 text-center"
     >
-      <p className="cf-tag">Slide of Hand · Admin</p>
+      <p className="cf-tag text-cf-orange">Slide of Hand · Admin</p>
       <h1 className="text-2xl font-medium tracking-[-0.025em] text-cf-text">
         Sign in required
       </h1>
