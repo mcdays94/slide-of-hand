@@ -519,10 +519,23 @@ function PresenterWindowAuthenticated({ deck }: PresenterWindowProps) {
   // either window restores to the same position) → {0, 0}. Reuse the
   // exact resolver the audience side uses so the two windows agree on
   // initial-cursor priority.
+  //
+  // Per ADR 0003, the cursor's `slide` field is now an index into
+  // **effective slides** (Hidden included). The presenter window does
+  // not apply manifest overrides, so `deck.slides` here is the source
+  // slides — for any deck with no Hidden slides in source AND no
+  // manifest-level hides, this equals the audience-side effective list,
+  // which is the common case. The full slide list (NOT filtered to
+  // visible) is fed in so the index space matches the audience cursor.
   const initialCursor = useMemo<Cursor>(() => {
-    const phasesPerSlide = visibleSlides.map((s) => s.phases ?? 0);
     return resolveInitialCursor(
-      { slug: deck.meta.slug, phases: phasesPerSlide },
+      {
+        slug: deck.meta.slug,
+        slides: deck.slides.map((s) => ({
+          phases: s.phases ?? 0,
+          hidden: s.hidden,
+        })),
+      },
       {
         search: typeof window !== "undefined" ? window.location.search : "",
         storage:
@@ -569,8 +582,13 @@ function PresenterWindowAuthenticated({ deck }: PresenterWindowProps) {
       url.searchParams.set("slide", String(cursor.slide));
       url.searchParams.set("phase", String(cursor.phase));
       window.history.replaceState(window.history.state, "", url.toString());
+      // Storage key bumped to `-v2:` alongside ADR 0003 — the cursor
+      // now indexes **effective slides** rather than **visible slides**.
+      // Stale v1 entries are quietly orphaned (the resolver falls back
+      // to defaults), avoiding any chance of mis-interpreting an old
+      // visibleSlides index against the new effective-slides axis.
       window.sessionStorage.setItem(
-        `slide-of-hand-deck-cursor:${deck.meta.slug}`,
+        `slide-of-hand-deck-cursor-v2:${deck.meta.slug}`,
         JSON.stringify(cursor),
       );
     } catch {

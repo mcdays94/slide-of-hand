@@ -206,18 +206,27 @@ export function Deck({ slug, title, slides }: DeckProps) {
     [effectiveSlides],
   );
 
+  // Per ADR 0003, `useDeckState`'s cursor is keyed on **effective
+  // slides** (Hidden included) rather than **visible slides**. The
+  // audience render path still derives `visibleSlides` for the rendered
+  // viewport and audience ToC row list — see below — but Sequential nav
+  // state walks the full effective list and skips Hidden internally via
+  // `findNextNonHiddenSlide`.
   const deckShape = useMemo(
     () => ({
       slug,
-      phases: visibleSlides.map((s) => s.phases ?? 0),
+      slides: effectiveSlides.map((s) => ({
+        phases: s.phases ?? 0,
+        hidden: s.hidden,
+      })),
     }),
-    [slug, visibleSlides],
+    [slug, effectiveSlides],
   );
 
   const { cursor, total, next, prev, first, last, goto } =
     useDeckState(deckShape);
 
-  const slide = visibleSlides[cursor.slide];
+  const slide = effectiveSlides[cursor.slide];
 
   // ── Theme ───────────────────────────────────────────────────────────────
   const [theme, setTheme] = useState<Theme>(readInitialTheme);

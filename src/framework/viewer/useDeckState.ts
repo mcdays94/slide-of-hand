@@ -1,9 +1,17 @@
 /**
  * Deck navigation state.
  *
+ * Per ADR 0003, the cursor is keyed on **effective slides** (the result of
+ * `mergeSlides(sourceSlides, manifestOverrides)` — Hidden slides included),
+ * NOT the audience-facing **visible slides** filter. This lets Sequential
+ * nav skip Hidden slides while ToC nav (admin) can still `goto(N)` a hidden
+ * slide without un-hiding it.
+ *
  * Phase advances first, then slide. `prev` walks back through phases on the
- * current slide before stepping to the previous slide (landing on its final
- * phase, so audiences see the full context if you backtrack).
+ * current slide before stepping to the previous non-hidden slide (landing on
+ * its final phase, so audiences see the full context if you backtrack).
+ * `next` and `prev` skip Hidden slides via `findNextNonHiddenSlide`. `goto`
+ * does NOT filter — it lands on whatever slide is at `effectiveSlides[N]`.
  *
  * The reducer is exported separately from the hook so it can be unit-tested
  * without React. The hook layers on `?slide=N` URL parsing (mount-time only)
@@ -12,16 +20,32 @@
  */
 
 import { useEffect, useMemo, useReducer } from "react";
+import { findNextNonHiddenSlide } from "./findNextNonHiddenSlide";
 
 export interface DeckCursor {
   slide: number;
   phase: number;
 }
 
+/**
+ * The shape `useDeckState` consumes. Each entry describes one slide in
+ * the **effective slides** array (post `mergeSlides`):
+ *   - `phases` — additional reveals before `next` advances off the slide.
+ *   - `hidden` — when true, Sequential nav skips this slide (ToC nav and
+ *     `goto(N)` still land on it).
+ */
+export interface DeckSlideShape {
+  phases: number;
+  hidden?: boolean;
+}
+
 export interface DeckShape {
   slug: string;
-  /** Per-slide phase counts. `phases[i]` = additional reveals before next slide. */
-  phases: number[];
+  /**
+   * Effective-slides list (full, ordered, hidden included). The cursor's
+   * `slide` field indexes into this array.
+   */
+  slides: DeckSlideShape[];
 }
 
 export type DeckAction =
@@ -32,7 +56,33 @@ export type DeckAction =
   | { type: "goto"; slide: number; phase?: number }
   | { type: "set-phase"; phase: number };
 
-const lastSlideIndex = (deck: DeckShape) => Math.max(0, deck.phases.length - 1);
+const lastSlideIndex = (deck: DeckShape) =>
+  Math.max(0, deck.slides.length - 1);
+
+const phasesOnSlide = (deck: DeckShape, i: number) =>
+  deck.slides[i]?.phases ?? 0;
+
+/**
+ * Find the first non-hidden slide scanning forward from -1 (i.e. the
+ * very first non-hidden slide). Returns 0 when the deck has no slides at
+ * all (defensive — the cursor still needs a well-defined integer).
+ */
+const firstNonHiddenIndex = (deck: DeckShape): number => {
+  if (deck.slides.length === 0) return 0;
+  if (!deck.slides[0]?.hidden) return 0;
+  return findNextNonHiddenSlide(deck.slides, 0, 1) ?? 0;
+};
+
+/**
+ * Find the last non-hidden slide scanning backward from `length`. Returns
+ * the trailing index when no non-hidden slide exists (defensive).
+ */
+const lastNonHiddenIndex = (deck: DeckShape): number => {
+  const last = lastSlideIndex(deck);
+  if (deck.slides.length === 0) return 0;
+  if (!deck.slides[last]?.hidden) return last;
+  return findNextNonHiddenSlide(deck.slides, last, -1) ?? last;
+};
 
 /**
  * Pure reducer. Tested in isolation in `useDeckState.test.ts`.
@@ -40,10 +90,14 @@ const lastSlideIndex = (deck: DeckShape) => Math.max(0, deck.phases.length - 1);
  * Invariants:
  *   - `slide` is clamped to `[0, slides.length - 1]`.
  *   - `phase` is clamped to `[0, slides[slide].phases]`.
- *   - `next` advances phase before slide; at last phase of last slide, it
- *      becomes a no-op.
- *   - `prev` walks back through phases on the current slide; at phase 0 it
- *      steps to `slide - 1` and lands on that slide's final phase.
+ *   - `next` advances phase before slide; when at the last phase of the
+ *     current slide, it skips Hidden slides to the next non-hidden one.
+ *     At the last phase of the last non-hidden slide, it becomes a no-op.
+ *   - `prev` walks back through phases on the current slide; at phase 0
+ *     it steps to the previous non-hidden slide's final phase.
+ *   - `goto(N)` does NOT skip hidden — it lands on `slides[N]` directly
+ *     (subject to the [0, last] clamp). This is the ToC-nav entrypoint
+ *     admins use to navigate to a Hidden slide without un-hiding it.
  */
 export function deckReducer(
   state: DeckCursor,
@@ -51,41 +105,53 @@ export function deckReducer(
   deck: DeckShape,
 ): DeckCursor {
   const last = lastSlideIndex(deck);
-  const phasesOnSlide = (i: number) => deck.phases[i] ?? 0;
+
+  // When the cursor is parked on a Hidden slide (admin landed via ToC
+  // nav), Sequential nav skips out of it directly — its phase reveals
+  // never render to anyone, so crawling them on the way out would be
+  // meaningless. For non-Hidden current slides the usual
+  // "phase-before-slide" walk applies.
+  const onHidden = deck.slides[state.slide]?.hidden === true;
 
   switch (action.type) {
     case "next": {
-      const max = phasesOnSlide(state.slide);
-      if (state.phase < max) {
+      const max = phasesOnSlide(deck, state.slide);
+      if (!onHidden && state.phase < max) {
         return { slide: state.slide, phase: state.phase + 1 };
       }
-      if (state.slide < last) {
-        return { slide: state.slide + 1, phase: 0 };
+      const target = findNextNonHiddenSlide(deck.slides, state.slide, 1);
+      if (target !== null) {
+        return { slide: target, phase: 0 };
       }
       return state;
     }
     case "prev": {
-      if (state.phase > 0) {
+      if (!onHidden && state.phase > 0) {
         return { slide: state.slide, phase: state.phase - 1 };
       }
-      if (state.slide > 0) {
-        const target = state.slide - 1;
-        return { slide: target, phase: phasesOnSlide(target) };
+      const target = findNextNonHiddenSlide(deck.slides, state.slide, -1);
+      if (target !== null) {
+        return { slide: target, phase: phasesOnSlide(deck, target) };
       }
       return state;
     }
-    case "first":
-      return { slide: 0, phase: 0 };
-    case "last":
-      return { slide: last, phase: phasesOnSlide(last) };
+    case "first": {
+      const target = firstNonHiddenIndex(deck);
+      return { slide: target, phase: 0 };
+    }
+    case "last": {
+      const target = lastNonHiddenIndex(deck);
+      return { slide: target, phase: phasesOnSlide(deck, target) };
+    }
     case "goto": {
+      // Deliberately does NOT skip Hidden — ToC nav (admin) lands here.
       const slide = Math.max(0, Math.min(action.slide, last));
-      const max = phasesOnSlide(slide);
+      const max = phasesOnSlide(deck, slide);
       const phase = Math.max(0, Math.min(action.phase ?? 0, max));
       return { slide, phase };
     }
     case "set-phase": {
-      const max = phasesOnSlide(state.slide);
+      const max = phasesOnSlide(deck, state.slide);
       return {
         slide: state.slide,
         phase: Math.max(0, Math.min(action.phase, max)),
@@ -96,7 +162,11 @@ export function deckReducer(
   }
 }
 
-const STORAGE_PREFIX = "slide-of-hand-deck-cursor:";
+// v2: the cursor index now refers to **effective slides** rather than
+// **visible slides** (ADR 0003). The version bump quietly drops stale
+// v1 entries so reloaded decks fall back to defaults instead of being
+// misinterpreted against the new index.
+const STORAGE_PREFIX = "slide-of-hand-deck-cursor-v2:";
 
 interface ParsedUrlCursor {
   slide?: number;
@@ -105,7 +175,8 @@ interface ParsedUrlCursor {
 
 /**
  * Parse `?slide=N&phase=K` from a URL search string. Both numeric, both
- * optional, both must be non-negative integers to count.
+ * optional, both must be non-negative integers to count. Post ADR 0003
+ * the numbers index into **effective slides**.
  */
 export function parseUrlCursor(search: string): ParsedUrlCursor {
   if (!search) return {};
@@ -131,6 +202,12 @@ export function parseUrlCursor(search: string): ParsedUrlCursor {
  *
  * Priority: `?slide=N` URL > sessionStorage > {0,0}. URL wins over storage so
  * an explicit deep link always trumps a stale stored position.
+ *
+ * Both `?slide=N` and the stored cursor are interpreted as **effective
+ * slides** indices (ADR 0003). The clamp does NOT skip Hidden — a deep
+ * link to a Hidden slide lands on it as-is. Audience-side handling of
+ * that case (clamp + console warning) is the responsibility of a later
+ * slice in #196.
  */
 export function resolveInitialCursor(
   deck: DeckShape,
@@ -140,10 +217,9 @@ export function resolveInitialCursor(
   } = {},
 ): DeckCursor {
   const last = lastSlideIndex(deck);
-  const phasesOnSlide = (i: number) => deck.phases[i] ?? 0;
   const clamp = (slide: number, phase: number): DeckCursor => {
     const s = Math.max(0, Math.min(slide, last));
-    const p = Math.max(0, Math.min(phase, phasesOnSlide(s)));
+    const p = Math.max(0, Math.min(phase, phasesOnSlide(deck, s)));
     return { slide: s, phase: p };
   };
 
@@ -234,7 +310,7 @@ export function useDeckState(deck: DeckShape): UseDeckStateResult {
 
   return {
     cursor,
-    total: deck.phases.length,
+    total: deck.slides.length,
     next: () => dispatch({ type: "next" }),
     prev: () => dispatch({ type: "prev" }),
     first: () => dispatch({ type: "first" }),
