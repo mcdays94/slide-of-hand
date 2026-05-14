@@ -1,0 +1,25 @@
+index.html
+  d70e22376149f279 5-8,10-14
+public/favicon.svg
+  d70e22376149f279 1,3-7
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "f32ff25e94dcdf3c4a313dd115b26e95275bccc0",
+  "prompts": {
+    "d70e22376149f279": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_1da295040ffe0rdRIXDpbOYcYo",
+        "model": "anthropic/claude-opus-4-7"
+      },
+      "human_author": "mcdays94",
+      "messages": [],
+      "total_additions": 116,
+      "total_deletions": 2,
+      "accepted_lines": 116,
+      "overriden_lines": 0
+    }
+  }
+}
