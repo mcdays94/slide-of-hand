@@ -14,6 +14,24 @@ A self-hosted deck platform that runs on Cloudflare Workers + Static Assets. Eac
 
 ---
 
+## Agent skills
+
+The Pocock engineering skills (`to-prd`, `to-issues`, `triage`, `diagnose`, `tdd`, `improve-codebase-architecture`, `grill-with-docs`, `zoom-out`) consume three per-repo config files.
+
+### Issue tracker
+
+GitHub issues at [github.com/mcdays94/slide-of-hand](https://github.com/mcdays94/slide-of-hand). Use `gh`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Canonical 5-state vocabulary (`needs-triage` / `needs-info` / `ready-for-agent` / `ready-for-human` / `wontfix`). Only `wontfix` exists as a GitHub label today; the other four are created lazily on first use. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context. `CONTEXT.md` at repo root, `docs/adr/` for architecture decisions. See `docs/agents/domain.md`.
+
+---
+
 ## Status
 
 **v1.** Wave 1–3 are merged (scaffold, framework + hello deck, public index, admin viewer, presenter window + speaker notes, presentation tools). Wave 4 / Slice 7 wires up the production custom domain + Cloudflare Access (issue #8). The PRD lives at GitHub issue #1.
