@@ -129,7 +129,21 @@ export default function NewDeckRoute() {
           Back to decks
         </Link>
         <div className="flex flex-col gap-2">
-          <p className="cf-tag">New deck</p>
+          <div className="flex items-center gap-3">
+            <p className="cf-tag">New deck</p>
+            {/* Alpha pill (#215). The AI deck creator is functional but
+                output quality varies and certain model picks fail mid-run;
+                signal that openly. `title` doubles as the screen-reader
+                description; the visible label is a single word. */}
+            <span
+              data-testid="ai-deck-creator-alpha-pill"
+              aria-label="Alpha — this feature is experimental"
+              title="This feature is in alpha. Output quality varies, some model picks may fail mid-run, and the rendered-preview path is still stubbed. Not recommended for production-critical decks yet."
+              className="inline-flex items-center rounded-full border border-cf-orange/40 bg-cf-orange-light px-2 py-0.5 font-mono text-[10px] font-medium uppercase tracking-[0.25em] text-cf-orange"
+            >
+              Alpha
+            </span>
+          </div>
           <h1 className="text-3xl font-medium tracking-[-0.025em] text-cf-text">
             Build a deck with AI
           </h1>

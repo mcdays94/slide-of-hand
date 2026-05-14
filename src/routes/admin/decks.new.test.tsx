@@ -137,6 +137,24 @@ describe("<NewDeckRoute>", () => {
     expect(screen.getByText(/cloudflare artifacts/i)).toBeDefined();
   });
 
+  it("renders an Alpha pill next to the New deck kicker (#215)", async () => {
+    setupHooks();
+    await renderRoute();
+    const pill = screen.getByTestId("ai-deck-creator-alpha-pill");
+    expect(pill).toBeDefined();
+    // Visible label is the single word.
+    expect(pill.textContent?.trim()).toBe("Alpha");
+    // Hover / SR explanation conveys WHY this is marked alpha — output
+    // variability, model failures, stubbed preview. Matches the issue's
+    // intent.
+    const title = pill.getAttribute("title") ?? "";
+    expect(title).toMatch(/alpha/i);
+    expect(title).toMatch(/output quality/i);
+    // ARIA label is set for screen readers (the visible label alone is
+    // insufficient context).
+    expect(pill.getAttribute("aria-label")).toMatch(/experimental/i);
+  });
+
   it("renders a Back to decks link pointing at /admin", async () => {
     setupHooks();
     await renderRoute();
