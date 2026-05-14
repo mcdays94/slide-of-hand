@@ -43,20 +43,54 @@ export interface CloneArtifactsOptions {
   authenticatedUrl: string;
   /** Target directory inside the sandbox. Defaults to `/workspace/repo`. */
   workdir?: string;
-  /** Branch to check out. Defaults to `"main"`. */
+  /**
+   * Local branch to ensure exists after clone. Defaults to `"main"`.
+   * See the clone implementation for why this is a LOCAL-branch
+   * concern (not a `-b` arg to `git clone`).
+   */
   ref?: string;
-  /** Clone timeout in ms. Defaults to 60s. */
-  cloneTimeoutMs?: number;
-  /** Shallow clone depth. Defaults to 1 (we never need full history). */
-  depth?: number;
 }
 
 export type CloneArtifactsResult =
   | { ok: true; workdir: string; ref: string }
   | { ok: false; error: string };
 
-export const DEFAULT_CLONE_TIMEOUT_MS = 60_000;
-
+/**
+ * Clone an Artifacts repo into the Sandbox.
+ *
+ * ## Why this uses raw `git clone` (no `-b <ref>`)
+ *
+ * Artifacts repos created via `Artifacts.create(name, {
+ * setDefaultBranch: "main" })` enter an **unborn-branch** state:
+ * the repo has a default-branch HEAD pointer to `refs/heads/main`,
+ * but no commits behind it. `git clone -b main <url>` against such
+ * a repo fails with `fatal: Remote branch main not found in upstream
+ * origin` — git refuses to clone with an explicit branch when that
+ * branch is unborn.
+ *
+ * This was surfaced 2026-05-13 when the #182 workaround switched
+ * draft creation from `starter.fork()` to `Artifacts.create()`. With
+ * the previous fork path, the source `deck-starter` was also unborn
+ * but `fork()` may have synthesised some server-side state that hid
+ * the issue. The diag's `forkApiHealthy: true` + `clone` failure
+ * confirms `create()` produces strictly unborn repos.
+ *
+ * The fix: drop the `-b <ref>` from the clone command. Plain
+ * `git clone <url> <workdir>`:
+ *
+ *   - On an unborn-branch (just-created) repo: succeeds with
+ *     "warning: You appear to have cloned an empty repository", empty
+ *     working tree, local HEAD points to an unborn `main`.
+ *   - On a non-empty repo (iteration / publish flows): clones the
+ *     remote's default branch as usual.
+ *
+ * After clone, `git checkout -B <ref>` ensures the local branch ref
+ * exists. `-B` force-creates if missing, resets to HEAD if present —
+ * idempotent across the unborn (force-create local `main`) and
+ * existing-branch (no-op) cases. The subsequent `git push -u origin
+ * main` in `commitAndPushToArtifactsInSandbox` establishes the branch
+ * on the remote.
+ */
 export async function cloneArtifactsRepoIntoSandbox(
   sandbox: SandboxLike,
   options: CloneArtifactsOptions,
@@ -65,18 +99,39 @@ export async function cloneArtifactsRepoIntoSandbox(
     (options.workdir ?? DEFAULT_WORKDIR).trim() || DEFAULT_WORKDIR;
   const ref = (options.ref ?? "main").trim() || "main";
   try {
-    const result = await sandbox.gitCheckout(options.authenticatedUrl, {
-      branch: ref,
-      targetDir: workdir,
-      depth: options.depth ?? 1,
-      cloneTimeoutMs: options.cloneTimeoutMs ?? DEFAULT_CLONE_TIMEOUT_MS,
-    });
-    if (!result.success) {
+    // Plain `git clone` — see the function's doc comment for the
+    // rationale (unborn-branch handling).
+    //
+    // URL is double-quoted to prevent shell interpretation. The
+    // authenticated URL has the form `https://x:<token>@host/path`
+    // — all safe characters inside double quotes, and
+    // `buildAuthenticatedRemoteUrl` already strips the `?expires=`
+    // query suffix so there's no `?` / `&` / `=` that bash would
+    // care about.
+    const cloneResult = await sandbox.exec(
+      `git clone "${options.authenticatedUrl}" "${workdir}"`,
+    );
+    if (!cloneResult.success || cloneResult.exitCode !== 0) {
       return {
         ok: false,
-        error: `git clone failed (exit ${result.exitCode ?? "unknown"})`,
+        error: `git clone failed (exit ${cloneResult.exitCode ?? "unknown"})`,
       };
     }
+
+    // Ensure the local branch ref exists. `-B` is force-create-or-
+    // reset, so it handles both the unborn (no `main` branch
+    // existed → create it) and the existing-branch (`main` exists →
+    // reset to HEAD which is a no-op for a just-cloned tree) cases.
+    const checkoutResult = await sandbox.exec(
+      `git -C "${workdir}" checkout -B "${ref}"`,
+    );
+    if (!checkoutResult.success || checkoutResult.exitCode !== 0) {
+      return {
+        ok: false,
+        error: `git checkout -B ${ref} failed (exit ${checkoutResult.exitCode ?? "unknown"})`,
+      };
+    }
+
     return { ok: true, workdir, ref };
   } catch (err) {
     return {
