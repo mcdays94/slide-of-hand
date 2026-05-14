@@ -27,7 +27,7 @@
  * full skill body).
  */
 
-import { streamObject } from "ai";
+import { generateObject } from "ai";
 import { createWorkersAI } from "workers-ai-provider";
 import { buildAiGatewayHeaders } from "./ai-gateway";
 import { z } from "zod";
@@ -45,15 +45,35 @@ import { z } from "zod";
 export const AI_GATEWAY_ID = "slide-of-hand-agent";
 
 /**
- * Default model for deck creation. GPT-OSS 120B is reasoning-tuned
- * and produces the most consistent structured output in our testing.
- * Override via `options.modelId` if the user has selected a
- * different model in Settings.
+ * Default model for deck creation. Kimi K2.6 (`@cf/moonshotai/kimi-k2.6`)
+ * is the proven choice — the e2e Playwright run on 2026-05-14 took it
+ * fork → clone → ai_gen → apply → commit → push to a real published
+ * draft (slug `cloudflare-workers`, commit `ab1304939...`). Kimi's
+ * thinking/reasoning step is what makes it work where smaller models
+ * fail; the schema is non-trivial and the output needs to converge to
+ * valid JSON in one pass.
  *
- * Inlined for the same reason as `AI_GATEWAY_ID` above. Mirrors
- * `AI_ASSISTANT_MODEL_IDS["gpt-oss-120b"]` in `worker/agent.ts`.
+ * Other reasoning-class options tested or available:
+ *   - `@cf/openai/gpt-oss-120b` — original default. Fails the parse
+ *     when paired with `streamObject` (see `streamDeckFiles` below).
+ *     May work via `generateObject` (untested as of this commit).
+ *   - `@cf/google/gemma-4-26b-a4b-it` — hit the 5-min Workers AI
+ *     timeout with `streamObject` (18,326 tokens output, never
+ *     converged). `generateObject` may dodge that. Available via the
+ *     Settings model picker as an override.
+ *   - `@cf/zai-org/glm-4.7-flash` — untested. Available via wrangler
+ *     catalog.
+ *
+ * Smaller non-reasoning models (Gemma 3 12B, etc.) DO NOT work — they
+ * 408-timeout at 2 minutes with zero output tokens. The deck-files
+ * schema requires real reasoning capability.
+ *
+ * Override via `options.modelId` if the user has selected a different
+ * model in Settings. The friendly-key allow-list lives in
+ * `src/lib/ai-models.ts` and `worker/agent.ts`'s
+ * `AI_ASSISTANT_MODEL_IDS`.
  */
-export const DEFAULT_DECK_GEN_MODEL_ID = "@cf/openai/gpt-oss-120b";
+export const DEFAULT_DECK_GEN_MODEL_ID = "@cf/moonshotai/kimi-k2.6";
 
 export interface AiDeckGenInput {
   /** Kebab-case slug for the deck. Used to scope file paths. */
@@ -422,7 +442,35 @@ export function streamDeckFiles(
     });
   const model = buildModel(aiBinding, modelId);
 
-  const stream = streamObject({
+  // Use `generateObject` (non-streaming) rather than `streamObject`.
+  //
+  // Empirically (the 2026-05-14 e2e marathon), `streamObject` against
+  // workers-ai-provider failed across every model we tried:
+  //   - `@cf/openai/gpt-oss-120b` — fast "could not parse the
+  //     response" failures across 5+ retries.
+  //   - `@cf/google/gemma-4-26b-a4b-it` — streamed for the full 5-min
+  //     Workers AI timeout (18,326 output tokens) without ever
+  //     converging to a parseable object.
+  //   - `@cf/google/gemma-3-12b-it` — 408 timeout at 120s with 0
+  //     output tokens. Not a reasoning model — skip.
+  //
+  // Switching to `generateObject` + Kimi K2.6 cleared the pipeline:
+  // 142s ai_gen, 5,875 output tokens, valid JSON, deck pushed to
+  // Artifacts with commit `ab1304939...`. Reasoning models think
+  // internally before emitting; `streamObject`'s progressive parser
+  // expects mid-stream JSON fragments which reasoning models don't
+  // produce. `generateObject` waits for the full response and parses
+  // once, which matches reasoning-model output behaviour.
+  //
+  // UX trade-off: no progressive file rendering — files all appear
+  // at once when the model finishes. Acceptable for first-turn deck
+  // creation; the canvas's `apply` / `commit` / `push` chips still
+  // show progression.
+  //
+  // The function still exposes the `partials` async iterable for
+  // contract compatibility with the orchestrator. It yields a single
+  // "all done" partial at the end instead of progressively.
+  const objectPromise = generateObject({
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     model: model as any,
     schema: deckGenSchema,
@@ -430,43 +478,48 @@ export function streamDeckFiles(
     prompt: buildUserMessage(input),
   });
 
-  // Transform the deep-partial JSON yielded by `partialObjectStream`
-  // into the public `DeckGenPartial` shape. The transform is forgiving
-  // — a partial may have files with missing paths or content (mid-
-  // parse); skip the ones without a path and default missing content
-  // to an empty string. The LAST file with a valid path is the one
-  // currently being written.
+  // `partials` yields exactly once — at the end, with all files
+  // marked done. The orchestrator's `for await (const partial of
+  // partials)` loop iterates once. No mid-stream snapshots reach
+  // the canvas, so the legacy "writing" intermediate state is
+  // skipped.
   const partials: AsyncIterable<DeckGenPartial> = (async function* () {
-    for await (const raw of stream.partialObjectStream) {
-      const rawFiles = Array.isArray(raw?.files) ? raw.files : [];
+    try {
+      const { object } = await objectPromise;
+      const rawFiles = Array.isArray(object?.files) ? object.files : [];
       const validFiles = rawFiles.filter(
-        (f): f is { path: string; content?: string } =>
-          typeof f?.path === "string" && f.path.length > 0,
+        (f): f is { path: string; content: string } =>
+          typeof f?.path === "string" &&
+          f.path.length > 0 &&
+          typeof f.content === "string",
       );
-      const files = validFiles.map((f, i) => ({
+      const files = validFiles.map((f) => ({
         path: f.path,
-        content: typeof f.content === "string" ? f.content : "",
-        state: (i === validFiles.length - 1 ? "writing" : "done") as
-          | "writing"
-          | "done",
+        content: f.content,
+        state: "done" as const,
       }));
       const partial: DeckGenPartial = { files };
       if (files.length > 0) {
         partial.currentFile = files[files.length - 1]?.path;
       }
-      if (typeof raw?.commitMessage === "string") {
-        partial.commitMessage = raw.commitMessage;
+      if (typeof object?.commitMessage === "string") {
+        partial.commitMessage = object.commitMessage;
       }
       yield partial;
+    } catch {
+      // generateObject threw — yield nothing. The `result` Promise
+      // below will surface the error to the orchestrator via the
+      // AiDeckGenFailure branch.
     }
   })();
 
-  // Final result mirrors `generateDeckFiles`: validate the resolved
-  // object against the path allowlist and the no-files-failure rule.
-  // Failure shapes (model_error / path_violation / no_files) match
-  // the `AiDeckGenFailure` union so callers can branch identically.
-  const result: Promise<AiDeckGenResult> = stream.object.then(
-    (object) => validateGeneratedObject(object, input.slug),
+  // Final result mirrors the old streamObject path: validate the
+  // resolved object against the path allowlist and the
+  // no-files-failure rule. Failure shapes (model_error /
+  // path_violation / no_files) match the `AiDeckGenFailure` union
+  // so callers can branch identically.
+  const result: Promise<AiDeckGenResult> = objectPromise.then(
+    ({ object }) => validateGeneratedObject(object, input.slug),
     (err) => {
       const message = err instanceof Error ? err.message : String(err);
       return {

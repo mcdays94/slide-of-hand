@@ -291,14 +291,17 @@ describe("aiAssistantModel (issue #131 item A)", () => {
     expect(DEFAULT_SETTINGS.aiAssistantModel).toBe("kimi-k2.6");
   });
 
-  it("exposes AI_ASSISTANT_MODELS with exactly three friendly keys", () => {
-    // Three is the spec from RESUME.md item A: the current default
-    // plus 2 swap-ins. Adding/removing one is a deliberate design
-    // change, so this test is here to make that explicit.
+  it("exposes AI_ASSISTANT_MODELS with exactly four friendly keys", () => {
+    // The set is `kimi-k2.6` (default) + 3 swap-ins. Adding/removing
+    // one is a deliberate design change, so this test is here to make
+    // that explicit. `gemma-4` was added 2026-05-14 after the e2e
+    // marathon confirmed reasoning-class models matter for the
+    // deck-files schema.
     expect(AI_ASSISTANT_MODELS).toEqual([
       "kimi-k2.6",
       "llama-4-scout",
       "gpt-oss-120b",
+      "gemma-4",
     ]);
   });
 

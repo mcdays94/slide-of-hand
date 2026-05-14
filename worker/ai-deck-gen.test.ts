@@ -2,22 +2,27 @@
  * Tests for `worker/ai-deck-gen.ts` (issue #168 Wave 1 / Worker A,
  * streaming upgrade per issue #178 sub-piece 1).
  *
- * Mocks `streamObject` from "ai" so tests don't issue real Workers
+ * Mocks `generateObject` from "ai" so tests don't issue real Workers
  * AI requests. The system prompt + user message construction are
  * verified by introspecting the call args.
+ *
+ * Note: this used to mock `streamObject`. Switched to `generateObject`
+ * on 2026-05-14 after the e2e marathon proved `streamObject` brittle
+ * against workers-ai-provider — see `ai-deck-gen.ts`'s `streamDeckFiles`
+ * comment for the diagnostic data.
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const { streamObjectMock } = vi.hoisted(() => ({
-  streamObjectMock: vi.fn(),
+const { generateObjectMock } = vi.hoisted(() => ({
+  generateObjectMock: vi.fn(),
 }));
 vi.mock("ai", async () => {
   const actual =
     await vi.importActual<typeof import("ai")>("ai");
   return {
     ...actual,
-    streamObject: streamObjectMock,
+    generateObject: generateObjectMock,
   };
 });
 
@@ -47,35 +52,39 @@ import type { DeckGenPartial } from "./ai-deck-gen";
 const fakeAiBinding = {} as unknown as Ai;
 
 beforeEach(() => {
-  streamObjectMock.mockReset();
+  generateObjectMock.mockReset();
   createWorkersAIMock.mockReset();
   modelMock.mockReset();
   createWorkersAIMock.mockReturnValue(modelMock);
 });
 
 /**
- * Build a fake `streamObject` return value: yields the given partial
- * deltas from `partialObjectStream`, then resolves `object` to the
- * given final.
+ * Build a fake `generateObject` return value: resolves to `{ object }`
+ * with the given final.
  *
- * The AI SDK's `partialObjectStream` is an `AsyncIterableStream<PARTIAL>`
- * where `PARTIAL` is a deep-partial of the schema. Tests pass the raw
- * partial shape (just `{ files?: Array<{ path?, content? }>; commitMessage? }`);
- * the transformation into the public `DeckGenPartial` (with state
- * badges + currentFile) lives in `streamDeckFiles` itself.
+ * The AI SDK's `generateObject` returns `Promise<{ object: TResult; ... }>`.
+ * Tests only care about `.object`.
+ *
+ * Historical note: this used to be `fakeStreamObject` which produced a
+ * `{ partialObjectStream, object }` pair — the streaming shape of the
+ * old `streamObject` API. Tests took an array of progressive partials.
+ * The new helper takes only the final object — `generateObject` waits
+ * for the full response before resolving, so there's no notion of
+ * progressive partials. Tests that previously verified multi-partial
+ * progression now verify the single end-of-stream partial.
  */
-function fakeStreamObject<TPartial, TResult>(
-  partials: TPartial[],
+function fakeGenerateObject<TResult>(
   finalObject: TResult,
-): { partialObjectStream: AsyncIterable<TPartial>; object: Promise<TResult> } {
-  return {
-    partialObjectStream: (async function* () {
-      for (const p of partials) {
-        yield p;
-      }
-    })(),
-    object: Promise.resolve(finalObject),
-  };
+): Promise<{ object: TResult }> {
+  return Promise.resolve({ object: finalObject });
+}
+
+/**
+ * Build a rejecting `generateObject` return value — used to test
+ * model-error handling.
+ */
+function fakeGenerateObjectError(error: unknown): Promise<never> {
+  return Promise.reject(error);
 }
 
 /**
@@ -95,32 +104,21 @@ async function collect(
 }
 
 describe("streamDeckFiles — happy path", () => {
-  it("yields partials from streamObject and resolves a final result", async () => {
-    // Tracer bullet: prove the dual-output shape works end-to-end.
-    // One partial, one resolved final. Real semantics (last-file is
-    // "writing", currentFile populated) covered in subsequent tests.
-    streamObjectMock.mockReturnValueOnce(
-      fakeStreamObject(
-        [
+  it("yields a single 'all done' partial and resolves a final result", async () => {
+    // Tracer bullet: prove the partials/result split works
+    // end-to-end. Post-2026-05-14 switch from streamObject to
+    // generateObject, partials yields exactly once at the end with
+    // every file marked 'done'.
+    generateObjectMock.mockReturnValueOnce(
+      fakeGenerateObject({
+        files: [
           {
-            files: [
-              {
-                path: "src/decks/public/hello/meta.ts",
-                content: "export const meta",
-              },
-            ],
+            path: "src/decks/public/hello/meta.ts",
+            content: "export const meta = { slug: 'hello' };",
           },
         ],
-        {
-          files: [
-            {
-              path: "src/decks/public/hello/meta.ts",
-              content: "export const meta = { slug: 'hello' };",
-            },
-          ],
-          commitMessage: "Initial",
-        },
-      ),
+        commitMessage: "Initial",
+      }),
     );
 
     const stream = streamDeckFiles(fakeAiBinding, {
@@ -141,70 +139,29 @@ describe("streamDeckFiles — happy path", () => {
     }
   });
 
-  it("marks the last file 'writing', earlier files 'done', and reflects currentFile", async () => {
-    // Three successive partial frames mimic what `streamObject` emits
-    // as the model writes file-by-file:
-    //   1. Just `meta.ts` mid-write.
-    //   2. `meta.ts` complete + `index.tsx` mid-write.
-    //   3. `meta.ts` + `index.tsx` complete + `01-title.tsx` mid-write.
-    streamObjectMock.mockReturnValueOnce(
-      fakeStreamObject(
-        [
+  it("marks every file 'done' in the single final partial (no 'writing' state with non-streaming)", async () => {
+    // Pre-2026-05-14, streamObject yielded progressive partials where
+    // the LAST file was 'writing' and earlier files were 'done'. With
+    // generateObject we get the whole object at once — all files are
+    // 'done' in a single yield, currentFile points at the last file.
+    generateObjectMock.mockReturnValueOnce(
+      fakeGenerateObject({
+        files: [
           {
-            files: [
-              {
-                path: "src/decks/public/hello/meta.ts",
-                content: "export const meta = { slug:",
-              },
-            ],
+            path: "src/decks/public/hello/meta.ts",
+            content: "export const meta = { slug: 'hello' };",
           },
           {
-            files: [
-              {
-                path: "src/decks/public/hello/meta.ts",
-                content: "export const meta = { slug: 'hello' };",
-              },
-              {
-                path: "src/decks/public/hello/index.tsx",
-                content: "import",
-              },
-            ],
+            path: "src/decks/public/hello/index.tsx",
+            content: "import { meta } from './meta';",
           },
           {
-            files: [
-              {
-                path: "src/decks/public/hello/meta.ts",
-                content: "export const meta = { slug: 'hello' };",
-              },
-              {
-                path: "src/decks/public/hello/index.tsx",
-                content: "import { meta } from './meta';",
-              },
-              {
-                path: "src/decks/public/hello/01-title.tsx",
-                content: "export const titleSlide",
-              },
-            ],
+            path: "src/decks/public/hello/01-title.tsx",
+            content: "export const titleSlide = { id: 'title' };",
           },
         ],
-        {
-          files: [
-            {
-              path: "src/decks/public/hello/meta.ts",
-              content: "export const meta = { slug: 'hello' };",
-            },
-            {
-              path: "src/decks/public/hello/index.tsx",
-              content: "import { meta } from './meta';",
-            },
-            {
-              path: "src/decks/public/hello/01-title.tsx",
-              content: "export const titleSlide = { id: 'title' };",
-            },
-          ],
-          commitMessage: "Initial hello deck",
-        },
-      ),
+        commitMessage: "Initial hello deck",
+      }),
     );
 
     const stream = streamDeckFiles(fakeAiBinding, {
@@ -214,53 +171,32 @@ describe("streamDeckFiles — happy path", () => {
 
     const { partials } = await collect(stream);
 
-    expect(partials).toHaveLength(3);
-
-    // Frame 1: only meta.ts, mid-write.
-    expect(partials[0]?.files).toEqual([
-      {
-        path: "src/decks/public/hello/meta.ts",
-        content: "export const meta = { slug:",
-        state: "writing",
-      },
-    ]);
-    expect(partials[0]?.currentFile).toBe("src/decks/public/hello/meta.ts");
-
-    // Frame 2: meta.ts done, index.tsx mid-write.
-    expect(partials[1]?.files[0]?.state).toBe("done");
-    expect(partials[1]?.files[1]?.state).toBe("writing");
-    expect(partials[1]?.currentFile).toBe(
-      "src/decks/public/hello/index.tsx",
-    );
-
-    // Frame 3: only the LAST file (01-title.tsx) is "writing"; the
-    // first two are flipped to "done".
-    expect(partials[2]?.files.map((f) => f.state)).toEqual([
+    // Exactly ONE partial — the final, all-done view.
+    expect(partials).toHaveLength(1);
+    expect(partials[0]?.files.map((f) => f.state)).toEqual([
       "done",
       "done",
-      "writing",
+      "done",
     ]);
-    expect(partials[2]?.currentFile).toBe(
+    // currentFile points at the last file in the array (legacy
+    // semantic kept for UI continuity).
+    expect(partials[0]?.currentFile).toBe(
       "src/decks/public/hello/01-title.tsx",
     );
   });
 });
 
 describe("streamDeckFiles — failure modes", () => {
-  it("resolves result to model_error when streamObject's `object` rejects", async () => {
-    // The AI SDK's `streamObject` surfaces non-stop errors (network,
-    // rate limit, schema-validation on the final object) via a
-    // rejected `object` promise. We re-shape that into the typed
-    // failure rather than propagating the rejection — callers (the
-    // orchestrator) yield an `{phase: "error", ...}` snapshot off the
-    // result, which is a sum-type pattern, not a try/catch one.
-    streamObjectMock.mockReturnValueOnce({
-      partialObjectStream: (async function* () {
-        // No partials before the failure — the model errored before
-        // emitting anything.
-      })(),
-      object: Promise.reject(new Error("rate limit")),
-    });
+  it("resolves result to model_error when generateObject rejects", async () => {
+    // `generateObject` surfaces non-stop errors (network, rate
+    // limit, schema-validation on the final object) via a rejected
+    // promise. We re-shape that into the typed failure rather than
+    // propagating the rejection — callers (the orchestrator) yield
+    // an `{phase: "error", ...}` snapshot off the result, which is
+    // a sum-type pattern, not a try/catch one.
+    generateObjectMock.mockReturnValueOnce(
+      fakeGenerateObjectError(new Error("rate limit")),
+    );
 
     const stream = streamDeckFiles(fakeAiBinding, {
       slug: "hello",
@@ -277,19 +213,16 @@ describe("streamDeckFiles — failure modes", () => {
   });
 
   it("resolves result to path_violation when the model produces an out-of-scope path", async () => {
-    streamObjectMock.mockReturnValueOnce(
-      fakeStreamObject(
-        [],
-        {
-          files: [
-            {
-              path: "package.json",
-              content: '{"name":"hacked"}',
-            },
-          ],
-          commitMessage: "Oops",
-        },
-      ),
+    generateObjectMock.mockReturnValueOnce(
+      fakeGenerateObject({
+        files: [
+          {
+            path: "package.json",
+            content: '{"name":"hacked"}',
+          },
+        ],
+        commitMessage: "Oops",
+      }),
     );
 
     const stream = streamDeckFiles(fakeAiBinding, {
@@ -307,19 +240,16 @@ describe("streamDeckFiles — failure modes", () => {
   });
 
   it("resolves result to path_violation on '..' segments", async () => {
-    streamObjectMock.mockReturnValueOnce(
-      fakeStreamObject(
-        [],
-        {
-          files: [
-            {
-              path: "src/decks/public/hello/../../../package.json",
-              content: "naughty",
-            },
-          ],
-          commitMessage: "...",
-        },
-      ),
+    generateObjectMock.mockReturnValueOnce(
+      fakeGenerateObject({
+        files: [
+          {
+            path: "src/decks/public/hello/../../../package.json",
+            content: "naughty",
+          },
+        ],
+        commitMessage: "...",
+      }),
     );
 
     const stream = streamDeckFiles(fakeAiBinding, {
@@ -337,14 +267,11 @@ describe("streamDeckFiles — failure modes", () => {
   });
 
   it("resolves result to no_files when the model returns an empty files array", async () => {
-    streamObjectMock.mockReturnValueOnce(
-      fakeStreamObject(
-        [],
-        {
-          files: [],
-          commitMessage: "Empty",
-        },
-      ),
+    generateObjectMock.mockReturnValueOnce(
+      fakeGenerateObject({
+        files: [],
+        commitMessage: "Empty",
+      }),
     );
 
     const stream = streamDeckFiles(fakeAiBinding, {
@@ -368,14 +295,11 @@ describe("streamDeckFiles — auth + wiring", () => {
   // Worker secret `CF_AI_GATEWAY_TOKEN` → `gatewayToken` option →
   // model's `extraHeaders` → wire.
   it("attaches the cf-aig-authorization header when gatewayToken is supplied", async () => {
-    streamObjectMock.mockReturnValueOnce(
-      fakeStreamObject(
-        [],
-        {
-          files: [{ path: "src/decks/public/x/meta.ts", content: "a" }],
-          commitMessage: "x",
-        },
-      ),
+    generateObjectMock.mockReturnValueOnce(
+      fakeGenerateObject({
+        files: [{ path: "src/decks/public/x/meta.ts", content: "a" }],
+        commitMessage: "x",
+      }),
     );
     const stream = streamDeckFiles(
       fakeAiBinding,
@@ -383,7 +307,7 @@ describe("streamDeckFiles — auth + wiring", () => {
       { gatewayToken: "secret-token-abc" },
     );
     await collect(stream);
-    expect(modelMock).toHaveBeenCalledWith("@cf/openai/gpt-oss-120b", {
+    expect(modelMock).toHaveBeenCalledWith("@cf/moonshotai/kimi-k2.6", {
       extraHeaders: { "cf-aig-authorization": "Bearer secret-token-abc" },
     });
   });
