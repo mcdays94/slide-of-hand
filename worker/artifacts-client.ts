@@ -6,7 +6,7 @@
  * exist so:
  *
  *   - The agent's tool runners get a focused API for the operations
- *     they need (`forkDeckStarter`, `getDraftRepo`, `mintWriteToken`,
+ *     they need (`createDraftRepo`, `getDraftRepo`, `mintWriteToken`,
  *     `ensureDeckStarterRepo`) rather than re-deriving the binding
  *     dance every time.
  *
@@ -41,9 +41,13 @@
  *
  * ## Naming
  *
- * - `deck-starter` — the baseline repo. Created once via Worker E
- *   (`POST /api/admin/setup/deck-starter`). All draft repos are
- *   forks of this.
+ * - `deck-starter` — historical baseline repo. Used to be the source
+ *   for `starter.fork()` draft creation; no longer load-bearing
+ *   after the #182 workaround switched to `Artifacts.create()`
+ *   directly. Kept in place via `ensureDeckStarterRepo` /
+ *   `POST /api/admin/setup/deck-starter` for backward compatibility
+ *   + as a safety net if `fork()` is ever revived. Removing it is a
+ *   separate cleanup.
  *
  * - `${userEmail}-${slug}` — draft repo name for a given user + deck
  *   slug. Email sanitised: lowercase, alphanumeric + hyphens only,
@@ -90,9 +94,9 @@ export const DECK_STARTER_REPO = "deck-starter";
  *   2. An explicit `repo already exists: <name>` message.
  *
  * Both are recoverable: the repo IS there, we just need to fetch
- * a handle for it instead of trying to fork again. `forkDeckStarter`
- * uses this to do exactly that, turning a transient duplicate error
- * into a successful response.
+ * a handle for it instead of trying to create it again.
+ * `createDraftRepo` uses this to do exactly that, turning a
+ * transient duplicate error into a successful response.
  *
  * The matcher is intentionally generous: "already exists",
  * "duplicate", and "conflict" all qualify. The cost of a false
@@ -167,56 +171,76 @@ export function buildAuthenticatedRemoteUrl(
 }
 
 /**
- * Fork the deck-starter baseline into a new repo named
- * `${userEmail}-${slug}` (sanitised). Returns the fork's metadata +
- * the initial write token for the Sandbox to use.
+ * Create a fresh draft repo named `${userEmail}-${slug}` (sanitised)
+ * in the Artifacts namespace. Returns the repo's metadata + the
+ * initial write token for the Sandbox to use.
  *
- * If the fork already exists, this function recovers by fetching a
- * handle for the existing repo and minting a fresh write token —
- * returning a result that callers can use exactly like the
- * just-forked path.
+ * ## Why `create()` instead of `deck-starter.fork()`
  *
- * This was originally documented as "throws on duplicate name" and
- * recommended `forkDeckStarterIdempotent` for that case. Post-#179
- * diagnostic showed the duplicate case is much more common than
- * expected — the Artifacts beta sometimes returns a generic
- * `An internal error occurred.` on a fork that actually succeeded,
- * and the model's auto-retry then trips the duplicate-name path.
- * Recovering here makes the create flow naturally idempotent and
- * avoids needing the caller to know about the race. See
- * `isDuplicateNameError` for the matcher.
+ * Originally this was `forkDeckStarter` and called
+ * `starter.fork(targetName, ...)`. Post-#180 diagnostic (see #182 +
+ * the `/api/admin/_diag/artifacts` enhancement that landed alongside
+ * this refactor) showed three things:
+ *
+ *   1. `fork()` was returning `ArtifactsError: An internal error
+ *      occurred.` with 100% failure rate against this namespace.
+ *   2. Failed forks left NO repos behind (the ghost-probe `get()`
+ *      after a failed fork returned `Repository not found`).
+ *   3. `Artifacts.create()` was healthy on the same namespace.
+ *
+ * In this codebase the fork was never doing anything fork-shaped:
+ * the deck-starter baseline is empty (per `sandbox-artifacts.ts`
+ * lines 19-22 — "Fresh Artifacts repos are EMPTY (no initial
+ * commit)") and the AI gen pass writes every file from scratch on
+ * the first turn. The fork was just "give me a new empty namespaced
+ * repo." `Artifacts.create()` does exactly that with a single call.
+ *
+ * So this function now skips the `get("deck-starter") → starter.fork()`
+ * dance and calls `artifacts.create(targetName, ...)` directly. The
+ * deck-starter baseline is left in place (`ensureDeckStarterRepo`
+ * still works) but no longer load-bearing — removing it is a
+ * separate cleanup.
+ *
+ * ## Duplicate-name recovery
+ *
+ * Kept from the previous `forkDeckStarter` implementation. The
+ * Artifacts API can still return a duplicate-name error on
+ * `create()` if a prior call to create the same repo succeeded but
+ * had a transient response failure. The recovery path is identical:
+ * fetch a handle for the existing repo + mint a fresh write token +
+ * synthesise an `ArtifactsCreateRepoResult` from the existing
+ * metadata. See `isDuplicateNameError` for the matcher.
  */
-export async function forkDeckStarter(
+export async function createDraftRepo(
   artifacts: Artifacts,
   userEmail: string,
   slug: string,
   opts: { description?: string } = {},
 ): Promise<ArtifactsCreateRepoResult> {
   const targetName = draftRepoName(userEmail, slug);
-  const starter = await artifacts.get(DECK_STARTER_REPO);
   try {
-    return await starter.fork(targetName, {
+    return await artifacts.create(targetName, {
       description:
         opts.description ??
         `Draft deck for ${slug} by ${userEmail} (Slide of Hand #168).`,
       readOnly: false,
-      defaultBranchOnly: true,
+      setDefaultBranch: "main",
     });
   } catch (err) {
     if (!isDuplicateNameError(err)) {
       throw err;
     }
-    // The repo already exists — usually because a prior fork
+    // The repo already exists — usually because a prior create
     // succeeded server-side but the API surfaced a transient
     // error before returning success. Recover by fetching a
     // handle + minting a fresh write token, and return the same
-    // shape we'd have returned on a successful fork.
+    // shape we'd have returned on a successful create.
     //
     // The shape of `ArtifactsCreateRepoResult` includes `name`,
     // `remote`, and `token` (plaintext); we synthesise it from the
     // existing repo's metadata + a freshly-minted write token.
     console.info(
-      `[artifacts-client] forkDeckStarter: duplicate-name recovery for ${targetName}. ` +
+      `[artifacts-client] createDraftRepo: duplicate-name recovery for ${targetName}. ` +
         `Underlying error: ${err instanceof Error ? err.message : String(err)}`,
     );
     const existing = await artifacts.get(targetName);
@@ -239,17 +263,18 @@ export async function forkDeckStarter(
 }
 
 /**
- * Idempotent variant of `forkDeckStarter`. Tries `getDraftRepo` first;
- * if the repo doesn't exist, forks. Returns a discriminated union so
- * callers can tell which path was taken.
+ * Idempotent variant of `createDraftRepo`. Tries `getDraftRepo`
+ * first; if the repo doesn't exist, creates it. Returns a
+ * discriminated union so callers can tell which path was taken.
  *
  * Note: the Artifacts SDK's `get()` throws if the repo doesn't exist
  * yet (or hasn't finished provisioning). Catching the error here is
  * the only signal we have for "not found vs. transient failure" — the
  * SDK doesn't expose a typed error class. The error message is logged
- * so operators can see the underlying cause if the fork also fails.
+ * so operators can see the underlying cause if the subsequent create
+ * also fails.
  */
-export async function forkDeckStarterIdempotent(
+export async function ensureDraftRepo(
   artifacts: Artifacts,
   userEmail: string,
   slug: string,
@@ -263,16 +288,17 @@ export async function forkDeckStarterIdempotent(
     const freshWriteToken = await mintWriteToken(existing);
     return { kind: "existed", repo: existing, freshWriteToken };
   } catch (err) {
-    // Repo doesn't exist yet — proceed to fork. Logged at info level
-    // so operators can spot legitimate "not found" vs. transient
-    // failures (which would surface on the subsequent fork call).
+    // Repo doesn't exist yet — proceed to create. Logged at info
+    // level so operators can spot legitimate "not found" vs.
+    // transient failures (which would surface on the subsequent
+    // create call).
     console.info(
-      `[artifacts-client] forkDeckStarterIdempotent: repo not found, forking. (${
+      `[artifacts-client] ensureDraftRepo: repo not found, creating. (${
         err instanceof Error ? err.message : String(err)
       })`,
     );
   }
-  const result = await forkDeckStarter(artifacts, userEmail, slug, opts);
+  const result = await createDraftRepo(artifacts, userEmail, slug, opts);
   return { kind: "created", result };
 }
 

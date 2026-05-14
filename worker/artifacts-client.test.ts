@@ -4,8 +4,8 @@
  * Covers:
  *   - The pure helpers (`draftRepoName`, `stripExpiresSuffix`,
  *     `parseTokenExpiry`, `buildAuthenticatedRemoteUrl`).
- *   - The Artifacts-backed helpers (`forkDeckStarter`,
- *     `forkDeckStarterIdempotent`, `getDraftRepo`, `mintWriteToken`,
+ *   - The Artifacts-backed helpers (`createDraftRepo`,
+ *     `ensureDraftRepo`, `getDraftRepo`, `mintWriteToken`,
  *     `mintReadToken`, `ensureDeckStarterRepo`) against a stubbed
  *     `Artifacts` binding surface.
  *
@@ -21,10 +21,10 @@ import {
   DECK_STARTER_REPO,
   DEFAULT_WRITE_TOKEN_TTL_SECONDS,
   buildAuthenticatedRemoteUrl,
+  createDraftRepo,
   draftRepoName,
   ensureDeckStarterRepo,
-  forkDeckStarter,
-  forkDeckStarterIdempotent,
+  ensureDraftRepo,
   getDraftRepo,
   isDuplicateNameError,
   mintReadToken,
@@ -175,88 +175,89 @@ function makeRepoStub(overrides: Partial<ArtifactsRepo> = {}): ArtifactsRepo {
   } as unknown as ArtifactsRepo;
 }
 
-describe("forkDeckStarter", () => {
-  it("gets the deck-starter handle then forks it with the sanitised name", async () => {
-    const forkResult = {
+describe("createDraftRepo", () => {
+  beforeEach(() => {
+    // Silence the info log emitted on the duplicate-recovery path
+    // when those tests exercise it.
+    vi.spyOn(console, "info").mockImplementation(() => {});
+  });
+
+  it("calls artifacts.create with the sanitised name + sensible defaults", async () => {
+    const createResult = {
       id: "new-id",
       name: "alice-example-com-my-deck",
       description: null,
       remote: "https://x.artifacts.cloudflare.net/git/.../alice-example-com-my-deck.git",
       defaultBranch: "main",
-      status: "ready" as const,
       token: FAKE_TOKEN_WITH_EXPIRES,
+      tokenExpiresAt: "2027-01-15T00:00:00.000Z",
     };
-    const forkMock = vi.fn().mockResolvedValue(forkResult);
-    const starter = makeRepoStub({ fork: forkMock as ArtifactsRepo["fork"] });
-    const getMock = vi.fn().mockResolvedValue(starter);
+    const createMock = vi.fn().mockResolvedValue(createResult);
     const artifacts = makeArtifactsStub({
-      get: getMock as Artifacts["get"],
+      create: createMock as Artifacts["create"],
     });
 
-    const result = await forkDeckStarter(
+    const result = await createDraftRepo(
       artifacts,
       "alice@example.com",
       "my-deck",
     );
-    expect(result).toEqual(forkResult);
-    expect(getMock).toHaveBeenCalledWith(DECK_STARTER_REPO);
-    expect(forkMock).toHaveBeenCalledWith(
+    expect(result).toEqual(createResult);
+    expect(createMock).toHaveBeenCalledWith(
       "alice-example-com-my-deck",
       expect.objectContaining({
         readOnly: false,
-        defaultBranchOnly: true,
+        setDefaultBranch: "main",
       }),
     );
   });
 
   it("includes a default description when none is supplied", async () => {
-    const forkMock = vi.fn().mockResolvedValue({
+    const createMock = vi.fn().mockResolvedValue({
       id: "x",
       name: "alice-my",
       description: null,
       remote: "https://x.artifacts.cloudflare.net/x.git",
       defaultBranch: "main",
-      status: "ready",
       token: FAKE_TOKEN_WITH_EXPIRES,
+      tokenExpiresAt: "2027-01-15T00:00:00.000Z",
     });
-    const starter = makeRepoStub({ fork: forkMock as ArtifactsRepo["fork"] });
     const artifacts = makeArtifactsStub({
-      get: vi.fn().mockResolvedValue(starter) as Artifacts["get"],
+      create: createMock as Artifacts["create"],
     });
-    await forkDeckStarter(artifacts, "alice@example.com", "my");
-    const [, opts] = forkMock.mock.calls[0];
+    await createDraftRepo(artifacts, "alice@example.com", "my");
+    const [, opts] = createMock.mock.calls[0];
     expect(opts.description).toMatch(/Draft deck/i);
   });
 
   it("forwards a custom description when supplied", async () => {
-    const forkMock = vi.fn().mockResolvedValue({
+    const createMock = vi.fn().mockResolvedValue({
       id: "x",
       name: "alice-my",
       description: null,
       remote: "https://x.artifacts.cloudflare.net/x.git",
       defaultBranch: "main",
-      status: "ready",
       token: FAKE_TOKEN_WITH_EXPIRES,
+      tokenExpiresAt: "2027-01-15T00:00:00.000Z",
     });
-    const starter = makeRepoStub({ fork: forkMock as ArtifactsRepo["fork"] });
     const artifacts = makeArtifactsStub({
-      get: vi.fn().mockResolvedValue(starter) as Artifacts["get"],
+      create: createMock as Artifacts["create"],
     });
-    await forkDeckStarter(artifacts, "alice@example.com", "my", {
+    await createDraftRepo(artifacts, "alice@example.com", "my", {
       description: "custom description",
     });
-    expect(forkMock).toHaveBeenCalledWith(
+    expect(createMock).toHaveBeenCalledWith(
       "alice-example-com-my",
       expect.objectContaining({ description: "custom description" }),
     );
   });
 
-  // Duplicate-name recovery (post-#179 production fix). The Artifacts
-  // beta sometimes surfaces a generic "An internal error occurred"
-  // on a fork that actually succeeded; the model's auto-retry then
-  // trips a "repo already exists" error. forkDeckStarter recovers by
-  // fetching a handle for the existing repo + minting a fresh write
-  // token, returning the same shape as a successful fork.
+  // Duplicate-name recovery. The Artifacts beta can return a
+  // generic "already exists" / "conflict" / "duplicate" error when
+  // a previous create succeeded server-side but had a transient
+  // response failure. `createDraftRepo` recovers by fetching a
+  // handle for the existing repo + minting a fresh write token,
+  // returning the same shape as a successful create.
   it("recovers from 'repo already exists' by fetching the existing repo + minting a write token", async () => {
     const existingRepo = makeRepoStub({
       id: "existing-id",
@@ -275,28 +276,20 @@ describe("forkDeckStarter", () => {
       .fn()
       .mockResolvedValue(freshToken) as ArtifactsRepo["createToken"];
 
-    // Starter handle: fork throws with "already exists" the FIRST
-    // (and only) time. The recovery path then calls artifacts.get
-    // for the existing repo.
-    const forkMock = vi
+    // create() throws "already exists"; the recovery path then
+    // resolves the existing repo via get() + mints a fresh token.
+    const createMock = vi
       .fn()
       .mockRejectedValue(
         new Error("repo already exists: alice-example-com-my-deck"),
       );
-    const starter = makeRepoStub({
-      fork: forkMock as ArtifactsRepo["fork"],
-    });
-    const getMock = vi
-      .fn()
-      // First call: deck-starter (to fork from).
-      .mockResolvedValueOnce(starter)
-      // Second call: the existing duplicate (recovery path).
-      .mockResolvedValueOnce(existingRepo);
+    const getMock = vi.fn().mockResolvedValue(existingRepo);
     const artifacts = makeArtifactsStub({
+      create: createMock as Artifacts["create"],
       get: getMock as Artifacts["get"],
     });
 
-    const result = await forkDeckStarter(
+    const result = await createDraftRepo(
       artifacts,
       "alice@example.com",
       "my-deck",
@@ -306,21 +299,19 @@ describe("forkDeckStarter", () => {
     expect(result.remote).toBe(FAKE_REMOTE);
     expect(result.token).toBe(FAKE_TOKEN_WITH_EXPIRES);
     expect(result.tokenExpiresAt).toBe("2027-01-15T00:00:00.000Z");
-    // Verify we DID call artifacts.get twice — once for starter,
-    // once for the existing duplicate — and createToken on the
-    // recovered repo.
-    expect(getMock).toHaveBeenNthCalledWith(1, DECK_STARTER_REPO);
-    expect(getMock).toHaveBeenNthCalledWith(2, "alice-example-com-my-deck");
+    // No longer call get(deck-starter) — the create path doesn't
+    // touch the baseline. Recovery calls get() for the existing
+    // duplicate only.
+    expect(getMock).toHaveBeenCalledTimes(1);
+    expect(getMock).toHaveBeenCalledWith("alice-example-com-my-deck");
     expect(existingRepo.createToken).toHaveBeenCalled();
   });
 
-  it("recovers from a generic 'internal error occurred' if the message hints at duplication", async () => {
+  it("recovers from a generic 'conflict' phrasing too", async () => {
     // We don't auto-recover from EVERY internal error (false-positive
     // cost = wasted getDraftRepo call which throws). But the
     // matcher is generous about 'duplicate'/'conflict' phrasing —
-    // the Artifacts beta has been observed to use 'already exists'
-    // in some 5xx responses too. This test pins the broader-match
-    // behaviour against drift.
+    // pin the broader-match behaviour against drift.
     const existingRepo = makeRepoStub({
       id: "x",
       name: "alice-my",
@@ -332,21 +323,16 @@ describe("forkDeckStarter", () => {
       scope: "write",
       expiresAt: "2027-01-15T00:00:00.000Z",
     }) as ArtifactsRepo["createToken"];
-    const starter = makeRepoStub({
-      fork: vi
+    const artifacts = makeArtifactsStub({
+      create: vi
         .fn()
         .mockRejectedValue(
           new Error("ArtifactsError: conflict — name already exists"),
-        ) as ArtifactsRepo["fork"],
-    });
-    const artifacts = makeArtifactsStub({
-      get: vi
-        .fn()
-        .mockResolvedValueOnce(starter)
-        .mockResolvedValueOnce(existingRepo) as Artifacts["get"],
+        ) as Artifacts["create"],
+      get: vi.fn().mockResolvedValue(existingRepo) as Artifacts["get"],
     });
 
-    const result = await forkDeckStarter(artifacts, "alice@example.com", "my");
+    const result = await createDraftRepo(artifacts, "alice@example.com", "my");
     expect(result.remote).toBe(FAKE_REMOTE);
   });
 
@@ -355,21 +341,20 @@ describe("forkDeckStarter", () => {
     // by the recovery path — only the duplicate-name case is
     // recoverable. We verify by asserting the original error
     // bubbles up.
-    const starter = makeRepoStub({
-      fork: vi
-        .fn()
-        .mockRejectedValue(
-          new Error("ArtifactsError: quota exceeded"),
-        ) as ArtifactsRepo["fork"],
+    const createMock = vi
+      .fn()
+      .mockRejectedValue(new Error("ArtifactsError: quota exceeded"));
+    const getMock = vi.fn();
+    const artifacts = makeArtifactsStub({
+      create: createMock as Artifacts["create"],
+      get: getMock as Artifacts["get"],
     });
-    const getMock = vi.fn().mockResolvedValue(starter);
-    const artifacts = makeArtifactsStub({ get: getMock as Artifacts["get"] });
 
     await expect(
-      forkDeckStarter(artifacts, "alice@example.com", "my"),
+      createDraftRepo(artifacts, "alice@example.com", "my"),
     ).rejects.toThrow(/quota exceeded/);
-    // No recovery attempt — get called once for the starter only.
-    expect(getMock).toHaveBeenCalledTimes(1);
+    // No recovery attempt — get() never called.
+    expect(getMock).not.toHaveBeenCalled();
   });
 });
 
@@ -414,9 +399,15 @@ describe("isDuplicateNameError", () => {
   });
 });
 
-describe("forkDeckStarterIdempotent", () => {
-  it("returns kind:existed + a fresh write token when the fork already exists", async () => {
-    const existingFork = makeRepoStub({
+describe("ensureDraftRepo", () => {
+  beforeEach(() => {
+    // Silence the info log emitted on the "not found, creating"
+    // branch.
+    vi.spyOn(console, "info").mockImplementation(() => {});
+  });
+
+  it("returns kind:existed + a fresh write token when the draft already exists", async () => {
+    const existingDraft = makeRepoStub({
       name: "alice-my",
       remote: FAKE_REMOTE,
     });
@@ -424,56 +415,58 @@ describe("forkDeckStarterIdempotent", () => {
       plaintext: FAKE_TOKEN_WITH_EXPIRES,
       expiresAt: "2027-01-15T00:00:00.000Z",
     };
-    existingFork.createToken = vi
+    existingDraft.createToken = vi
       .fn()
       .mockResolvedValue(freshToken) as ArtifactsRepo["createToken"];
     const artifacts = makeArtifactsStub({
-      get: vi.fn().mockResolvedValue(existingFork) as Artifacts["get"],
+      get: vi.fn().mockResolvedValue(existingDraft) as Artifacts["get"],
     });
 
-    const result = await forkDeckStarterIdempotent(
+    const result = await ensureDraftRepo(
       artifacts,
       "alice@example.com",
       "my",
     );
     expect(result.kind).toBe("existed");
     if (result.kind === "existed") {
-      expect(result.repo).toBe(existingFork);
+      expect(result.repo).toBe(existingDraft);
       expect(result.freshWriteToken).toEqual(freshToken);
     }
   });
 
-  it("returns kind:created when the fork did not exist yet", async () => {
-    const forkResult = {
+  it("returns kind:created when the draft did not exist yet", async () => {
+    const createResult = {
       id: "new-id",
       name: "alice-my",
       description: null,
       remote: "https://x.artifacts.cloudflare.net/x.git",
       defaultBranch: "main",
-      status: "ready" as const,
       token: FAKE_TOKEN_WITH_EXPIRES,
+      tokenExpiresAt: "2027-01-15T00:00:00.000Z",
     };
-    const starter = makeRepoStub({
-      fork: vi.fn().mockResolvedValue(forkResult) as ArtifactsRepo["fork"],
-    });
     const getMock = vi
       .fn()
-      // First call: lookup of the fork → throws (not found).
-      .mockRejectedValueOnce(new Error("repo not found"))
-      // Second call: lookup of the starter to fork from → resolves.
-      .mockResolvedValueOnce(starter);
-    const artifacts = makeArtifactsStub({ get: getMock as Artifacts["get"] });
+      // Single call: lookup of the draft → throws (not found).
+      .mockRejectedValueOnce(new Error("repo not found"));
+    const createMock = vi.fn().mockResolvedValue(createResult);
+    const artifacts = makeArtifactsStub({
+      get: getMock as Artifacts["get"],
+      create: createMock as Artifacts["create"],
+    });
 
-    const result = await forkDeckStarterIdempotent(
+    const result = await ensureDraftRepo(
       artifacts,
       "alice@example.com",
       "my",
     );
     expect(result.kind).toBe("created");
     if (result.kind === "created") {
-      expect(result.result).toEqual(forkResult);
+      expect(result.result).toEqual(createResult);
     }
-    expect(getMock).toHaveBeenCalledTimes(2);
+    // get() called once (lookup), create() called once (creation).
+    // No second get() for the baseline — the workaround skips that.
+    expect(getMock).toHaveBeenCalledTimes(1);
+    expect(createMock).toHaveBeenCalledTimes(1);
   });
 });
 
