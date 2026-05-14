@@ -124,6 +124,16 @@ export interface SlideManagerProps {
    * context is the **admin-route signal**, despite the historical name.
    */
   role?: SlideManagerRole;
+  /**
+   * Which side the sidebar anchors to (#210). Defaults to `"right"`
+   * for backwards compatibility with the original right-only layout.
+   * The slice-5 edge handles open the sidebar from the matching side.
+   *
+   * The per-user `tocSidebarEdge` preference that lets the audience
+   * pick a default lands in the next slice (#211) — for now `<Deck>`
+   * passes the side derived from which edge handle was clicked.
+   */
+  side?: "left" | "right";
 }
 
 interface DraftRow {
@@ -786,6 +796,7 @@ export function SlideManager({
   onClose,
   onNavigateToSlide,
   role = "admin",
+  side = "right",
 }: SlideManagerProps) {
   if (role === "audience") {
     return (
@@ -796,6 +807,7 @@ export function SlideManager({
         manifest={manifest}
         onClose={onClose}
         onNavigateToSlide={onNavigateToSlide}
+        side={side}
       />
     );
   }
@@ -807,6 +819,7 @@ export function SlideManager({
       manifest={manifest}
       onClose={onClose}
       onNavigateToSlide={onNavigateToSlide}
+      side={side}
     />
   );
 }
@@ -818,6 +831,7 @@ function AdminSlideManager({
   manifest,
   onClose,
   onNavigateToSlide,
+  side = "right",
 }: Omit<SlideManagerProps, "role">) {
   const { manifest: persisted, applyDraft, clearDraft, refetch } = manifest;
 
@@ -1028,13 +1042,18 @@ function AdminSlideManager({
         <motion.aside
           key="slide-manager"
           data-testid="slide-manager"
+          data-side={side}
           data-no-advance
           aria-label="Slide manager"
-          initial={{ opacity: 0, x: 24 }}
+          initial={{ opacity: 0, x: side === "left" ? -24 : 24 }}
           animate={{ opacity: 1, x: 0 }}
-          exit={{ opacity: 0, x: 24 }}
+          exit={{ opacity: 0, x: side === "left" ? -24 : 24 }}
           transition={{ duration: 0.2, ease: easeEntrance }}
-          className="absolute right-0 top-0 z-50 flex h-full w-[420px] flex-col border-l border-cf-border bg-cf-bg-100 text-cf-text shadow-[0_0_0_1px_var(--color-cf-border)]"
+          className={`absolute top-0 z-50 flex h-full w-[420px] flex-col bg-cf-bg-100 text-cf-text shadow-[0_0_0_1px_var(--color-cf-border)] ${
+            side === "left"
+              ? "left-0 border-r border-cf-border"
+              : "right-0 border-l border-cf-border"
+          }`}
         >
           <header className="flex items-start justify-between gap-3 border-b border-cf-border px-5 py-4">
             <div>
@@ -1283,6 +1302,7 @@ function AudienceSlideManager({
   manifest,
   onClose,
   onNavigateToSlide,
+  side = "right",
 }: Omit<SlideManagerProps, "role">) {
   const { applied } = manifest;
 
@@ -1306,13 +1326,18 @@ function AudienceSlideManager({
           key="slide-manager"
           data-testid="slide-manager"
           data-audience
+          data-side={side}
           data-no-advance
           aria-label="Slides"
-          initial={{ opacity: 0, x: 24 }}
+          initial={{ opacity: 0, x: side === "left" ? -24 : 24 }}
           animate={{ opacity: 1, x: 0 }}
-          exit={{ opacity: 0, x: 24 }}
+          exit={{ opacity: 0, x: side === "left" ? -24 : 24 }}
           transition={{ duration: 0.2, ease: easeEntrance }}
-          className="absolute right-0 top-0 z-50 flex h-full w-[420px] flex-col border-l border-cf-border bg-cf-bg-100 text-cf-text shadow-[0_0_0_1px_var(--color-cf-border)]"
+          className={`absolute top-0 z-50 flex h-full w-[420px] flex-col bg-cf-bg-100 text-cf-text shadow-[0_0_0_1px_var(--color-cf-border)] ${
+            side === "left"
+              ? "left-0 border-r border-cf-border"
+              : "right-0 border-l border-cf-border"
+          }`}
         >
           <header className="flex items-start justify-between gap-3 border-b border-cf-border px-5 py-4">
             <div>
