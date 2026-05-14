@@ -4,10 +4,20 @@ import { SectionIntro } from "../components/primitives/SectionIntro";
 /**
  * Section divider slides — full-bleed numbered intros that break the
  * deck into chapters. The accent colour is tied to the chapter's tone.
+ *
+ * Each slide carries `sectionLabel` / `sectionNumber` / `title` on the
+ * SlideDef itself (in addition to the inline `<SectionIntro>` props)
+ * so the ToC sidebar (#212) can detect section slides and render them
+ * as chapter headings with non-section slides indented underneath.
+ * The two surfaces speak the same vocabulary; `<SectionIntro>` renders
+ * the full-bleed divider on the slide itself.
  */
 
 export const sectionAgents: SlideDef = {
   id: "section-agents",
+  title: "The new shape of AI software.",
+  sectionLabel: "Agents & MCP",
+  sectionNumber: "01",
   layout: "section",
   render: () => (
     <SectionIntro
@@ -21,6 +31,9 @@ export const sectionAgents: SlideDef = {
 
 export const sectionProblem: SlideDef = {
   id: "section-problem",
+  title: "Tools were never the natural shape.",
+  sectionLabel: "The problem",
+  sectionNumber: "02",
   layout: "section",
   render: () => (
     <SectionIntro
@@ -35,6 +48,9 @@ export const sectionProblem: SlideDef = {
 
 export const sectionInsight: SlideDef = {
   id: "section-insight",
+  title: "LLMs are not tool callers. They are coders.",
+  sectionLabel: "The insight",
+  sectionNumber: "03",
   layout: "section",
   render: () => (
     <SectionIntro
@@ -49,6 +65,9 @@ export const sectionInsight: SlideDef = {
 
 export const sectionCodeMode: SlideDef = {
   id: "section-code-mode",
+  title: "Give the agent a TypeScript API. Let it write code.",
+  sectionLabel: "Code Mode",
+  sectionNumber: "04",
   layout: "section",
   render: () => (
     <SectionIntro
@@ -63,6 +82,9 @@ export const sectionCodeMode: SlideDef = {
 
 export const sectionLiveDemo: SlideDef = {
   id: "section-live-demo",
+  title: "MCP vs. Code Mode — same prompt. Same model. Two front-ends.",
+  sectionLabel: "Live demo",
+  sectionNumber: "05",
   layout: "section",
   render: () => (
     <SectionIntro
@@ -77,6 +99,9 @@ export const sectionLiveDemo: SlideDef = {
 
 export const sectionFoundation: SlideDef = {
   id: "section-foundation",
+  title: "Why is this only possible on Cloudflare?",
+  sectionLabel: "The foundation",
+  sectionNumber: "06",
   layout: "section",
   render: () => (
     <SectionIntro
@@ -91,6 +116,9 @@ export const sectionFoundation: SlideDef = {
 
 export const sectionWrapUp = {
   id: "section-wrap-up",
+  title: "What you can do tomorrow.",
+  sectionLabel: "Takeaways",
+  sectionNumber: "07",
   layout: "section",
   render: () => (
     <SectionIntro

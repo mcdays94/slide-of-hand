@@ -1020,3 +1020,433 @@ describe("<SlideManager side> (audience)", () => {
     expect(aside.className).toMatch(/border-r/);
   });
 });
+
+// ── Section-row treatment, ARIA, current marker, click-outside (#212) ─────
+//
+// Acceptance criteria from #212:
+//   1. Section-slide rows render with uppercase mono kicker + larger
+//      title. Non-section rows are visibly indented (left padding).
+//   2. If a slide has both `sectionLabel` and `title`, the kicker
+//      shows `sectionLabel`, the larger text shows the title.
+//   3. (browser only) Tab order — exercised via Playwright.
+//   4. Enter on a focused row navigates (already covered by row tests).
+//   5. (global Deck handler) Esc closes the sidebar — covered by Deck.
+//   6. Click outside the sidebar closes it.
+//   7. Open/closed state is not persisted across reloads — guaranteed
+//      by NOT writing to localStorage (no test code path involved; we
+//      assert via the absence of any storage write).
+//   8. ARIA: role="region" + aria-label="Slide list" + aria-current on
+//      current row + sr-only "(hidden)" for muted admin rows.
+//   9. Smoke tests for keyboard nav (Enter on a focused row).
+//
+// Coverage matrix per role: each behaviour is tested on the role(s)
+// that mount it. Audience does NOT get the sr-only "(hidden)" check
+// because Hidden slides are filtered out of the audience list entirely.
+
+function section(
+  id: string,
+  sectionLabel: string,
+  title: string,
+  sectionNumber?: string,
+): SlideDef {
+  return {
+    id,
+    title,
+    sectionLabel,
+    sectionNumber,
+    layout: "section",
+    render: () => null,
+  };
+}
+
+const sectionedSlides: SlideDef[] = [
+  s("title", "Title"),
+  section("section-one", "Chapter one", "First chapter", "01"),
+  s("body-one", "Body one"),
+  s("body-two", "Body two"),
+  section("section-two", "Chapter two", "Second chapter", "02"),
+  s("end", "End"),
+];
+
+describe("<SlideManager> — section treatment + ARIA (#212)", () => {
+  it("admin: renders section rows with uppercase mono kicker + title", () => {
+    render(
+      <SlideManager
+        open={true}
+        slug="hello"
+        sourceSlides={sectionedSlides}
+        manifest={makeManifestHook()}
+        onClose={() => {}}
+      />,
+    );
+    const kickers = screen.getAllByTestId("slide-manager-section-kicker");
+    expect(kickers).toHaveLength(2);
+    expect(kickers[0]).toHaveTextContent("01");
+    expect(kickers[0]).toHaveTextContent("Chapter one");
+    expect(kickers[1]).toHaveTextContent("02");
+    expect(kickers[1]).toHaveTextContent("Chapter two");
+    // Kicker uses the canonical cf-tag-style uppercase mono treatment.
+    expect(kickers[0].className).toMatch(/uppercase/);
+    expect(kickers[0].className).toMatch(/font-mono/);
+    expect(kickers[0].className).toMatch(/tracking-\[0\.25em\]/);
+  });
+
+  it("admin: section rows get data-section='true', non-section rows do not", () => {
+    render(
+      <SlideManager
+        open={true}
+        slug="hello"
+        sourceSlides={sectionedSlides}
+        manifest={makeManifestHook()}
+        onClose={() => {}}
+      />,
+    );
+    const rows = screen.getAllByTestId("slide-manager-row");
+    // Order: title (regular), section-one (section), body-one (regular),
+    // body-two (regular), section-two (section), end (regular).
+    expect(rows[0]).not.toHaveAttribute("data-section");
+    expect(rows[1]).toHaveAttribute("data-section", "true");
+    expect(rows[2]).not.toHaveAttribute("data-section");
+    expect(rows[3]).not.toHaveAttribute("data-section");
+    expect(rows[4]).toHaveAttribute("data-section", "true");
+    expect(rows[5]).not.toHaveAttribute("data-section");
+  });
+
+  it("admin: section row shows BOTH the kicker (sectionLabel) AND the title", () => {
+    render(
+      <SlideManager
+        open={true}
+        slug="hello"
+        sourceSlides={sectionedSlides}
+        manifest={makeManifestHook()}
+        onClose={() => {}}
+      />,
+    );
+    const rows = screen.getAllByTestId("slide-manager-row");
+    const sectionOne = rows[1]; // section-one row
+    expect(sectionOne).toHaveTextContent("Chapter one");
+    expect(sectionOne).toHaveTextContent("First chapter");
+  });
+
+  it("admin: non-section row body has left padding (pl-8); section row uses px-4", () => {
+    render(
+      <SlideManager
+        open={true}
+        slug="hello"
+        sourceSlides={sectionedSlides}
+        manifest={makeManifestHook()}
+        onClose={() => {}}
+      />,
+    );
+    const rows = screen.getAllByTestId("slide-manager-row");
+    // The padding lives on the inner row-body div (the first child).
+    const bodyOfRegular = rows[0].querySelector("div") as HTMLElement;
+    const bodyOfSection = rows[1].querySelector("div") as HTMLElement;
+    expect(bodyOfRegular.className).toMatch(/pl-8/);
+    expect(bodyOfSection.className).toMatch(/px-4/);
+  });
+
+  it("admin: the sidebar has role='region' and aria-label='Slide list'", () => {
+    render(
+      <SlideManager
+        open={true}
+        slug="hello"
+        sourceSlides={sourceSlides}
+        manifest={makeManifestHook()}
+        onClose={() => {}}
+      />,
+    );
+    const aside = screen.getByTestId("slide-manager");
+    expect(aside).toHaveAttribute("role", "region");
+    expect(aside).toHaveAttribute("aria-label", "Slide list");
+  });
+
+  it("admin: the current row gets aria-current='page' and data-current='true'", () => {
+    render(
+      <SlideManager
+        open={true}
+        slug="hello"
+        sourceSlides={sourceSlides}
+        manifest={makeManifestHook()}
+        onClose={() => {}}
+        onNavigateToSlide={() => {}}
+        currentSlideEffectiveIndex={1}
+      />,
+    );
+    const rows = screen.getAllByTestId("slide-manager-row");
+    expect(rows[0]).not.toHaveAttribute("aria-current");
+    expect(rows[1]).toHaveAttribute("aria-current", "page");
+    expect(rows[1]).toHaveAttribute("data-current", "true");
+    expect(rows[2]).not.toHaveAttribute("aria-current");
+  });
+
+  it("admin: no row is current when currentSlideEffectiveIndex is undefined", () => {
+    render(
+      <SlideManager
+        open={true}
+        slug="hello"
+        sourceSlides={sourceSlides}
+        manifest={makeManifestHook()}
+        onClose={() => {}}
+        onNavigateToSlide={() => {}}
+      />,
+    );
+    const rows = screen.getAllByTestId("slide-manager-row");
+    for (const row of rows) {
+      expect(row).not.toHaveAttribute("aria-current");
+    }
+  });
+
+  it("admin: aria-current is not set on rows when onNavigate is omitted", () => {
+    // Without nav, the row isn't a button — aria-current would attach
+    // to a non-interactive element, which is meaningless. Verify we
+    // suppress it in that case.
+    render(
+      <SlideManager
+        open={true}
+        slug="hello"
+        sourceSlides={sourceSlides}
+        manifest={makeManifestHook()}
+        onClose={() => {}}
+        currentSlideEffectiveIndex={1}
+      />,
+    );
+    const rows = screen.getAllByTestId("slide-manager-row");
+    expect(rows[1]).not.toHaveAttribute("aria-current");
+  });
+
+  it("admin: hidden rows expose a screen-reader-only '(hidden)' suffix", () => {
+    const withHidden: SlideDef[] = [
+      s("title", "Title"),
+      { ...s("intro", "Intro"), hidden: true },
+      s("end", "End"),
+    ];
+    render(
+      <SlideManager
+        open={true}
+        slug="hello"
+        sourceSlides={withHidden}
+        manifest={makeManifestHook()}
+        onClose={() => {}}
+      />,
+    );
+    const rows = screen.getAllByTestId("slide-manager-row");
+    // Hidden intro row.
+    const hiddenRow = rows[1];
+    const srOnly = hiddenRow.querySelector(".sr-only");
+    expect(srOnly).not.toBeNull();
+    expect(srOnly?.textContent).toBe("(hidden)");
+    // Non-hidden row should not have one.
+    expect(rows[0].querySelector(".sr-only")).toBeNull();
+  });
+
+  it("admin: clicking outside the sidebar calls onClose", async () => {
+    const onClose = vi.fn();
+    render(
+      <SlideManager
+        open={true}
+        slug="hello"
+        sourceSlides={sourceSlides}
+        manifest={makeManifestHook()}
+        onClose={onClose}
+      />,
+    );
+    // Click-outside arms one frame after open. Wait for the rAF, then
+    // mousedown on document.body (outside the aside).
+    await new Promise((r) =>
+      requestAnimationFrame(() => requestAnimationFrame(() => r(null))),
+    );
+    fireEvent.mouseDown(document.body);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("admin: clicking INSIDE the sidebar does NOT close it", async () => {
+    const onClose = vi.fn();
+    render(
+      <SlideManager
+        open={true}
+        slug="hello"
+        sourceSlides={sourceSlides}
+        manifest={makeManifestHook()}
+        onClose={onClose}
+      />,
+    );
+    await new Promise((r) =>
+      requestAnimationFrame(() => requestAnimationFrame(() => r(null))),
+    );
+    const rows = screen.getAllByTestId("slide-manager-row");
+    fireEvent.mouseDown(rows[0]);
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("admin: pressing Enter on a focused row navigates", () => {
+    const onNavigateToSlide = vi.fn();
+    render(
+      <SlideManager
+        open={true}
+        slug="hello"
+        sourceSlides={sourceSlides}
+        manifest={makeManifestHook()}
+        onClose={() => {}}
+        onNavigateToSlide={onNavigateToSlide}
+      />,
+    );
+    const rows = screen.getAllByTestId("slide-manager-row");
+    rows[2].focus();
+    fireEvent.keyDown(rows[2], { key: "Enter" });
+    expect(onNavigateToSlide).toHaveBeenCalledWith(2);
+  });
+
+  // ── Audience parity ───────────────────────────────────────────────
+
+  it("audience: renders section rows with uppercase mono kicker + title", () => {
+    render(
+      <SlideManager
+        open={true}
+        slug="hello"
+        sourceSlides={sectionedSlides}
+        manifest={makeManifestHook()}
+        onClose={() => {}}
+        role="audience"
+      />,
+    );
+    const kickers = screen.getAllByTestId("slide-manager-section-kicker");
+    expect(kickers).toHaveLength(2);
+    expect(kickers[0]).toHaveTextContent("01");
+    expect(kickers[0]).toHaveTextContent("Chapter one");
+  });
+
+  it("audience: section rows get data-section='true', non-section rows do not", () => {
+    render(
+      <SlideManager
+        open={true}
+        slug="hello"
+        sourceSlides={sectionedSlides}
+        manifest={makeManifestHook()}
+        onClose={() => {}}
+        role="audience"
+      />,
+    );
+    const rows = screen.getAllByTestId("slide-manager-row");
+    expect(rows[0]).not.toHaveAttribute("data-section");
+    expect(rows[1]).toHaveAttribute("data-section", "true");
+    expect(rows[2]).not.toHaveAttribute("data-section");
+  });
+
+  it("audience: the sidebar has role='region' and aria-label='Slide list'", () => {
+    render(
+      <SlideManager
+        open={true}
+        slug="hello"
+        sourceSlides={sourceSlides}
+        manifest={makeManifestHook()}
+        onClose={() => {}}
+        role="audience"
+      />,
+    );
+    const aside = screen.getByTestId("slide-manager");
+    expect(aside).toHaveAttribute("role", "region");
+    expect(aside).toHaveAttribute("aria-label", "Slide list");
+  });
+
+  it("audience: the current row gets aria-current='page' and data-current='true'", () => {
+    render(
+      <SlideManager
+        open={true}
+        slug="hello"
+        sourceSlides={sourceSlides}
+        manifest={makeManifestHook()}
+        onClose={() => {}}
+        onNavigateToSlide={() => {}}
+        currentSlideEffectiveIndex={2}
+        role="audience"
+      />,
+    );
+    const rows = screen.getAllByTestId("slide-manager-row");
+    expect(rows[0]).not.toHaveAttribute("aria-current");
+    expect(rows[1]).not.toHaveAttribute("aria-current");
+    expect(rows[2]).toHaveAttribute("aria-current", "page");
+    expect(rows[2]).toHaveAttribute("data-current", "true");
+  });
+
+  it("audience: clicking outside the sidebar calls onClose", async () => {
+    const onClose = vi.fn();
+    render(
+      <SlideManager
+        open={true}
+        slug="hello"
+        sourceSlides={sourceSlides}
+        manifest={makeManifestHook()}
+        onClose={onClose}
+        role="audience"
+      />,
+    );
+    await new Promise((r) =>
+      requestAnimationFrame(() => requestAnimationFrame(() => r(null))),
+    );
+    fireEvent.mouseDown(document.body);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("audience: clicking INSIDE the sidebar does NOT close it", async () => {
+    const onClose = vi.fn();
+    render(
+      <SlideManager
+        open={true}
+        slug="hello"
+        sourceSlides={sourceSlides}
+        manifest={makeManifestHook()}
+        onClose={onClose}
+        role="audience"
+      />,
+    );
+    await new Promise((r) =>
+      requestAnimationFrame(() => requestAnimationFrame(() => r(null))),
+    );
+    const rows = screen.getAllByTestId("slide-manager-row");
+    fireEvent.mouseDown(rows[0]);
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("audience: pressing Enter on a focused row navigates", () => {
+    const onNavigateToSlide = vi.fn();
+    render(
+      <SlideManager
+        open={true}
+        slug="hello"
+        sourceSlides={sourceSlides}
+        manifest={makeManifestHook()}
+        onClose={() => {}}
+        onNavigateToSlide={onNavigateToSlide}
+        role="audience"
+      />,
+    );
+    const rows = screen.getAllByTestId("slide-manager-row");
+    rows[2].focus();
+    fireEvent.keyDown(rows[2], { key: "Enter" });
+    expect(onNavigateToSlide).toHaveBeenCalledWith(2);
+  });
+
+  it("audience: rows are <button>-equivalents (role='button') in deck order — Tab cycles them", () => {
+    // We can't reliably drive Tab in JSDOM/happy-dom, but we can assert
+    // the prerequisite: rows are tab-focusable in document order, which
+    // is what enables the natural Tab cycle in real browsers. The
+    // Playwright snap covers the actual focus ring + key navigation.
+    render(
+      <SlideManager
+        open={true}
+        slug="hello"
+        sourceSlides={sourceSlides}
+        manifest={makeManifestHook()}
+        onClose={() => {}}
+        onNavigateToSlide={() => {}}
+        role="audience"
+      />,
+    );
+    const rows = screen.getAllByTestId("slide-manager-row");
+    for (const row of rows) {
+      expect(row).toHaveAttribute("role", "button");
+      expect(row).toHaveAttribute("tabIndex", "0");
+    }
+  });
+});
