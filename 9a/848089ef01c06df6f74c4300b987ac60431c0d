@@ -1,0 +1,25 @@
+src/routes/admin/decks.new.tsx
+  d70e22376149f279 132-146
+src/routes/admin/decks.new.test.tsx
+  d70e22376149f279 140-157
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "9a848089ef01c06df6f74c4300b987ac60431c0d",
+  "prompts": {
+    "d70e22376149f279": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_1da295040ffe0rdRIXDpbOYcYo",
+        "model": "anthropic/claude-opus-4-7"
+      },
+      "human_author": "mcdays94",
+      "messages": [],
+      "total_additions": 33,
+      "total_deletions": 1,
+      "accepted_lines": 33,
+      "overriden_lines": 0
+    }
+  }
+}
