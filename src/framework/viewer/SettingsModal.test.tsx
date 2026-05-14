@@ -197,6 +197,7 @@ describe("<SettingsModal>", () => {
       deckCardHoverAnimation: { enabled: true, slideCount: 3 },
       aiAssistantModel: "kimi-k2.6",
       showAssistantReasoning: false,
+      tocSidebarEdge: "right",
     });
 
     // Toggling again flips it back ON.
@@ -211,6 +212,7 @@ describe("<SettingsModal>", () => {
       deckCardHoverAnimation: { enabled: true, slideCount: 3 },
       aiAssistantModel: "kimi-k2.6",
       showAssistantReasoning: false,
+      tocSidebarEdge: "right",
     });
   });
 

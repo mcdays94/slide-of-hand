@@ -87,6 +87,7 @@ describe("writeSettings()", () => {
       deckCardHoverAnimation: { enabled: true, slideCount: 3 },
       aiAssistantModel: "kimi-k2.6",
       showAssistantReasoning: false,
+      tocSidebarEdge: "right",
     });
   });
 
@@ -423,5 +424,80 @@ describe("showAssistantReasoning", () => {
       window.localStorage.getItem(STORAGE_KEY)!,
     ) as { showAssistantReasoning?: boolean };
     expect(persisted.showAssistantReasoning).toBe(true);
+  });
+});
+
+// ─── tocSidebarEdge (issue #211 — ToC sidebar default edge) ──────────
+// Which edge the ToC sidebar opens from when invoked via M-key (or
+// any programmatic open that doesn't specify a side). Edge-handle
+// clicks always honour the clicked side regardless of this setting —
+// `<Deck>`'s `openSidebarFromSide` is the gate. Default `"right"`
+// matches the prior single-side behaviour for unchanged users.
+describe("tocSidebarEdge (issue #211)", () => {
+  it("DEFAULT_SETTINGS.tocSidebarEdge defaults to 'right'", () => {
+    expect(DEFAULT_SETTINGS.tocSidebarEdge).toBe("right");
+  });
+
+  it("readSettings returns the default tocSidebarEdge when storage is empty", () => {
+    expect(readSettings().tocSidebarEdge).toBe("right");
+  });
+
+  it("readSettings preserves a persisted 'left' value", () => {
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ tocSidebarEdge: "left" }),
+    );
+    expect(readSettings().tocSidebarEdge).toBe("left");
+  });
+
+  it("readSettings preserves a persisted 'right' value", () => {
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ tocSidebarEdge: "right" }),
+    );
+    expect(readSettings().tocSidebarEdge).toBe("right");
+  });
+
+  it("falls back to default when tocSidebarEdge is an unknown string", () => {
+    // Mirrors a stale localStorage from a future build with an
+    // option this build doesn't recognise.
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ tocSidebarEdge: "top" }),
+    );
+    expect(readSettings().tocSidebarEdge).toBe("right");
+  });
+
+  it("falls back to default when tocSidebarEdge is not a string", () => {
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ tocSidebarEdge: 42 }),
+    );
+    expect(readSettings().tocSidebarEdge).toBe("right");
+  });
+
+  it("falls back to default when tocSidebarEdge is missing entirely", () => {
+    // Forward-compat with older bundles that pre-date this setting.
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ showSlideIndicators: true }),
+    );
+    expect(readSettings().tocSidebarEdge).toBe("right");
+  });
+
+  it("writeSettings persists tocSidebarEdge", () => {
+    const merged = writeSettings({ tocSidebarEdge: "left" });
+    expect(merged.tocSidebarEdge).toBe("left");
+    const persisted = JSON.parse(
+      window.localStorage.getItem(STORAGE_KEY)!,
+    ) as { tocSidebarEdge?: string };
+    expect(persisted.tocSidebarEdge).toBe("left");
+  });
+
+  it("round-trips through writeSettings + readSettings", () => {
+    writeSettings({ tocSidebarEdge: "left" });
+    expect(readSettings().tocSidebarEdge).toBe("left");
+    writeSettings({ tocSidebarEdge: "right" });
+    expect(readSettings().tocSidebarEdge).toBe("right");
   });
 });

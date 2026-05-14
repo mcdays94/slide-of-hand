@@ -90,6 +90,7 @@ describe("<SettingsProvider> + useSettings()", () => {
       deckCardHoverAnimation: { enabled: true, slideCount: 3 },
       aiAssistantModel: "kimi-k2.6",
       showAssistantReasoning: false,
+      tocSidebarEdge: "right",
     });
   });
 
@@ -163,12 +164,90 @@ describe("<SettingsProvider> + useSettings()", () => {
           deckCardHoverAnimation: { enabled: true, slideCount: 3 },
           aiAssistantModel: "kimi-k2.6",
           showAssistantReasoning: false,
+          tocSidebarEdge: "right",
         }}
       >
         <Probe />
       </SettingsProvider>,
     );
     expect(screen.getByTestId("show-indicators").textContent).toBe("true");
+  });
+});
+
+// ─── tocSidebarEdge (issue #211) ─────────────────────────────────────
+// Hook-level smoke test that exercises `setSetting("tocSidebarEdge", …)`
+// end-to-end: initial default reads `"right"`, click flips it to
+// `"left"`, localStorage persists the choice, and a fresh provider
+// mounted later reads the persisted value back. Covers acceptance
+// criterion #6 (default + setter persistence + round-trip).
+function TocEdgeProbe() {
+  const { settings, setSetting } = useSettings();
+  return (
+    <div>
+      <span data-testid="toc-sidebar-edge">{settings.tocSidebarEdge}</span>
+      <button
+        type="button"
+        data-testid="set-left"
+        onClick={() => setSetting("tocSidebarEdge", "left")}
+      >
+        left
+      </button>
+      <button
+        type="button"
+        data-testid="set-right"
+        onClick={() => setSetting("tocSidebarEdge", "right")}
+      >
+        right
+      </button>
+    </div>
+  );
+}
+
+describe("useSettings() — tocSidebarEdge (issue #211)", () => {
+  it("defaults to 'right' when localStorage is empty", () => {
+    render(
+      <SettingsProvider>
+        <TocEdgeProbe />
+      </SettingsProvider>,
+    );
+    expect(screen.getByTestId("toc-sidebar-edge").textContent).toBe("right");
+  });
+
+  it("setSetting('tocSidebarEdge', 'left') updates state and persists", () => {
+    render(
+      <SettingsProvider>
+        <TocEdgeProbe />
+      </SettingsProvider>,
+    );
+    act(() => {
+      screen.getByTestId("set-left").click();
+    });
+    expect(screen.getByTestId("toc-sidebar-edge").textContent).toBe("left");
+    const persisted = window.localStorage.getItem(STORAGE_KEY);
+    expect(persisted).not.toBeNull();
+    expect(
+      (JSON.parse(persisted!) as { tocSidebarEdge?: string }).tocSidebarEdge,
+    ).toBe("left");
+  });
+
+  it("round-trips through a fresh provider mount", () => {
+    // First provider: set to 'left' and unmount.
+    const { unmount } = render(
+      <SettingsProvider>
+        <TocEdgeProbe />
+      </SettingsProvider>,
+    );
+    act(() => {
+      screen.getByTestId("set-left").click();
+    });
+    unmount();
+    // Second provider: reads persisted value on first paint.
+    render(
+      <SettingsProvider>
+        <TocEdgeProbe />
+      </SettingsProvider>,
+    );
+    expect(screen.getByTestId("toc-sidebar-edge").textContent).toBe("left");
   });
 });
 

@@ -28,6 +28,7 @@ import type {
   AiAssistantModel,
   DeckCardHoverAnimationSettings,
   NotesDefaultMode,
+  ToCSidebarEdge,
 } from "@/lib/settings";
 import { usePresenterMode } from "@/framework/presenter/mode";
 import { GitHubConnectRow } from "@/components/GitHubConnectRow";
@@ -273,6 +274,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const deckCardHoverId = useId();
   const aiAssistantModelId = useId();
   const showAssistantReasoningId = useId();
+  const tocSidebarEdgeId = useId();
 
   // Click-on-backdrop closes; clicks on the inner panel must NOT bubble
   // to the backdrop. We compare currentTarget vs target so a click that
@@ -337,6 +339,11 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
           onToggleShowAssistantReasoning={(next) =>
             setSetting("showAssistantReasoning", next)
           }
+          tocSidebarEdge={settings.tocSidebarEdge}
+          tocSidebarEdgeId={tocSidebarEdgeId}
+          onChangeTocSidebarEdge={(next) =>
+            setSetting("tocSidebarEdge", next)
+          }
           onBackdropClick={onBackdropClick}
           onClose={onClose}
         />
@@ -366,6 +373,9 @@ interface SettingsModalContentProps {
   showAssistantReasoning: boolean;
   showAssistantReasoningId: string;
   onToggleShowAssistantReasoning: (next: boolean) => void;
+  tocSidebarEdge: ToCSidebarEdge;
+  tocSidebarEdgeId: string;
+  onChangeTocSidebarEdge: (next: ToCSidebarEdge) => void;
   onBackdropClick: (e: MouseEvent<HTMLDivElement>) => void;
   onClose: () => void;
 }
