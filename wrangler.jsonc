@@ -13,18 +13,21 @@
  * docs, a custom_domain route uses the bare hostname (no path / no `/*`).
  * Custom Domains point all paths of a hostname to the Worker by definition.
  *
- * Rebrand transition (project rename ReAction → Slide of Hand):
- *   - Both `slideofhand.lusostreams.com` AND the legacy
- *     `reaction.lusostreams.com` are kept as Custom Domains so the rename
- *     can land without breaking the live site for anyone holding the old
- *     URL. The legacy entry can be removed in a follow-up commit once the
- *     new domain is verified and Access is reconfigured for it.
+ * Rebrand legacy (project rename ReAction → Slide of Hand):
+ *   - Only `slideofhand.lusostreams.com` is bound now. The legacy
+ *     `reaction.lusostreams.com` route was removed in #216 (2026-05-14)
+ *     after the new domain had been live + verified for ~2 weeks.
+ *   - **Important:** Wrangler only ADDS Custom Domains — it does not
+ *     detach existing ones. After this config landed, the legacy
+ *     `reaction.lusostreams.com` Custom Domain has to be detached from
+ *     the Worker manually in the Cloudflare dashboard (Workers & Pages
+ *     → reaction → Settings → Triggers → Custom Domains). Same goes
+ *     for any DNS record + Access app association still pointed at it.
  *   - The Worker `name` field stays "reaction" (internal CF-account
  *     identifier; not visible to visitors). Renaming the Worker would
- *     orphan the existing Worker AND require detaching the legacy
- *     Custom Domain from the old Worker before reattaching to the new
- *     one. Not worth the rename gymnastics for a label only visible in
- *     the CF dashboard. Can be done as a separate operation later.
+ *     orphan the existing Worker. Not worth the rename gymnastics for
+ *     a label only visible in the CF dashboard. Can be done as a
+ *     separate operation later.
  */
 {
   "$schema": "node_modules/wrangler/config-schema.json",
@@ -41,10 +44,6 @@
   "routes": [
     {
       "pattern": "slideofhand.lusostreams.com",
-      "custom_domain": true
-    },
-    {
-      "pattern": "reaction.lusostreams.com",
       "custom_domain": true
     }
   ],
