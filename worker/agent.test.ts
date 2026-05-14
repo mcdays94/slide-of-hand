@@ -404,6 +404,7 @@ describe("resolveAiAssistantModel (issue #131 item A)", () => {
       "kimi-k2.6": "@cf/moonshotai/kimi-k2.6",
       "llama-4-scout": "@cf/meta/llama-4-scout-17b-16e-instruct",
       "gpt-oss-120b": "@cf/openai/gpt-oss-120b",
+      "gemma-4": "@cf/google/gemma-4-26b-a4b-it",
     });
   });
 

@@ -528,6 +528,7 @@ function SettingsModalContent({
                   { value: "kimi-k2.6", label: "Kimi K2.6" },
                   { value: "llama-4-scout", label: "Llama 4 Scout" },
                   { value: "gpt-oss-120b", label: "GPT-OSS 120B" },
+                  { value: "gemma-4", label: "Gemma 4" },
                 ]}
                 onChange={onChangeAiAssistantModel}
                 testIdPrefix="settings-modal-ai-assistant-model"

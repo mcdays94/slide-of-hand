@@ -32,6 +32,7 @@ export const AI_ASSISTANT_MODELS = [
   "kimi-k2.6",
   "llama-4-scout",
   "gpt-oss-120b",
+  "gemma-4",
 ] as const;
 
 export type AiAssistantModel = (typeof AI_ASSISTANT_MODELS)[number];
