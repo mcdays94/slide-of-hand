@@ -33,7 +33,7 @@ import { PhaseProvider } from "./PhaseContext";
 import { Overview } from "./Overview";
 import { KeyboardHelp } from "./KeyboardHelp";
 import { SettingsModal } from "./SettingsModal";
-import { SettingsProvider } from "./useSettings";
+import { SettingsProvider, useSettings } from "./useSettings";
 import { ThemeSidebar } from "./ThemeSidebar";
 import { TopToolbar } from "./TopToolbar";
 import { useDeckTheme } from "./useDeckTheme";
@@ -255,6 +255,13 @@ export function Deck({ slug, title, slides }: DeckProps) {
   const themeOverride = useDeckTheme(slug);
   const presenterMode = usePresenterMode();
 
+  // ── Per-user settings (#211) ─────────────────────────────────────────
+  // The Settings modal lets the user pick a preferred edge for the ToC
+  // sidebar to open from (Left / Right, default Right). M-key /
+  // toolbar-driven opens respect this; edge-handle clicks (#210)
+  // override it with the hovered side.
+  const { settings } = useSettings();
+
   // ── Audience deep-link clamp (#209) ────────────────────────────────────
   // Per ADR 0003 the URL `?slide=N` indexes into effective slides, so a
   // handcrafted deep link can land on a Hidden slide. Admins want this
@@ -353,8 +360,9 @@ export function Deck({ slug, title, slides }: DeckProps) {
   // Which side the sidebar anchors to when it opens. Default `"right"`
   // matches the prior single-side behaviour; clicking a left-edge handle
   // (added below) flips this to `"left"` before opening. The per-user
-  // `tocSidebarEdge` preference that lets the audience pick a default
-  // lands in the next slice (#211).
+  // `tocSidebarEdge` preference (#211) anchors `toggleSlideManager` to
+  // the user's preferred side on open; edge-handle clicks still win
+  // for the gesture they're triggered by.
   const [sidebarSide, setSidebarSide] = useState<"left" | "right">("right");
   // ── Active presenter tool (#210) ──────────────────────────────────────
   // Mirrored from `<PresenterTools>` via `onActiveToolChange`. Used to
@@ -444,12 +452,22 @@ export function Deck({ slug, title, slides }: DeckProps) {
   }, []);
 
   const toggleSlideManager = useCallback(() => {
-    setSlideManagerOpen((o) => !o);
+    setSlideManagerOpen((wasOpen) => {
+      const nowOpen = !wasOpen;
+      // Opening via M / toolbar / synthetic key: anchor to the user's
+      // preferred edge (per the `tocSidebarEdge` setting, default Right).
+      // Edge-handle clicks bypass this via `openSidebarFromSide` so the
+      // hovered edge always wins for that gesture.
+      if (nowOpen) {
+        setSidebarSide(settings.tocSidebarEdge);
+      }
+      return nowOpen;
+    });
     setOverviewOpen(false);
     setHelpOpen(false);
     setThemeSidebarOpen(false);
     setSettingsOpen(false);
-  }, []);
+  }, [settings.tocSidebarEdge]);
 
   const closeSlideManager = useCallback(() => {
     setSlideManagerOpen(false);

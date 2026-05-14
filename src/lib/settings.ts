@@ -28,6 +28,14 @@ export const STORAGE_KEY = "slide-of-hand-settings";
 export type NotesDefaultMode = "rich" | "markdown";
 
 /**
+ * Which edge the ToC sidebar opens from when invoked via the M-key
+ * shortcut (or any programmatic open that doesn't specify a side).
+ * Edge-handle clicks always honour the clicked edge regardless of
+ * this preference — see `<Deck>`'s `openSidebarFromSide`. Issue #211.
+ */
+export type ToCSidebarEdge = "left" | "right";
+
+/**
  * In-Studio AI assistant model picker (issue #131 item A). The friendly
  * keys + type + type-guard live in their own DOM-free module so the
  * worker can import them without dragging in this file's localStorage
@@ -145,6 +153,15 @@ export interface Settings {
    * it on a non-reasoning model is a no-op rather than an error.
    */
   showAssistantReasoning: boolean;
+  /**
+   * Which edge the ToC sidebar opens from when invoked via the
+   * M-key shortcut (or any programmatic open that doesn't specify
+   * a side). Default `"right"` matches the prior single-side
+   * behaviour. Edge-handle clicks always honour the clicked edge
+   * regardless of this preference — the setting only governs M /
+   * programmatic openings. Issue #211.
+   */
+  tocSidebarEdge: ToCSidebarEdge;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -154,6 +171,7 @@ export const DEFAULT_SETTINGS: Settings = {
   deckCardHoverAnimation: { enabled: true, slideCount: 3 },
   aiAssistantModel: "kimi-k2.6",
   showAssistantReasoning: false,
+  tocSidebarEdge: "right",
 };
 
 /**
@@ -231,6 +249,10 @@ export function readSettings(): Settings {
         typeof partial.showAssistantReasoning === "boolean"
           ? partial.showAssistantReasoning
           : DEFAULT_SETTINGS.showAssistantReasoning,
+      tocSidebarEdge:
+        partial.tocSidebarEdge === "left" || partial.tocSidebarEdge === "right"
+          ? partial.tocSidebarEdge
+          : DEFAULT_SETTINGS.tocSidebarEdge,
     };
   } catch {
     return { ...DEFAULT_SETTINGS };
