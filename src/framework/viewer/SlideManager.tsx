@@ -33,6 +33,8 @@ import {
   useRef,
   useState,
   type FormEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
 } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
@@ -75,6 +77,17 @@ export interface SlideManagerProps {
   sourceSlides: SlideDef[];
   manifest: UseDeckManifestResult;
   onClose: () => void;
+  /**
+   * ToC nav: jump the deck cursor to the slide at the given effective-slides
+   * index. The cursor is keyed against the full effective list (Hidden
+   * included) per ADR 0003, so calling this with a Hidden row's index DOES
+   * land on the Hidden slide without un-hiding it — admin can pull up a
+   * supporting slide during Q&A.
+   *
+   * Optional so unit tests that only exercise editing affordances don't
+   * have to pass a stub. In `<Deck>` it's always wired.
+   */
+  onNavigateToSlide?: (effectiveIndex: number) => void;
 }
 
 interface DraftRow {
@@ -144,6 +157,43 @@ interface RowProps {
   onTitleChange: (next: string) => void;
   onNotesChange: (next: string) => void;
   onToggleHidden: () => void;
+  /**
+   * ToC nav: invoked when the row's "navigate" surface is clicked. The
+   * row delegates to `<SlideManager>`'s `onNavigateToSlide`, which the
+   * parent (`<Deck>`) wires to `gotoWithBeacon(effectiveIndex)`.
+   *
+   * The rename input, drag handle, hide button, and notes button each
+   * carry `data-interactive` (or are native interactive elements) so
+   * their clicks don't bubble up as nav — see `shouldSuppressRowClick`.
+   */
+  onNavigate?: () => void;
+}
+
+/**
+ * True if the click target (or any ancestor up to the row root) is an
+ * interactive control — the rename input, drag handle, hide button,
+ * notes button, etc. Rows defer to row-level navigation only when the
+ * raw row background was clicked.
+ *
+ * The lookup is scoped to ancestors INSIDE the row (`rowEl`). The
+ * sidebar itself sits inside `<aside data-no-advance>`, and naively
+ * using `target.closest("[data-no-advance]")` would walk up past the
+ * row root and suppress every click. `data-no-advance` is for
+ * click-to-advance suppression on the Deck viewport, not for ToC nav.
+ */
+function shouldSuppressRowClick(
+  target: EventTarget | null,
+  rowEl: Element,
+): boolean {
+  if (!(target instanceof Element)) return false;
+  if (typeof window !== "undefined" && window.getSelection()?.toString()) {
+    return true;
+  }
+  const interactive = target.closest(
+    "[data-interactive], a, button, input, select, textarea, label, [contenteditable=true]",
+  );
+  if (!interactive) return false;
+  return rowEl.contains(interactive);
 }
 
 function SlideRow({
@@ -155,6 +205,7 @@ function SlideRow({
   onTitleChange,
   onNotesChange,
   onToggleHidden,
+  onNavigate,
 }: RowProps) {
   const {
     attributes,
@@ -184,15 +235,53 @@ function SlideRow({
     setImageFailed(false);
   }, [index, slug]);
 
+  // ── Row click ⇒ ToC nav ────────────────────────────────────────────
+  // The row delegates to `onNavigate` only when the click missed every
+  // inner interactive control (rename input, drag handle, hide / notes
+  // buttons). Drag operations are filtered separately — `useSortable`
+  // sets `isDragging` for the duration of a drag, so we ignore those
+  // click events to avoid a navigation firing as the drag completes.
+  const handleRowClick = (e: ReactMouseEvent<HTMLDivElement>) => {
+    if (!onNavigate) return;
+    if (isDragging) return;
+    if (shouldSuppressRowClick(e.target, e.currentTarget)) return;
+    onNavigate();
+  };
+
+  const handleRowKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (!onNavigate) return;
+    // Don't hijack typing inside the rename input / notes textarea.
+    if (shouldSuppressRowClick(e.target, e.currentTarget)) return;
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      onNavigate();
+    }
+  };
+
   return (
     <div
       ref={setNodeRef}
       data-testid="slide-manager-row"
       data-slide-id={row.id}
+      data-hidden={hidden ? "true" : undefined}
       style={style}
+      onClick={onNavigate ? handleRowClick : undefined}
+      onKeyDown={onNavigate ? handleRowKeyDown : undefined}
+      role={onNavigate ? "button" : undefined}
+      tabIndex={onNavigate ? 0 : undefined}
+      aria-label={
+        onNavigate
+          ? `Go to slide ${row.source.title ?? row.id}${hidden ? " (hidden)" : ""}`
+          : undefined
+      }
+      // Hidden styling: muted text color across the whole row, but
+      // strike-through is scoped to the title input below (and the
+      // thumbnail kicker) — applying line-through to the row would
+      // cross out the HIDE / NOTES buttons, which the author still
+      // needs to be able to read and click.
       className={`flex flex-col gap-2 border-b border-cf-border px-4 py-3 ${
-        hidden ? "opacity-60" : ""
-      }`}
+        onNavigate ? "cursor-pointer hover:bg-cf-bg-200/40" : ""
+      } ${hidden ? "text-cf-text-subtle" : ""}`}
     >
       <div className="flex items-center gap-3">
         {/* Drag handle. Only this triggers a sort. */}
@@ -246,7 +335,12 @@ function SlideRow({
           maxLength={MAX_TITLE}
           spellCheck={false}
           onChange={(e) => onTitleChange(e.target.value)}
-          className="flex-1 rounded border border-cf-border bg-transparent px-2 py-1 text-sm text-cf-text"
+          // Hidden rows: muted color + strike-through baked onto the input
+          // itself, since form controls don't inherit text-decoration from
+          // their parent in most browsers.
+          className={`flex-1 rounded border border-cf-border bg-transparent px-2 py-1 text-sm ${
+            hidden ? "text-cf-text-subtle line-through" : "text-cf-text"
+          }`}
         />
 
         {/* Hidden toggle. */}
@@ -378,6 +472,7 @@ export function SlideManager({
   sourceSlides,
   manifest,
   onClose,
+  onNavigateToSlide,
 }: SlideManagerProps) {
   const { manifest: persisted, applyDraft, clearDraft, refetch } = manifest;
 
@@ -647,6 +742,11 @@ export function SlideManager({
                       onTitleChange={(next) => onTitleChange(row.id, next)}
                       onNotesChange={(next) => onNotesChange(row.id, next)}
                       onToggleHidden={() => onToggleHidden(row.id)}
+                      onNavigate={
+                        onNavigateToSlide
+                          ? () => onNavigateToSlide(index)
+                          : undefined
+                      }
                     />
                   ))}
                 </SortableContext>

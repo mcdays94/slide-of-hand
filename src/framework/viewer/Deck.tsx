@@ -289,6 +289,22 @@ export function Deck({ slug, title, slides }: DeckProps) {
     [goto, visibleSlides, analytics],
   );
 
+  // ToC nav from `<SlideManager>`: takes an **effective**-slides index
+  // (Hidden slides included) and jumps the deck cursor there. Per
+  // ADR 0003, `goto(N)` is keyed against effectiveSlides, so this
+  // lands on a Hidden slide without un-hiding it — admin can pull up
+  // a supporting slide during audience Q&A.
+  const gotoEffectiveWithBeacon = useCallback(
+    (effectiveIndex: number) => {
+      const targetSlideDef = effectiveSlides[effectiveIndex];
+      if (targetSlideDef && targetSlideDef.id !== prevSlideRef.current) {
+        analytics.trackJump(targetSlideDef.id);
+      }
+      goto(effectiveIndex);
+    },
+    [goto, effectiveSlides, analytics],
+  );
+
   // ── Overlays ────────────────────────────────────────────────────────────
   const [overviewOpen, setOverviewOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
@@ -947,6 +963,7 @@ export function Deck({ slug, title, slides }: DeckProps) {
             sourceSlides={slides}
             manifest={manifestHook}
             onClose={closeSlideManager}
+            onNavigateToSlide={gotoEffectiveWithBeacon}
           />
         )}
         {presenterMode && (
