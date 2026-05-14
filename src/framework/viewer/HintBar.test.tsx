@@ -33,8 +33,37 @@ describe("<HintBar />", () => {
     expect(text.toLowerCase()).toContain("fullscreen");
     expect(text.toLowerCase()).toContain("dark");
     expect(text.toLowerCase()).toContain("overview");
+    expect(text.toLowerCase()).toContain("slides");
     expect(text.toLowerCase()).toContain("settings");
     expect(text.toLowerCase()).toContain("help");
+  });
+
+  it("advertises the M → slides shortcut in BOTH public and presenter modes (#209)", () => {
+    // The ToC sidebar is now an audience-facing surface — audiences
+    // press M to open the read-only ToC. The `M slides` entry must be
+    // visible regardless of presenter mode.
+    const { unmount } = render(
+      <PresenterModeProvider enabled={false}>
+        <HintBar />
+      </PresenterModeProvider>,
+    );
+    expect(
+      (screen.getByTestId("hint-bar").textContent ?? "").toLowerCase(),
+    ).toContain("slides");
+    // The `M` glyph immediately precedes the `slides` label.
+    expect(
+      (screen.getByTestId("hint-bar").textContent ?? "").toLowerCase(),
+    ).toContain("mslides");
+    unmount();
+
+    render(
+      <PresenterModeProvider enabled={true}>
+        <HintBar />
+      </PresenterModeProvider>,
+    );
+    expect(
+      (screen.getByTestId("hint-bar").textContent ?? "").toLowerCase(),
+    ).toContain("slides");
   });
 
   it("advertises the settings shortcut in BOTH public and presenter modes", () => {

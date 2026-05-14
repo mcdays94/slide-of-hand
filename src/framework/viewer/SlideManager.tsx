@@ -1,12 +1,21 @@
 /**
- * `<SlideManager>` — admin-only right-side overlay for editing the slide
- * list of a deck. Triggered by the `M` key in `<Deck>` and gated by
- * `usePresenterMode()` so it never appears on the public viewer.
+ * `<SlideManager>` — the right-side ToC sidebar. Triggered by the `M` key
+ * in `<Deck>`. Renders in two roles distinguished by `usePresenterMode()`:
+ *
+ *   - **Admin** (presenter mode): the full editing surface from #207 +
+ *     #208 — drag-reorder, hide / show, rename, notes editor. Hidden
+ *     slides are visible in the list (muted + line-through). Triggered
+ *     via the same `M` key, gated only by visibility of admin chrome.
+ *   - **Audience** (#209): a read-only ToC. Each row is just
+ *     `[NN] [thumb] title`, full row clickable. Hidden slides are
+ *     filtered out entirely via `getRowsForRole(..., "audience")`. No
+ *     drag handle, no eye, no pencil, no note icon — none of those
+ *     affordances are useful without admin auth.
  *
  * The user-facing name is the "ToC sidebar" (per CONTEXT.md); the file
  * keeps the historical `SlideManager` identifier.
  *
- * Capabilities (v1, locked by the orchestrator):
+ * Capabilities — admin only (v1, locked by the orchestrator):
  *   - Reorder slides (drag handles)
  *   - Hide / show a slide (eye toggle)
  *   - Rename a slide (pencil → inline input)
@@ -16,7 +25,7 @@
  * which fights the manifest-override pattern). The author opens the IDE
  * for those operations — there's a footer hint in the sidebar.
  *
- * Row layout (issue #208):
+ * Row layout (issue #208, admin only):
  *   Default: `[NN] [thumb] title-span` — clean, low-density.
  *   Hover:   a compact affordance cluster fades in on the right edge:
  *            [grip] [eye] [pencil] [note].
@@ -24,7 +33,10 @@
  *   Note click: expands an accordion notes editor BELOW the row,
  *               animated with `easeEntrance` from `@/lib/motion`.
  *
- * Live-preview model:
+ * Audience row layout (#209):
+ *   `[NN] [thumb] title-span`, clickable. No hover cluster of any kind.
+ *
+ * Live-preview model (admin only):
  *   - The component owns a local `draft` state mirroring the form.
  *   - On every change it calls `applyDraft(draft)` from `useDeckManifest`,
  *     so `<Deck>` re-runs `mergeSlides` and the visible slide list updates
@@ -78,8 +90,10 @@ import {
   type Manifest,
   type SlideOverride,
 } from "@/lib/manifest";
+import { mergeSlides } from "@/lib/manifest-merge";
 import type { SlideDef } from "./types";
 import type { UseDeckManifestResult } from "./useDeckManifest";
+import { getRowsForRole, type SlideManagerRole } from "./getRowsForRole";
 
 export interface SlideManagerProps {
   open: boolean;
@@ -99,6 +113,17 @@ export interface SlideManagerProps {
    * have to pass a stub. In `<Deck>` it's always wired.
    */
   onNavigateToSlide?: (effectiveIndex: number) => void;
+  /**
+   * Viewer role. Defaults to `"admin"` so existing call sites (and the
+   * #207/#208 admin tests) keep working unchanged. The audience render
+   * path (#209) passes `"audience"` to filter out Hidden slides and
+   * suppress every editing affordance.
+   *
+   * `<Deck>` derives this from `usePresenterMode()`: `true` ⇒ `"admin"`,
+   * `false` ⇒ `"audience"`. Per CONTEXT.md the `usePresenterMode`
+   * context is the **admin-route signal**, despite the historical name.
+   */
+  role?: SlideManagerRole;
 }
 
 interface DraftRow {
@@ -760,7 +785,40 @@ export function SlideManager({
   manifest,
   onClose,
   onNavigateToSlide,
+  role = "admin",
 }: SlideManagerProps) {
+  if (role === "audience") {
+    return (
+      <AudienceSlideManager
+        open={open}
+        slug={slug}
+        sourceSlides={sourceSlides}
+        manifest={manifest}
+        onClose={onClose}
+        onNavigateToSlide={onNavigateToSlide}
+      />
+    );
+  }
+  return (
+    <AdminSlideManager
+      open={open}
+      slug={slug}
+      sourceSlides={sourceSlides}
+      manifest={manifest}
+      onClose={onClose}
+      onNavigateToSlide={onNavigateToSlide}
+    />
+  );
+}
+
+function AdminSlideManager({
+  open,
+  slug,
+  sourceSlides,
+  manifest,
+  onClose,
+  onNavigateToSlide,
+}: Omit<SlideManagerProps, "role">) {
   const { manifest: persisted, applyDraft, clearDraft, refetch } = manifest;
 
   const [rows, setRows] = useState<DraftRow[]>(() =>
@@ -1114,5 +1172,182 @@ function overridesEqual(a: SlideOverride, b: SlideOverride): boolean {
     (a.hidden ?? null) === (b.hidden ?? null) &&
     (a.title ?? null) === (b.title ?? null) &&
     (a.notes ?? null) === (b.notes ?? null)
+  );
+}
+
+// ── Audience sidebar (#209) ──────────────────────────────────────────────
+//
+// The read-only ToC every public-route visitor sees on `M`. Rows are
+// `[NN] [thumb] title` clickable; Hidden slides are filtered out by
+// `getRowsForRole(..., "audience")`. None of the admin affordances
+// (drag handle, eye toggle, pencil, note icon, save / reset footer)
+// are mounted here — the component renders a minimal sidebar that
+// shares its visual chrome with the admin one.
+
+interface AudienceRowProps {
+  slide: SlideDef;
+  /** Position of `slide` in the unfiltered effective slide list. */
+  effectiveIndex: number;
+  /** Display position in the audience list (1-indexed). */
+  displayNumber: number;
+  slug: string;
+  onNavigate?: (effectiveIndex: number) => void;
+}
+
+function AudienceSlideRow({
+  slide,
+  effectiveIndex,
+  displayNumber,
+  slug,
+  onNavigate,
+}: AudienceRowProps) {
+  const thumbSrc = `/thumbnails/${slug}/${String(displayNumber).padStart(2, "0")}.png`;
+  const [imageFailed, setImageFailed] = useState(false);
+  const titleValue = slide.title ?? slide.id;
+  const clickable = Boolean(onNavigate);
+
+  const handleClick = () => {
+    if (!onNavigate) return;
+    if (typeof window !== "undefined" && window.getSelection()?.toString()) {
+      return;
+    }
+    onNavigate(effectiveIndex);
+  };
+
+  const handleKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (!onNavigate) return;
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      onNavigate(effectiveIndex);
+    }
+  };
+
+  return (
+    <div
+      data-testid="slide-manager-row"
+      data-slide-id={slide.id}
+      data-audience-row
+      role={clickable ? "button" : undefined}
+      tabIndex={clickable ? 0 : undefined}
+      aria-label={
+        clickable ? `Go to slide ${titleValue}` : undefined
+      }
+      onClick={clickable ? handleClick : undefined}
+      onKeyDown={clickable ? handleKeyDown : undefined}
+      className={`flex items-center gap-3 border-b border-cf-border px-4 py-3 ${
+        clickable ? "cursor-pointer hover:bg-cf-bg-200/40" : ""
+      }`}
+    >
+      <span
+        aria-hidden="true"
+        className="w-6 shrink-0 font-mono text-[10px] uppercase tracking-[0.25em] text-cf-text-subtle"
+      >
+        {String(displayNumber).padStart(2, "0")}
+      </span>
+
+      <div className="flex h-10 w-16 shrink-0 items-center justify-center overflow-hidden rounded border border-cf-border bg-cf-bg-200">
+        {imageFailed ? (
+          <span className="font-mono text-[9px] uppercase tracking-[0.25em] text-cf-text-subtle">
+            {String(displayNumber).padStart(2, "0")}
+          </span>
+        ) : (
+          <img
+            src={thumbSrc}
+            alt=""
+            loading="lazy"
+            onError={() => setImageFailed(true)}
+            className="h-full w-full object-cover"
+          />
+        )}
+      </div>
+
+      <div className="flex min-w-0 flex-1 items-center">
+        <span
+          data-testid="slide-manager-title-display"
+          className="block truncate text-sm text-cf-text"
+          title={titleValue}
+        >
+          {titleValue || (
+            <em className="text-cf-text-subtle">(untitled)</em>
+          )}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function AudienceSlideManager({
+  open,
+  slug,
+  sourceSlides,
+  manifest,
+  onClose,
+  onNavigateToSlide,
+}: Omit<SlideManagerProps, "role">) {
+  const { applied } = manifest;
+
+  // Mirror the same effective-slides derivation `<Deck>` uses. We don't
+  // import it from `<Deck>` because `<SlideManager>` is mounted as a
+  // sibling — and `mergeSlides` is pure, so the duplication is cheap.
+  const effectiveSlides = useMemo(
+    () => mergeSlides(sourceSlides, applied),
+    [sourceSlides, applied],
+  );
+
+  const rows = useMemo(
+    () => getRowsForRole(effectiveSlides, "audience"),
+    [effectiveSlides],
+  );
+
+  return (
+    <AnimatePresence>
+      {open && (
+        <motion.aside
+          key="slide-manager"
+          data-testid="slide-manager"
+          data-audience
+          data-no-advance
+          aria-label="Slides"
+          initial={{ opacity: 0, x: 24 }}
+          animate={{ opacity: 1, x: 0 }}
+          exit={{ opacity: 0, x: 24 }}
+          transition={{ duration: 0.2, ease: easeEntrance }}
+          className="absolute right-0 top-0 z-50 flex h-full w-[420px] flex-col border-l border-cf-border bg-cf-bg-100 text-cf-text shadow-[0_0_0_1px_var(--color-cf-border)]"
+        >
+          <header className="flex items-start justify-between gap-3 border-b border-cf-border px-5 py-4">
+            <div>
+              <p className="cf-tag">Slides</p>
+              <h2 className="mt-1 text-lg font-medium tracking-[-0.02em]">
+                {effectiveSlides.length === 0
+                  ? "Empty deck"
+                  : `${rows.length} ${rows.length === 1 ? "slide" : "slides"}`}
+              </h2>
+            </div>
+            <button
+              type="button"
+              data-interactive
+              data-testid="slide-manager-close"
+              onClick={onClose}
+              aria-label="Close slides"
+              className="cf-btn-ghost"
+            >
+              Esc
+            </button>
+          </header>
+          <div className="flex-1 overflow-y-auto">
+            {rows.map((row, i) => (
+              <AudienceSlideRow
+                key={row.slide.id}
+                slide={row.slide}
+                effectiveIndex={row.effectiveIndex}
+                displayNumber={i + 1}
+                slug={slug}
+                onNavigate={onNavigateToSlide}
+              />
+            ))}
+          </div>
+        </motion.aside>
+      )}
+    </AnimatePresence>
   );
 }

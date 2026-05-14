@@ -38,6 +38,10 @@ const PUBLIC_HINTS: Hint[] = [
   { keys: "F", label: "fullscreen" },
   { keys: "D", label: "dark" },
   { keys: "O", label: "overview" },
+  // `M` opens the ToC sidebar for BOTH roles (#209). Audience gets a
+  // read-only `[NN] [thumb] title` list of non-hidden slides; admin
+  // gets the full editing surface from #207/#208.
+  { keys: "M", label: "slides" },
   { keys: "S", label: "settings" },
   { keys: "?", label: "help" },
 ];
