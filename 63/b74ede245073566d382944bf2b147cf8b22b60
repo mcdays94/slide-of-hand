@@ -1,0 +1,35 @@
+src/lib/settings.test.ts
+  55351e0320bd370f 294-299,304
+worker/agent.test.ts
+  55351e0320bd370f 407
+worker/ai-deck-gen.test.ts
+  55351e0320bd370f 5,8-12,17-18,25,55,62-66,68-74,76,78-87,107-114,116-117,120-121,142-149,151-152,155-156,159-160,163-164,174-176,181-183,190-199,216-225,243-252,270-274,298-302,310
+worker/agent.ts
+  55351e0320bd370f 201
+src/framework/viewer/SettingsModal.tsx
+  55351e0320bd370f 531
+src/lib/ai-models.ts
+  55351e0320bd370f 35
+worker/ai-deck-gen.ts
+  55351e0320bd370f 30,48-54,56-74,76,445-473,481-485,487-489,491-494,496,498-499,505-506,509-512,516-522
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "63b74ede245073566d382944bf2b147cf8b22b60",
+  "prompts": {
+    "55351e0320bd370f": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_1dd5b6588ffehp8b4HkAoNHUq0",
+        "model": "anthropic/claude-opus-4-7"
+      },
+      "human_author": "mcdays94",
+      "messages": [],
+      "total_additions": 205,
+      "total_deletions": 221,
+      "accepted_lines": 205,
+      "overriden_lines": 0
+    }
+  }
+}
