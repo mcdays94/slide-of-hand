@@ -1067,3 +1067,424 @@ describe("GET /api/admin/decks/<slug>", () => {
     expect(res.status).toBe(400);
   });
 });
+
+// ---------------------------------------------------------------- //
+// POST /api/admin/decks/<slug>/archive (issue #245)
+// ---------------------------------------------------------------- //
+//
+// Archive sets `meta.archived = true` on the deck record AND on the
+// `decks-list` index summary. The deck stays in KV; the public list
+// hides it (see filter tests above) and the public read 404s.
+//
+// We use a subresource verb (`/archive`) instead of PATCH because:
+//   - the existing handler uses POST for upsert and DELETE for tombstone;
+//   - PATCH does not exist on any other endpoint in this surface;
+//   - subresource verbs read clearly in the worker source + browser logs
+//     ("POST /api/admin/decks/hello/archive" beats "PATCH … {archived: true}").
+//
+// Restore mirrors archive — endpoint shape, side-effect, and 200 return.
+// Both endpoints are no-body and idempotent (archiving an archived deck
+// is a no-op success; same for restore on an active deck).
+
+describe("POST /api/admin/decks/<slug>/archive (#245)", () => {
+  it("rejects without auth header with 403", async () => {
+    const { env, kv } = makeEnv();
+    await kv.put("deck:hello", JSON.stringify(makeDeck("hello")));
+    const res = await call(
+      new Request("https://example.com/api/admin/decks/hello/archive", {
+        method: "POST",
+      }),
+      env,
+    );
+    expect(res.status).toBe(403);
+    // KV must not have been touched.
+    const stored = JSON.parse(kv.store.get("deck:hello")!);
+    expect(stored.meta.archived).toBeUndefined();
+  });
+
+  it("returns 404 when the deck does not exist", async () => {
+    const { env } = makeEnv();
+    const res = await call(
+      adminRequest("https://example.com/api/admin/decks/missing/archive", {
+        method: "POST",
+      }),
+      env,
+    );
+    expect(res.status).toBe(404);
+  });
+
+  it("rejects an invalid slug with 400", async () => {
+    const { env } = makeEnv();
+    const res = await call(
+      adminRequest("https://example.com/api/admin/decks/Bad..Slug/archive", {
+        method: "POST",
+      }),
+      env,
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it("sets meta.archived = true on the deck record", async () => {
+    const { env, kv } = makeEnv();
+    // Seed via POST so the index is populated naturally.
+    await call(
+      adminRequest("https://example.com/api/admin/decks/hello", {
+        method: "POST",
+        body: JSON.stringify(makeDeck("hello")),
+        headers: { "content-type": "application/json" },
+      }),
+      env,
+    );
+    const res = await call(
+      adminRequest("https://example.com/api/admin/decks/hello/archive", {
+        method: "POST",
+      }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const stored = JSON.parse(kv.store.get("deck:hello")!);
+    expect(stored.meta.archived).toBe(true);
+  });
+
+  it("propagates archived === true into the decks-list summary", async () => {
+    const { env, kv } = makeEnv();
+    await call(
+      adminRequest("https://example.com/api/admin/decks/hello", {
+        method: "POST",
+        body: JSON.stringify(makeDeck("hello")),
+        headers: { "content-type": "application/json" },
+      }),
+      env,
+    );
+    await call(
+      adminRequest("https://example.com/api/admin/decks/hello/archive", {
+        method: "POST",
+      }),
+      env,
+    );
+    const list = JSON.parse(kv.store.get("decks-list")!) as Array<
+      Record<string, unknown>
+    >;
+    expect(list).toHaveLength(1);
+    expect(list[0].slug).toBe("hello");
+    expect(list[0].archived).toBe(true);
+  });
+
+  it("is idempotent — archiving an already-archived deck still returns 200", async () => {
+    const { env, kv } = makeEnv();
+    await kv.put(
+      "deck:retired",
+      JSON.stringify(makeDeck("retired", "public", { archived: true })),
+    );
+    await kv.put(
+      "decks-list",
+      JSON.stringify([
+        {
+          slug: "retired",
+          title: "Deck retired",
+          date: "2026-05-07",
+          visibility: "public",
+          archived: true,
+        },
+      ]),
+    );
+    const res = await call(
+      adminRequest("https://example.com/api/admin/decks/retired/archive", {
+        method: "POST",
+      }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const stored = JSON.parse(kv.store.get("deck:retired")!);
+    expect(stored.meta.archived).toBe(true);
+  });
+
+  it("preserves side data: manifest record is NOT cleared on archive", async () => {
+    // Archive is reversible; the side data must survive so a later
+    // restore puts the deck back in the same shape.
+    const { env: decksEnv, kv: decksKv } = makeEnv();
+    const manifestsKv = new FakeKV();
+    const env = {
+      ...decksEnv,
+      MANIFESTS: manifestsKv as unknown as KVNamespace,
+    };
+    await decksKv.put("deck:hello", JSON.stringify(makeDeck("hello")));
+    await decksKv.put(
+      "decks-list",
+      JSON.stringify([
+        {
+          slug: "hello",
+          title: "Deck hello",
+          date: "2026-05-07",
+          visibility: "public",
+        },
+      ]),
+    );
+    await manifestsKv.put(
+      "manifest:hello",
+      JSON.stringify({
+        version: 1,
+        order: ["intro"],
+        overrides: {},
+        updatedAt: "2026-05-07T00:00:00Z",
+      }),
+    );
+    const res = await call(
+      adminRequest("https://example.com/api/admin/decks/hello/archive", {
+        method: "POST",
+      }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    expect(manifestsKv.store.has("manifest:hello")).toBe(true);
+  });
+});
+
+describe("POST /api/admin/decks/<slug>/restore (#245)", () => {
+  it("rejects without auth header with 403", async () => {
+    const { env, kv } = makeEnv();
+    await kv.put(
+      "deck:retired",
+      JSON.stringify(makeDeck("retired", "public", { archived: true })),
+    );
+    const res = await call(
+      new Request("https://example.com/api/admin/decks/retired/restore", {
+        method: "POST",
+      }),
+      env,
+    );
+    expect(res.status).toBe(403);
+    const stored = JSON.parse(kv.store.get("deck:retired")!);
+    expect(stored.meta.archived).toBe(true);
+  });
+
+  it("returns 404 when the deck does not exist", async () => {
+    const { env } = makeEnv();
+    const res = await call(
+      adminRequest("https://example.com/api/admin/decks/missing/restore", {
+        method: "POST",
+      }),
+      env,
+    );
+    expect(res.status).toBe(404);
+  });
+
+  it("clears meta.archived on the deck record", async () => {
+    const { env, kv } = makeEnv();
+    await kv.put(
+      "deck:retired",
+      JSON.stringify(makeDeck("retired", "public", { archived: true })),
+    );
+    await kv.put(
+      "decks-list",
+      JSON.stringify([
+        {
+          slug: "retired",
+          title: "Deck retired",
+          date: "2026-05-07",
+          visibility: "public",
+          archived: true,
+        },
+      ]),
+    );
+    const res = await call(
+      adminRequest("https://example.com/api/admin/decks/retired/restore", {
+        method: "POST",
+      }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const stored = JSON.parse(kv.store.get("deck:retired")!);
+    // Either cleared entirely or set to false — both are valid. The
+    // summary `archived` field is omitted/false (see next test).
+    expect(stored.meta.archived === undefined || stored.meta.archived === false)
+      .toBe(true);
+  });
+
+  it("removes archived from the decks-list summary (deck is active again)", async () => {
+    const { env, kv } = makeEnv();
+    await kv.put(
+      "deck:retired",
+      JSON.stringify(makeDeck("retired", "public", { archived: true })),
+    );
+    await kv.put(
+      "decks-list",
+      JSON.stringify([
+        {
+          slug: "retired",
+          title: "Deck retired",
+          date: "2026-05-07",
+          visibility: "public",
+          archived: true,
+        },
+      ]),
+    );
+    await call(
+      adminRequest("https://example.com/api/admin/decks/retired/restore", {
+        method: "POST",
+      }),
+      env,
+    );
+    const list = JSON.parse(kv.store.get("decks-list")!) as Array<
+      Record<string, unknown>
+    >;
+    expect(list).toHaveLength(1);
+    expect(list[0].slug).toBe("retired");
+    // After restore, the summary must NOT carry `archived: true`. The
+    // implementation may omit the key or set it to false; the filter
+    // logic (`archived !== true`) treats both as "active".
+    const archived = list[0].archived as boolean | undefined;
+    expect(archived === undefined || archived === false).toBe(true);
+  });
+
+  it("is idempotent — restoring an active deck still returns 200", async () => {
+    const { env, kv } = makeEnv();
+    await call(
+      adminRequest("https://example.com/api/admin/decks/hello", {
+        method: "POST",
+        body: JSON.stringify(makeDeck("hello")),
+        headers: { "content-type": "application/json" },
+      }),
+      env,
+    );
+    const res = await call(
+      adminRequest("https://example.com/api/admin/decks/hello/restore", {
+        method: "POST",
+      }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const stored = JSON.parse(kv.store.get("deck:hello")!);
+    expect(stored.meta.archived === undefined || stored.meta.archived === false)
+      .toBe(true);
+  });
+
+  it("public list re-exposes the deck after a full archive → restore cycle", async () => {
+    // Round-trip integration through the public-list filter: archive
+    // hides; restore re-exposes. Lock the wire-level guarantee that
+    // PRD #242's lifecycle is reversible from the public surface.
+    const { env, kv } = makeEnv();
+    await call(
+      adminRequest("https://example.com/api/admin/decks/hello", {
+        method: "POST",
+        body: JSON.stringify(makeDeck("hello")),
+        headers: { "content-type": "application/json" },
+      }),
+      env,
+    );
+    await call(
+      adminRequest("https://example.com/api/admin/decks/hello/archive", {
+        method: "POST",
+      }),
+      env,
+    );
+    // Hidden after archive.
+    let publicRes = await call(
+      new Request("https://example.com/api/decks"),
+      env,
+    );
+    let body = (await publicRes.json()) as { decks: Array<{ slug: string }> };
+    expect(body.decks.map((d) => d.slug)).toEqual([]);
+
+    await call(
+      adminRequest("https://example.com/api/admin/decks/hello/restore", {
+        method: "POST",
+      }),
+      env,
+    );
+    // Visible again after restore.
+    publicRes = await call(new Request("https://example.com/api/decks"), env);
+    body = (await publicRes.json()) as { decks: Array<{ slug: string }> };
+    expect(body.decks.map((d) => d.slug)).toEqual(["hello"]);
+
+    // Sanity: the underlying record carries the lifecycle round-trip.
+    const stored = JSON.parse(kv.store.get("deck:hello")!);
+    expect(stored.meta.archived === undefined || stored.meta.archived === false)
+      .toBe(true);
+    void kv;
+  });
+});
+
+// ---------------------------------------------------------------- //
+// DELETE side-data cleanup (issue #245)
+// ---------------------------------------------------------------- //
+//
+// #244 swapped the trashcan for a typed-slug menu but kept the same
+// DELETE endpoint. #245 extends the endpoint to clear KV-backed side
+// data — the per-deck `manifest:<slug>` record. If MANIFESTS is not
+// bound (legacy / unit-test paths), the handler must still complete
+// the primary delete cleanly without throwing.
+
+describe("DELETE /api/admin/decks/<slug> — side-data cleanup (#245)", () => {
+  it("clears manifest:<slug> from MANIFESTS when bound", async () => {
+    const { env: decksEnv, kv: decksKv } = makeEnv();
+    const manifestsKv = new FakeKV();
+    const env = {
+      ...decksEnv,
+      MANIFESTS: manifestsKv as unknown as KVNamespace,
+    };
+    await decksKv.put("deck:hello", JSON.stringify(makeDeck("hello")));
+    await decksKv.put(
+      "decks-list",
+      JSON.stringify([
+        {
+          slug: "hello",
+          title: "Deck hello",
+          date: "2026-05-07",
+          visibility: "public",
+        },
+      ]),
+    );
+    await manifestsKv.put(
+      "manifest:hello",
+      JSON.stringify({
+        version: 1,
+        order: ["intro"],
+        overrides: {},
+        updatedAt: "2026-05-07T00:00:00Z",
+      }),
+    );
+    const res = await call(
+      adminRequest("https://example.com/api/admin/decks/hello", {
+        method: "DELETE",
+      }),
+      env,
+    );
+    expect(res.status).toBe(204);
+    expect(decksKv.store.has("deck:hello")).toBe(false);
+    expect(manifestsKv.store.has("manifest:hello")).toBe(false);
+  });
+
+  it("does not throw when MANIFESTS is not bound (legacy env)", async () => {
+    const { env, kv } = makeEnv();
+    await kv.put("deck:hello", JSON.stringify(makeDeck("hello")));
+    const res = await call(
+      adminRequest("https://example.com/api/admin/decks/hello", {
+        method: "DELETE",
+      }),
+      env,
+    );
+    expect(res.status).toBe(204);
+    expect(kv.store.has("deck:hello")).toBe(false);
+  });
+
+  it("is idempotent when the manifest does not exist", async () => {
+    const { env: decksEnv, kv: decksKv } = makeEnv();
+    const manifestsKv = new FakeKV();
+    const env = {
+      ...decksEnv,
+      MANIFESTS: manifestsKv as unknown as KVNamespace,
+    };
+    await decksKv.put("deck:hello", JSON.stringify(makeDeck("hello")));
+    const res = await call(
+      adminRequest("https://example.com/api/admin/decks/hello", {
+        method: "DELETE",
+      }),
+      env,
+    );
+    expect(res.status).toBe(204);
+    // Deck is gone; manifest store stays empty (it never had the key).
+    expect(decksKv.store.has("deck:hello")).toBe(false);
+    expect(manifestsKv.store.size).toBe(0);
+  });
+});
