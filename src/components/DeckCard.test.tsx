@@ -41,6 +41,8 @@ interface RenderOpts {
   to?: string;
   visibility?: "public" | "private";
   onDelete?: (slug: string) => Promise<void> | void;
+  onArchive?: (slug: string) => Promise<void> | void;
+  onRestore?: (slug: string) => Promise<void> | void;
   ideHref?: string;
   hoverPreviewSlideCount?: number;
 }
@@ -207,30 +209,52 @@ describe("DeckCard", () => {
   });
 
   describe("delete affordance (admin slot)", () => {
-    it("does NOT render a trashcan when onDelete is undefined", () => {
+    /**
+     * Issue #244 replaces the single hover-revealed trashcan with the
+     * `<DeckLifecycleMenu>`. The destructive Delete action is now the
+     * second menu item; the dialog is a typed-slug confirmation. Tests
+     * walk the flow: open menu → click Delete → type slug → confirm.
+     */
+    function openMenu(slug = "alpha") {
+      fireEvent.click(screen.getByTestId(`lifecycle-menu-trigger-${slug}`));
+    }
+    function clickDelete(slug = "alpha") {
+      fireEvent.click(screen.getByTestId(`lifecycle-menu-delete-${slug}`));
+    }
+    function typeSlug(slug: string) {
+      fireEvent.change(screen.getByTestId("typed-slug-input"), {
+        target: { value: slug },
+      });
+    }
+
+    it("does NOT render a lifecycle menu trigger when no lifecycle callbacks are wired", () => {
       renderCard(baseMeta);
-      expect(screen.queryByTestId("delete-deck-alpha")).toBeNull();
+      expect(screen.queryByTestId("lifecycle-menu-trigger-alpha")).toBeNull();
     });
 
-    it("renders a trashcan when onDelete is provided", () => {
+    it("renders a lifecycle menu trigger when onDelete is provided", () => {
       renderCard(baseMeta, { onDelete: () => {} });
-      expect(screen.getByTestId("delete-deck-alpha")).toBeDefined();
+      expect(screen.getByTestId("lifecycle-menu-trigger-alpha")).toBeDefined();
     });
 
-    it("clicking the trashcan opens the confirm dialog with the deck title", () => {
+    it("the Delete menu item opens the typed-slug confirm dialog", () => {
       renderCard(baseMeta, { onDelete: () => {} });
       expect(screen.queryByTestId("confirm-dialog")).toBeNull();
-      fireEvent.click(screen.getByTestId("delete-deck-alpha"));
+      openMenu();
+      clickDelete();
       expect(screen.getByTestId("confirm-dialog")).toBeDefined();
       expect(screen.getByTestId("confirm-dialog").textContent).toMatch(
         /Alpha/,
       );
+      // Typed-slug guard primitive is present.
+      expect(screen.getByTestId("typed-slug-input")).toBeDefined();
     });
 
     it("Cancel closes the dialog without invoking onDelete", async () => {
       const onDelete = vi.fn();
       renderCard(baseMeta, { onDelete });
-      fireEvent.click(screen.getByTestId("delete-deck-alpha"));
+      openMenu();
+      clickDelete();
       fireEvent.click(screen.getByTestId("confirm-dialog-cancel"));
       await waitFor(() =>
         expect(screen.queryByTestId("confirm-dialog")).toBeNull(),
@@ -238,10 +262,17 @@ describe("DeckCard", () => {
       expect(onDelete).not.toHaveBeenCalled();
     });
 
-    it("Confirm invokes onDelete with the deck slug", async () => {
+    it("Confirm requires the slug to be typed before invoking onDelete", async () => {
       const onDelete = vi.fn().mockResolvedValue(undefined);
       renderCard(baseMeta, { onDelete });
-      fireEvent.click(screen.getByTestId("delete-deck-alpha"));
+      openMenu();
+      clickDelete();
+      // Without typing, the confirm button is disabled. Click it and
+      // onDelete should NOT fire.
+      fireEvent.click(screen.getByTestId("confirm-dialog-confirm"));
+      expect(onDelete).not.toHaveBeenCalled();
+      // Type the slug and try again.
+      typeSlug("alpha");
       fireEvent.click(screen.getByTestId("confirm-dialog-confirm"));
       await waitFor(() => expect(onDelete).toHaveBeenCalledWith("alpha"));
     });
@@ -251,7 +282,9 @@ describe("DeckCard", () => {
         .fn()
         .mockRejectedValue(new Error("kv unavailable"));
       renderCard(baseMeta, { onDelete });
-      fireEvent.click(screen.getByTestId("delete-deck-alpha"));
+      openMenu();
+      clickDelete();
+      typeSlug("alpha");
       fireEvent.click(screen.getByTestId("confirm-dialog-confirm"));
       await waitFor(() =>
         expect(screen.getByTestId("delete-error").textContent).toMatch(
@@ -259,6 +292,119 @@ describe("DeckCard", () => {
         ),
       );
       // Dialog stays open so the user can retry or cancel.
+      expect(screen.getByTestId("confirm-dialog")).toBeDefined();
+    });
+
+    it("does NOT call window.confirm at any point in the delete flow", async () => {
+      const confirmSpy = vi
+        .spyOn(window, "confirm")
+        .mockImplementation(() => true);
+      const onDelete = vi.fn().mockResolvedValue(undefined);
+      renderCard(baseMeta, { onDelete });
+      openMenu();
+      clickDelete();
+      typeSlug("alpha");
+      fireEvent.click(screen.getByTestId("confirm-dialog-confirm"));
+      await waitFor(() => expect(onDelete).toHaveBeenCalled());
+      expect(confirmSpy).not.toHaveBeenCalled();
+      confirmSpy.mockRestore();
+    });
+  });
+
+  describe("lifecycle action menu (issue #244)", () => {
+    it("active card with onArchive shows Archive in the menu", () => {
+      renderCard(baseMeta, { onArchive: () => {} });
+      fireEvent.click(screen.getByTestId("lifecycle-menu-trigger-alpha"));
+      expect(screen.getByTestId("lifecycle-menu-archive-alpha")).toBeDefined();
+      expect(screen.queryByTestId("lifecycle-menu-restore-alpha")).toBeNull();
+    });
+
+    it("archived card (meta.archived=true) with onRestore shows Restore in the menu", () => {
+      renderCard(
+        { ...baseMeta, archived: true },
+        { onRestore: () => {} },
+      );
+      fireEvent.click(screen.getByTestId("lifecycle-menu-trigger-alpha"));
+      expect(screen.getByTestId("lifecycle-menu-restore-alpha")).toBeDefined();
+      expect(screen.queryByTestId("lifecycle-menu-archive-alpha")).toBeNull();
+    });
+
+    it("archived card does NOT show Archive even if onArchive is wired", () => {
+      renderCard(
+        { ...baseMeta, archived: true },
+        { onArchive: () => {}, onDelete: () => {} },
+      );
+      fireEvent.click(screen.getByTestId("lifecycle-menu-trigger-alpha"));
+      expect(screen.queryByTestId("lifecycle-menu-archive-alpha")).toBeNull();
+      expect(screen.getByTestId("lifecycle-menu-delete-alpha")).toBeDefined();
+    });
+
+    it("active card does NOT show Restore even if onRestore is wired", () => {
+      renderCard(baseMeta, { onRestore: () => {}, onDelete: () => {} });
+      fireEvent.click(screen.getByTestId("lifecycle-menu-trigger-alpha"));
+      expect(screen.queryByTestId("lifecycle-menu-restore-alpha")).toBeNull();
+      expect(screen.getByTestId("lifecycle-menu-delete-alpha")).toBeDefined();
+    });
+
+    it("Archive menu item opens a confirmation dialog and fires onArchive after confirm", async () => {
+      const onArchive = vi.fn().mockResolvedValue(undefined);
+      renderCard(baseMeta, { onArchive });
+      fireEvent.click(screen.getByTestId("lifecycle-menu-trigger-alpha"));
+      fireEvent.click(screen.getByTestId("lifecycle-menu-archive-alpha"));
+      // A simple ConfirmDialog opens (no typed-slug input).
+      expect(screen.getByTestId("confirm-dialog")).toBeDefined();
+      expect(screen.queryByTestId("typed-slug-input")).toBeNull();
+      // Body explains the public-link consequence.
+      expect(screen.getByTestId("confirm-dialog").textContent).toMatch(
+        /public link/i,
+      );
+      fireEvent.click(screen.getByTestId("confirm-dialog-confirm"));
+      await waitFor(() => expect(onArchive).toHaveBeenCalledWith("alpha"));
+    });
+
+    it("Restore menu item opens a confirmation dialog and fires onRestore after confirm", async () => {
+      const onRestore = vi.fn().mockResolvedValue(undefined);
+      renderCard(
+        { ...baseMeta, archived: true },
+        { onRestore },
+      );
+      fireEvent.click(screen.getByTestId("lifecycle-menu-trigger-alpha"));
+      fireEvent.click(screen.getByTestId("lifecycle-menu-restore-alpha"));
+      expect(screen.getByTestId("confirm-dialog")).toBeDefined();
+      expect(screen.queryByTestId("typed-slug-input")).toBeNull();
+      // Body explains the move-back-to-active consequence.
+      expect(screen.getByTestId("confirm-dialog").textContent).toMatch(
+        /active|move back/i,
+      );
+      fireEvent.click(screen.getByTestId("confirm-dialog-confirm"));
+      await waitFor(() => expect(onRestore).toHaveBeenCalledWith("alpha"));
+    });
+
+    it("Archive cancel closes the dialog without firing onArchive", async () => {
+      const onArchive = vi.fn();
+      renderCard(baseMeta, { onArchive });
+      fireEvent.click(screen.getByTestId("lifecycle-menu-trigger-alpha"));
+      fireEvent.click(screen.getByTestId("lifecycle-menu-archive-alpha"));
+      fireEvent.click(screen.getByTestId("confirm-dialog-cancel"));
+      await waitFor(() =>
+        expect(screen.queryByTestId("confirm-dialog")).toBeNull(),
+      );
+      expect(onArchive).not.toHaveBeenCalled();
+    });
+
+    it("Archive dialog surfaces an inline error when onArchive throws", async () => {
+      const onArchive = vi
+        .fn()
+        .mockRejectedValue(new Error("source unavailable"));
+      renderCard(baseMeta, { onArchive });
+      fireEvent.click(screen.getByTestId("lifecycle-menu-trigger-alpha"));
+      fireEvent.click(screen.getByTestId("lifecycle-menu-archive-alpha"));
+      fireEvent.click(screen.getByTestId("confirm-dialog-confirm"));
+      await waitFor(() =>
+        expect(screen.getByTestId("archive-error").textContent).toMatch(
+          /source unavailable/,
+        ),
+      );
       expect(screen.getByTestId("confirm-dialog")).toBeDefined();
     });
   });

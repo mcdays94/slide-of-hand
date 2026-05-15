@@ -177,7 +177,7 @@ describe("DeckCardGrid", () => {
     );
   });
 
-  it("renders a trashcan only on items where canDelete=true", () => {
+  it("renders a lifecycle menu trigger only on items where canDelete=true (when no other lifecycle callbacks)", () => {
     const onDelete = vi.fn();
     render(
       <MemoryRouter>
@@ -191,11 +191,17 @@ describe("DeckCardGrid", () => {
         />
       </MemoryRouter>,
     );
-    expect(screen.queryByTestId("delete-deck-source-deck")).toBeNull();
-    expect(screen.getByTestId("delete-deck-kv-deck")).toBeDefined();
+    // Source row: no lifecycle wiring at all → no trigger.
+    expect(
+      screen.queryByTestId("lifecycle-menu-trigger-source-deck"),
+    ).toBeNull();
+    // KV row: delete is wired → trigger present, Delete inside.
+    expect(screen.getByTestId("lifecycle-menu-trigger-kv-deck")).toBeDefined();
+    fireEvent.click(screen.getByTestId("lifecycle-menu-trigger-kv-deck"));
+    expect(screen.getByTestId("lifecycle-menu-delete-kv-deck")).toBeDefined();
   });
 
-  it("does NOT render any trashcan when onDelete prop is omitted (public surface)", () => {
+  it("does NOT render any lifecycle menu when no lifecycle callbacks are provided (public surface)", () => {
     render(
       <MemoryRouter>
         <DeckCardGrid
@@ -204,10 +210,12 @@ describe("DeckCardGrid", () => {
         />
       </MemoryRouter>,
     );
-    expect(screen.queryByTestId("delete-deck-kv-deck")).toBeNull();
+    expect(
+      screen.queryByTestId("lifecycle-menu-trigger-kv-deck"),
+    ).toBeNull();
   });
 
-  it("invokes onDelete with the slug when the user confirms", async () => {
+  it("invokes onDelete with the slug after the user types it and confirms", async () => {
     const onDelete = vi.fn().mockResolvedValue(undefined);
     render(
       <MemoryRouter>
@@ -218,9 +226,99 @@ describe("DeckCardGrid", () => {
         />
       </MemoryRouter>,
     );
-    fireEvent.click(screen.getByTestId("delete-deck-kv-deck"));
+    fireEvent.click(screen.getByTestId("lifecycle-menu-trigger-kv-deck"));
+    fireEvent.click(screen.getByTestId("lifecycle-menu-delete-kv-deck"));
+    fireEvent.change(screen.getByTestId("typed-slug-input"), {
+      target: { value: "kv-deck" },
+    });
     fireEvent.click(screen.getByTestId("confirm-dialog-confirm"));
     await waitFor(() => expect(onDelete).toHaveBeenCalledWith("kv-deck"));
+  });
+
+  it("renders Archive menu item only on active items where canArchive=true", () => {
+    const onArchive = vi.fn();
+    render(
+      <MemoryRouter>
+        <DeckCardGrid
+          surface="admin"
+          items={[
+            item("source-deck", "Source", { canArchive: false }),
+            item("archivable", "Archivable", { canArchive: true }),
+          ]}
+          onArchive={onArchive}
+        />
+      </MemoryRouter>,
+    );
+    // Non-archivable: no trigger at all.
+    expect(
+      screen.queryByTestId("lifecycle-menu-trigger-source-deck"),
+    ).toBeNull();
+    // Archivable: menu trigger present with Archive item.
+    fireEvent.click(screen.getByTestId("lifecycle-menu-trigger-archivable"));
+    expect(
+      screen.getByTestId("lifecycle-menu-archive-archivable"),
+    ).toBeDefined();
+  });
+
+  it("renders Restore menu item only on archived items where canRestore=true", () => {
+    const onRestore = vi.fn();
+    render(
+      <MemoryRouter>
+        <DeckCardGrid
+          surface="admin"
+          items={[
+            // Active deck with canRestore=true should NOT render Restore;
+            // restore only applies to archived lifecycle.
+            item("active-with-restore", "Active", { canRestore: true }),
+            // Archived deck with canRestore=true should render Restore.
+            {
+              meta: {
+                slug: "archived-restorable",
+                title: "Archived Restorable",
+                description: "x",
+                date: "2026-04-01",
+                archived: true,
+              },
+              to: "/decks/archived-restorable",
+              canRestore: true,
+            },
+          ]}
+          onRestore={onRestore}
+        />
+      </MemoryRouter>,
+    );
+    // Active row: no menu (no Archive cb wired, restore doesn't apply).
+    expect(
+      screen.queryByTestId("lifecycle-menu-trigger-active-with-restore"),
+    ).toBeNull();
+    // Archived row: Restore visible inside the menu.
+    fireEvent.click(
+      screen.getByTestId("lifecycle-menu-trigger-archived-restorable"),
+    );
+    expect(
+      screen.getByTestId("lifecycle-menu-restore-archived-restorable"),
+    ).toBeDefined();
+  });
+
+  it("invokes onArchive with the slug after the user confirms the archive dialog", async () => {
+    const onArchive = vi.fn().mockResolvedValue(undefined);
+    render(
+      <MemoryRouter>
+        <DeckCardGrid
+          surface="admin"
+          items={[
+            item("kv-deck", "KV Deck", { canArchive: true }),
+          ]}
+          onArchive={onArchive}
+        />
+      </MemoryRouter>,
+    );
+    fireEvent.click(screen.getByTestId("lifecycle-menu-trigger-kv-deck"));
+    fireEvent.click(screen.getByTestId("lifecycle-menu-archive-kv-deck"));
+    // Archive uses a simple ConfirmDialog (no typed-slug input).
+    expect(screen.queryByTestId("typed-slug-input")).toBeNull();
+    fireEvent.click(screen.getByTestId("confirm-dialog-confirm"));
+    await waitFor(() => expect(onArchive).toHaveBeenCalledWith("kv-deck"));
   });
 
   describe("hover preview animation (issue #128)", () => {

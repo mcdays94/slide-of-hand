@@ -43,11 +43,24 @@ export interface DeckCardGridItem {
   visibility?: DeckCardVisibility;
   /**
    * Whether THIS item is deletable from the runtime UI. Source decks
-   * are NOT deletable (their on-disk file is the source of truth).
-   * KV-backed decks ARE. The grid only renders a trashcan when both
-   * `canDelete` is true AND the parent wired up `onDelete`.
+   * may not have a delete backend wired today; KV-backed decks do.
+   * The grid only renders a Delete menu item when both `canDelete` is
+   * true AND the parent wired up `onDelete`.
    */
   canDelete?: boolean;
+  /**
+   * Whether THIS item is archivable from the runtime UI. Issue #244
+   * exposes Archive on active cards. Later slices wire the source vs
+   * KV backends — this flag is the per-row gate.
+   */
+  canArchive?: boolean;
+  /**
+   * Whether THIS item can be restored from the runtime UI. Only
+   * meaningful on archived cards. Gated independently from
+   * `canArchive` so a deck's restore backend can land in a different
+   * slice than its archive backend.
+   */
+  canRestore?: boolean;
   /** Optional "Open in IDE" link target for source decks (admin / dev only). */
   ideHref?: string;
 }
@@ -60,12 +73,25 @@ export interface DeckCardGridProps {
   emptyState?: ReactNode;
   /**
    * Admin-only delete callback. When provided, items with
-   * `canDelete: true` render a trashcan that, on confirm, invokes
-   * this callback with the deck slug. The callback owns the side
-   * effect (DELETE + reload) and may throw to surface an inline
-   * error in the dialog.
+   * `canDelete: true` render a Delete menu item that, on confirm via
+   * the typed-slug dialog, invokes this callback with the deck slug.
+   * The callback owns the side effect (DELETE + reload) and may throw
+   * to surface an inline error in the dialog.
    */
   onDelete?: (slug: string) => Promise<void> | void;
+  /**
+   * Admin-only archive callback. Items with `canArchive: true` and an
+   * active lifecycle render an Archive menu item that, on confirm via
+   * a simple `<ConfirmDialog>`, invokes this callback with the deck
+   * slug. Issue #244 introduces this as UI-only — later slices wire
+   * the real KV / source backends.
+   */
+  onArchive?: (slug: string) => Promise<void> | void;
+  /**
+   * Admin-only restore callback. Mirrors `onArchive` but only renders
+   * on archived cards via the Restore menu item.
+   */
+  onRestore?: (slug: string) => Promise<void> | void;
 }
 
 export function DeckCardGrid({
@@ -73,6 +99,8 @@ export function DeckCardGrid({
   items,
   emptyState,
   onDelete,
+  onArchive,
+  onRestore,
 }: DeckCardGridProps) {
   const { mode, setMode } = useViewPreference(surface);
   const { settings } = useSettings();
@@ -131,6 +159,8 @@ export function DeckCardGrid({
       >
         {items.map((it) => {
           const showDelete = Boolean(onDelete && it.canDelete);
+          const showArchive = Boolean(onArchive && it.canArchive);
+          const showRestore = Boolean(onRestore && it.canRestore);
           return (
             <li key={it.meta.slug} className="contents">
               <DeckCard
@@ -140,6 +170,8 @@ export function DeckCardGrid({
                 visibility={it.visibility}
                 ideHref={it.ideHref}
                 onDelete={showDelete ? onDelete : undefined}
+                onArchive={showArchive ? onArchive : undefined}
+                onRestore={showRestore ? onRestore : undefined}
                 hoverPreviewSlideCount={hoverPreviewSlideCount}
               />
             </li>

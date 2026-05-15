@@ -96,8 +96,8 @@ afterEach(() => {
   window.localStorage.clear();
 });
 
-describe("AdminIndex — delete affordance gating (#130)", () => {
-  it("KV-backed decks render a trashcan delete button", async () => {
+describe("AdminIndex — delete affordance gating (#130, updated by #244)", () => {
+  it("KV-backed active decks include a Delete menu item", async () => {
     mockEntries = [entry("kv-deck", "KV Deck", "kv")];
     const AdminIndex = await loadAdminIndex();
     render(
@@ -105,10 +105,13 @@ describe("AdminIndex — delete affordance gating (#130)", () => {
         <AdminIndex />
       </MemoryRouter>,
     );
-    expect(screen.getByTestId("delete-deck-kv-deck")).toBeDefined();
+    // The lifecycle menu trigger is rendered; clicking it surfaces the
+    // Delete item.
+    fireEvent.click(screen.getByTestId("lifecycle-menu-trigger-kv-deck"));
+    expect(screen.getByTestId("lifecycle-menu-delete-kv-deck")).toBeDefined();
   });
 
-  it("build-time (source) decks do NOT render a trashcan", async () => {
+  it("build-time (source) active decks do NOT include a Delete menu item", async () => {
     mockEntries = [entry("hello", "Hello", "source")];
     const AdminIndex = await loadAdminIndex();
     render(
@@ -116,10 +119,13 @@ describe("AdminIndex — delete affordance gating (#130)", () => {
         <AdminIndex />
       </MemoryRouter>,
     );
-    expect(screen.queryByTestId("delete-deck-hello")).toBeNull();
+    // Source decks still get a lifecycle menu (Archive is wired) but
+    // Delete is not present.
+    fireEvent.click(screen.getByTestId("lifecycle-menu-trigger-hello"));
+    expect(screen.queryByTestId("lifecycle-menu-delete-hello")).toBeNull();
   });
 
-  it("renders trashcan ONLY for the KV row in a mixed list", async () => {
+  it("renders Delete ONLY for the KV row in a mixed list", async () => {
     mockEntries = [
       entry("hello", "Hello", "source"),
       entry("kv-deck", "KV Deck", "kv"),
@@ -130,13 +136,36 @@ describe("AdminIndex — delete affordance gating (#130)", () => {
         <AdminIndex />
       </MemoryRouter>,
     );
-    expect(screen.queryByTestId("delete-deck-hello")).toBeNull();
-    expect(screen.getByTestId("delete-deck-kv-deck")).toBeDefined();
+    fireEvent.click(screen.getByTestId("lifecycle-menu-trigger-hello"));
+    expect(screen.queryByTestId("lifecycle-menu-delete-hello")).toBeNull();
+    fireEvent.click(screen.getByTestId("lifecycle-menu-trigger-kv-deck"));
+    expect(screen.getByTestId("lifecycle-menu-delete-kv-deck")).toBeDefined();
   });
 });
 
-describe("AdminIndex — delete flow (#130)", () => {
-  it("clicking the trashcan opens the confirm dialog with the deck title", async () => {
+describe("AdminIndex — delete flow (#130, updated for #244 typed-slug)", () => {
+  /**
+   * Issue #244 replaces the single-click trashcan with a lifecycle
+   * action menu and a typed-slug destructive confirmation. Each test
+   * walks the canonical flow:
+   *   1. Click the menu trigger to open the menu.
+   *   2. Click the Delete menu item to open the typed-slug dialog.
+   *   3. Type the slug into the typed-slug input.
+   *   4. Click confirm.
+   * The legacy KV delete behaviour (DELETE /api/admin/decks/<slug> +
+   * reload) is preserved end-to-end.
+   */
+  function openDeleteDialog(slug: string) {
+    fireEvent.click(screen.getByTestId(`lifecycle-menu-trigger-${slug}`));
+    fireEvent.click(screen.getByTestId(`lifecycle-menu-delete-${slug}`));
+  }
+  function typeSlug(slug: string) {
+    fireEvent.change(screen.getByTestId("typed-slug-input"), {
+      target: { value: slug },
+    });
+  }
+
+  it("clicking Delete in the menu opens the typed-slug dialog with the deck title", async () => {
     mockEntries = [entry("kv-deck", "My KV Deck", "kv")];
     const AdminIndex = await loadAdminIndex();
     render(
@@ -146,13 +175,14 @@ describe("AdminIndex — delete flow (#130)", () => {
     );
 
     expect(screen.queryByTestId("confirm-dialog")).toBeNull();
-    fireEvent.click(screen.getByTestId("delete-deck-kv-deck"));
+    openDeleteDialog("kv-deck");
     expect(screen.getByTestId("confirm-dialog")).toBeDefined();
-    // The body should reference the deck title so the user knows
-    // which deck they're about to delete.
+    // The body references the deck title.
     expect(screen.getByTestId("confirm-dialog").textContent).toMatch(
       /My KV Deck/,
     );
+    // Typed-slug guard is present.
+    expect(screen.getByTestId("typed-slug-input")).toBeDefined();
   });
 
   it("Cancel closes the dialog without firing a DELETE request", async () => {
@@ -167,7 +197,7 @@ describe("AdminIndex — delete flow (#130)", () => {
       </MemoryRouter>,
     );
 
-    fireEvent.click(screen.getByTestId("delete-deck-kv-deck"));
+    openDeleteDialog("kv-deck");
     fireEvent.click(screen.getByTestId("confirm-dialog-cancel"));
 
     await waitFor(() =>
@@ -176,7 +206,25 @@ describe("AdminIndex — delete flow (#130)", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("Delete fires DELETE /api/admin/decks/<slug> with auth headers in dev", async () => {
+  it("Confirm without typing the slug does NOT fire a DELETE request (typed-slug guard)", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    mockEntries = [entry("kv-deck", "My KV Deck", "kv")];
+    const AdminIndex = await loadAdminIndex();
+    render(
+      <MemoryRouter>
+        <AdminIndex />
+      </MemoryRouter>,
+    );
+
+    openDeleteDialog("kv-deck");
+    // Click confirm BEFORE typing — disabled button should swallow it.
+    fireEvent.click(screen.getByTestId("confirm-dialog-confirm"));
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("Delete fires DELETE /api/admin/decks/<slug> with auth headers in dev once the slug is typed", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       status: 204,
@@ -191,7 +239,8 @@ describe("AdminIndex — delete flow (#130)", () => {
       </MemoryRouter>,
     );
 
-    fireEvent.click(screen.getByTestId("delete-deck-kv-deck"));
+    openDeleteDialog("kv-deck");
+    typeSlug("kv-deck");
     fireEvent.click(screen.getByTestId("confirm-dialog-confirm"));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
@@ -220,7 +269,8 @@ describe("AdminIndex — delete flow (#130)", () => {
       </MemoryRouter>,
     );
 
-    fireEvent.click(screen.getByTestId("delete-deck-kv-deck"));
+    openDeleteDialog("kv-deck");
+    typeSlug("kv-deck");
     fireEvent.click(screen.getByTestId("confirm-dialog-confirm"));
 
     await waitFor(() =>
@@ -252,13 +302,38 @@ describe("AdminIndex — delete flow (#130)", () => {
       </MemoryRouter>,
     );
 
-    fireEvent.click(screen.getByTestId("delete-deck-kv-deck"));
+    openDeleteDialog("kv-deck");
+    typeSlug("kv-deck");
     fireEvent.click(screen.getByTestId("confirm-dialog-confirm"));
 
     await waitFor(() =>
       expect(screen.getByTestId("delete-error")).toBeDefined(),
     );
     expect(alertMock).not.toHaveBeenCalled();
+  });
+
+  it("does NOT call window.confirm anywhere in the delete flow", async () => {
+    const confirmSpy = vi
+      .spyOn(window, "confirm")
+      .mockImplementation(() => true);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ ok: true, status: 204 }),
+    );
+
+    mockEntries = [entry("kv-deck", "My KV Deck", "kv")];
+    const AdminIndex = await loadAdminIndex();
+    render(
+      <MemoryRouter>
+        <AdminIndex />
+      </MemoryRouter>,
+    );
+
+    openDeleteDialog("kv-deck");
+    typeSlug("kv-deck");
+    fireEvent.click(screen.getByTestId("confirm-dialog-confirm"));
+    await waitFor(() => expect(confirmSpy).not.toHaveBeenCalled());
+    confirmSpy.mockRestore();
   });
 });
 
@@ -524,15 +599,96 @@ describe("AdminIndex — Archived section (#243)", () => {
     expect(archived.textContent).toMatch(/not found|404|return/i);
   });
 
-  it("does NOT render a trashcan on archived KV decks in this slice", async () => {
-    // PRD #242 ships Archive / Restore / Delete actions in later
-    // slices. This slice is the read model only — no action UI.
+  it("archived KV decks expose Restore + Delete in the lifecycle menu (#244)", async () => {
+    // Issue #244 introduces the lifecycle action menu. Archived KV
+    // decks see Restore (neutral recovery) + Delete (destructive,
+    // typed-slug guarded). Archive is not offered — the deck is
+    // already archived. The real backends for both ship later
+    // (PR #245 for KV).
     mockEntries = [
       entry("retired-kv", "Retired KV", "kv", "public", {
         archived: true,
       }),
     ];
     await renderAdmin();
-    expect(screen.queryByTestId("delete-deck-retired-kv")).toBeNull();
+    fireEvent.click(screen.getByTestId("lifecycle-menu-trigger-retired-kv"));
+    expect(
+      screen.getByTestId("lifecycle-menu-restore-retired-kv"),
+    ).toBeDefined();
+    expect(
+      screen.getByTestId("lifecycle-menu-delete-retired-kv"),
+    ).toBeDefined();
+    expect(
+      screen.queryByTestId("lifecycle-menu-archive-retired-kv"),
+    ).toBeNull();
+  });
+
+  it("archived source decks expose Restore (not Delete) in the lifecycle menu (#244)", async () => {
+    // Source decks do not yet have a runtime Delete backend
+    // (PR #247-249 ship the GitHub PR flow). The Restore action
+    // still appears via the UI shell — its real backend is staged
+    // for a later slice and the stub surfaces an inline error if the
+    // user confirms.
+    mockEntries = [
+      entry("retired-source", "Retired Source", "source", "public", {
+        archived: true,
+      }),
+    ];
+    await renderAdmin();
+    fireEvent.click(
+      screen.getByTestId("lifecycle-menu-trigger-retired-source"),
+    );
+    expect(
+      screen.getByTestId("lifecycle-menu-restore-retired-source"),
+    ).toBeDefined();
+    expect(
+      screen.queryByTestId("lifecycle-menu-delete-retired-source"),
+    ).toBeNull();
+  });
+
+  it("active source decks expose Archive (not Delete) in the lifecycle menu (#244)", async () => {
+    mockEntries = [entry("hello", "Hello", "source")];
+    await renderAdmin();
+    fireEvent.click(screen.getByTestId("lifecycle-menu-trigger-hello"));
+    expect(screen.getByTestId("lifecycle-menu-archive-hello")).toBeDefined();
+    expect(screen.queryByTestId("lifecycle-menu-delete-hello")).toBeNull();
+  });
+
+  it("active KV decks expose Archive + Delete in the lifecycle menu (#244)", async () => {
+    mockEntries = [entry("kv-deck", "KV Deck", "kv")];
+    await renderAdmin();
+    fireEvent.click(screen.getByTestId("lifecycle-menu-trigger-kv-deck"));
+    expect(screen.getByTestId("lifecycle-menu-archive-kv-deck")).toBeDefined();
+    expect(screen.getByTestId("lifecycle-menu-delete-kv-deck")).toBeDefined();
+  });
+
+  it("Archive confirmation in this slice surfaces a 'not yet wired' inline error (no real backend)", async () => {
+    mockEntries = [entry("kv-deck", "KV Deck", "kv")];
+    await renderAdmin();
+    fireEvent.click(screen.getByTestId("lifecycle-menu-trigger-kv-deck"));
+    fireEvent.click(screen.getByTestId("lifecycle-menu-archive-kv-deck"));
+    fireEvent.click(screen.getByTestId("confirm-dialog-confirm"));
+    await waitFor(() =>
+      expect(screen.getByTestId("archive-error").textContent).toMatch(
+        /not wired|follow-up/i,
+      ),
+    );
+  });
+
+  it("Restore confirmation in this slice surfaces a 'not yet wired' inline error (no real backend)", async () => {
+    mockEntries = [
+      entry("retired-kv", "Retired KV", "kv", "public", {
+        archived: true,
+      }),
+    ];
+    await renderAdmin();
+    fireEvent.click(screen.getByTestId("lifecycle-menu-trigger-retired-kv"));
+    fireEvent.click(screen.getByTestId("lifecycle-menu-restore-retired-kv"));
+    fireEvent.click(screen.getByTestId("confirm-dialog-confirm"));
+    await waitFor(() =>
+      expect(screen.getByTestId("restore-error").textContent).toMatch(
+        /not wired|follow-up/i,
+      ),
+    );
   });
 });
