@@ -64,6 +64,7 @@ vi.mock("@cloudflare/sandbox", () => ({
 import {
   handleSourceDeckLifecycle,
   runArchiveSourceDeck,
+  runRestoreSourceDeck,
   type SourceDeckLifecycleEnv,
 } from "./source-deck-lifecycle";
 
@@ -688,5 +689,573 @@ describe("handleSourceDeckLifecycle — POST /api/admin/source-decks/<slug>/arch
     });
     const res = await handleSourceDeckLifecycle(req, makeEnv());
     expect(res).toBeNull();
+  });
+});
+
+// ── Restore (#248) ──────────────────────────────────────────────────
+// Restore is the mirror of Archive: clone the repo, verify
+// `src/decks/archive/<slug>/` exists AND `src/decks/public/<slug>/`
+// does NOT, `git mv` it back, run the test gate, push a
+// `restore/<slug>-<timestamp>` branch, open a draft PR, persist a
+// pending source-action record with action=restore + expectedState=active.
+//
+// We share the same Sandbox/GitHub mocks as the Archive tests; the
+// only difference is that the happy-path probe expects the archive
+// folder to exist and the public folder to NOT exist.
+
+/**
+ * Default `exec` behaviour for restore:
+ *   1. test -d src/decks/archive/<slug>           → exit 0 (exists)
+ *   2. test -d src/decks/public/<slug>            → exit 1 (does not)
+ *   3. mkdir -p src/decks/public && git mv ...    → exit 0
+ */
+function setHappyPathExecForRestore(sandbox: ReturnType<typeof makeSandboxStub>) {
+  sandbox.exec.mockImplementation(async (cmd: string) => {
+    if (cmd.startsWith("test -d src/decks/archive/")) {
+      return { success: true, exitCode: 0, stdout: "", stderr: "" };
+    }
+    if (cmd.startsWith("test -d src/decks/public/")) {
+      return { success: false, exitCode: 1, stdout: "", stderr: "" };
+    }
+    return { success: true, exitCode: 0, stdout: "", stderr: "" };
+  });
+}
+
+function setHappyPathRestoreMocks(): {
+  sandbox: ReturnType<typeof makeSandboxStub>;
+} {
+  getStoredGitHubTokenMock.mockResolvedValue({
+    token: "ghu_xxx",
+    username: "alice-gh",
+    userId: 1,
+    scopes: ["public_repo"],
+    connectedAt: 0,
+  });
+  cloneRepoIntoSandboxMock.mockResolvedValue({
+    ok: true,
+    workdir: "/workspace/slide-of-hand",
+    ref: "main",
+  });
+  runSandboxTestGateMock.mockResolvedValue({
+    ok: true,
+    phases: [
+      { phase: "install", ok: true, command: "npm ci", stdout: "", stderr: "", exitCode: 0 },
+      { phase: "typecheck", ok: true, command: "npm run typecheck", stdout: "", stderr: "", exitCode: 0 },
+      { phase: "test", ok: true, command: "npm test", stdout: "", stderr: "", exitCode: 0 },
+      { phase: "build", ok: true, command: "npm run build", stdout: "", stderr: "", exitCode: 0 },
+    ],
+  });
+  commitAndPushInSandboxMock.mockResolvedValue({
+    ok: true,
+    sha: "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
+    branch: "restore/hello-1700000000000",
+  });
+  openPullRequestMock.mockResolvedValue({
+    ok: true,
+    result: {
+      number: 248,
+      htmlUrl: "https://github.com/mcdays94/slide-of-hand/pull/248",
+      nodeId: "PR_kw",
+      head: "restore/hello-1700000000000",
+      base: "main",
+    },
+  });
+  const sandbox = makeSandboxStub();
+  setHappyPathExecForRestore(sandbox);
+  getSandboxMock.mockReturnValue(
+    sandbox as unknown as ReturnType<typeof getSandboxMock>,
+  );
+  return { sandbox };
+}
+
+describe("runRestoreSourceDeck — happy path", () => {
+  it("walks the full sequence and returns PR URL + branch", async () => {
+    setHappyPathRestoreMocks();
+    const env = makeEnv();
+    const result = await runRestoreSourceDeck(env, {
+      userEmail: "alice@example.com",
+      slug: "hello",
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.prNumber).toBe(248);
+      expect(result.prUrl).toBe(
+        "https://github.com/mcdays94/slide-of-hand/pull/248",
+      );
+      expect(result.branch).toBe("restore/hello-1700000000000");
+      expect(result.action).toBe("restore");
+    }
+    expect(getStoredGitHubTokenMock).toHaveBeenCalledTimes(1);
+    expect(cloneRepoIntoSandboxMock).toHaveBeenCalledTimes(1);
+    expect(runSandboxTestGateMock).toHaveBeenCalledTimes(1);
+    expect(commitAndPushInSandboxMock).toHaveBeenCalledTimes(1);
+    expect(openPullRequestMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("issues `git mv` for src/decks/archive/<slug> → src/decks/public/<slug> inside the cloned workdir", async () => {
+    const { sandbox } = setHappyPathRestoreMocks();
+    await runRestoreSourceDeck(makeEnv(), {
+      userEmail: "alice@example.com",
+      slug: "hello",
+    });
+    const execCalls = sandbox.exec.mock.calls.map((c) => String(c[0]));
+    const moveCall = execCalls.find((c) => c.includes("git mv"));
+    expect(moveCall).toBeDefined();
+    if (moveCall) {
+      expect(moveCall).toContain("src/decks/archive/hello");
+      expect(moveCall).toContain("src/decks/public/hello");
+    }
+    // mkdir -p the public parent before the rename. Defensive — the
+    // folder normally exists but a deck restored as the very first
+    // public deck on a fresh repo would otherwise fail.
+    expect(execCalls.some((c) => c.includes("mkdir -p src/decks/public"))).toBe(
+      true,
+    );
+  });
+
+  it("opens the PR as a draft with restore title + body referencing #248/#242", async () => {
+    setHappyPathRestoreMocks();
+    await runRestoreSourceDeck(makeEnv(), {
+      userEmail: "alice@example.com",
+      slug: "hello",
+    });
+    expect(openPullRequestMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        draft: true,
+        base: "main",
+        title: expect.stringContaining("restore"),
+      }),
+    );
+    const call = openPullRequestMock.mock.calls[0][0] as {
+      title: string;
+      body: string;
+    };
+    expect(call.title).toMatch(/hello/);
+    expect(call.body).toMatch(/#248|#242/);
+  });
+
+  it("uses a deterministic branch name shape `restore/<slug>-<timestamp>`", async () => {
+    setHappyPathRestoreMocks();
+    const now = vi.spyOn(Date, "now").mockReturnValue(1700000000000);
+    try {
+      await runRestoreSourceDeck(makeEnv(), {
+        userEmail: "alice@example.com",
+        slug: "hello",
+      });
+    } finally {
+      now.mockRestore();
+    }
+    const [, opts] = commitAndPushInSandboxMock.mock.calls[0];
+    expect(opts.branchName).toBe("restore/hello-1700000000000");
+    expect(opts.commitMessage).toMatch(/restore/i);
+    expect(opts.commitMessage).toMatch(/hello/);
+  });
+
+  it("persists a pending source-action record with action=restore, expectedState=active, prUrl, slug, createdAt", async () => {
+    setHappyPathRestoreMocks();
+    const env = makeEnv();
+    await runRestoreSourceDeck(env, {
+      userEmail: "alice@example.com",
+      slug: "hello",
+    });
+    const putCalls = (env.DECKS.put as unknown as ReturnType<typeof vi.fn>).mock
+      .calls;
+    const recordCall = putCalls.find(
+      (c: unknown[]) => String(c[0]) === "pending-source-action:hello",
+    );
+    expect(recordCall).toBeDefined();
+    const payload = JSON.parse(String(recordCall![1])) as {
+      slug: string;
+      action: string;
+      expectedState: string;
+      prUrl: string;
+      createdAt: string;
+    };
+    expect(payload).toMatchObject({
+      slug: "hello",
+      action: "restore",
+      expectedState: "active",
+      prUrl: "https://github.com/mcdays94/slide-of-hand/pull/248",
+    });
+    expect(typeof payload.createdAt).toBe("string");
+    expect(Number.isNaN(Date.parse(payload.createdAt))).toBe(false);
+    // Also writes to the index so `usePendingSourceActions` picks it up.
+    const indexCall = putCalls.find(
+      (c: unknown[]) => String(c[0]) === "pending-source-actions-list",
+    );
+    expect(indexCall).toBeDefined();
+    expect(JSON.parse(String(indexCall![1]))).toContain("hello");
+  });
+});
+
+describe("runRestoreSourceDeck — error phases", () => {
+  it("returns phase:auth when there's no authenticated user", async () => {
+    setHappyPathRestoreMocks();
+    const result = await runRestoreSourceDeck(makeEnv(), {
+      userEmail: "   ",
+      slug: "hello",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.phase).toBe("auth");
+  });
+
+  it("returns phase:invalid_slug when the slug is malformed", async () => {
+    setHappyPathRestoreMocks();
+    const result = await runRestoreSourceDeck(makeEnv(), {
+      userEmail: "alice@example.com",
+      slug: "../etc/passwd",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.phase).toBe("invalid_slug");
+  });
+
+  it("returns phase:github_token when the user hasn't connected GitHub", async () => {
+    setHappyPathRestoreMocks();
+    getStoredGitHubTokenMock.mockResolvedValue(null);
+    const result = await runRestoreSourceDeck(makeEnv(), {
+      userEmail: "alice@example.com",
+      slug: "hello",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.phase).toBe("github_token");
+      expect(result.error).toMatch(/connect GitHub/i);
+    }
+  });
+
+  it("returns phase:clone_github when the clone fails", async () => {
+    setHappyPathRestoreMocks();
+    cloneRepoIntoSandboxMock.mockResolvedValue({
+      ok: false,
+      error: "permission denied",
+    });
+    const result = await runRestoreSourceDeck(makeEnv(), {
+      userEmail: "alice@example.com",
+      slug: "hello",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.phase).toBe("clone_github");
+      expect(result.error).toMatch(/permission denied/);
+    }
+  });
+
+  it("returns phase:archive_missing when src/decks/archive/<slug>/ does not exist on main", async () => {
+    setHappyPathRestoreMocks();
+    const sandbox = makeSandboxStub();
+    sandbox.exec.mockImplementation(async (cmd: string) => {
+      // Archive folder missing — nothing to restore.
+      if (cmd.startsWith("test -d src/decks/archive/")) {
+        return { success: false, exitCode: 1, stdout: "", stderr: "" };
+      }
+      return { success: true, exitCode: 0, stdout: "", stderr: "" };
+    });
+    getSandboxMock.mockReturnValue(
+      sandbox as unknown as ReturnType<typeof getSandboxMock>,
+    );
+    const env = makeEnv();
+    const result = await runRestoreSourceDeck(env, {
+      userEmail: "alice@example.com",
+      slug: "ghost",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.phase).toBe("archive_missing");
+      expect(result.error).toMatch(/src\/decks\/archive\/ghost/);
+    }
+    expect(openPullRequestMock).not.toHaveBeenCalled();
+    const putCalls = (env.DECKS.put as unknown as ReturnType<typeof vi.fn>).mock
+      .calls;
+    expect(putCalls.find((c: unknown[]) =>
+      String(c[0]).startsWith("pending-source-action:"),
+    )).toBeUndefined();
+  });
+
+  it("returns phase:active_exists when src/decks/public/<slug>/ already exists", async () => {
+    setHappyPathRestoreMocks();
+    const sandbox = makeSandboxStub();
+    sandbox.exec.mockImplementation(async (cmd: string) => {
+      // Both folders exist → restore would collide with the live deck.
+      if (cmd.startsWith("test -d ")) {
+        return { success: true, exitCode: 0, stdout: "", stderr: "" };
+      }
+      return { success: true, exitCode: 0, stdout: "", stderr: "" };
+    });
+    getSandboxMock.mockReturnValue(
+      sandbox as unknown as ReturnType<typeof getSandboxMock>,
+    );
+    const env = makeEnv();
+    const result = await runRestoreSourceDeck(env, {
+      userEmail: "alice@example.com",
+      slug: "hello",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.phase).toBe("active_exists");
+      expect(result.error).toMatch(/src\/decks\/public\/hello/);
+    }
+    expect(openPullRequestMock).not.toHaveBeenCalled();
+    const putCalls = (env.DECKS.put as unknown as ReturnType<typeof vi.fn>).mock
+      .calls;
+    expect(putCalls.find((c: unknown[]) =>
+      String(c[0]).startsWith("pending-source-action:"),
+    )).toBeUndefined();
+  });
+
+  it("returns phase:move when the git mv exits non-zero", async () => {
+    setHappyPathRestoreMocks();
+    const sandbox = makeSandboxStub();
+    sandbox.exec.mockImplementation(async (cmd: string) => {
+      if (cmd.startsWith("test -d src/decks/archive/")) {
+        return { success: true, exitCode: 0, stdout: "", stderr: "" };
+      }
+      if (cmd.startsWith("test -d src/decks/public/")) {
+        return { success: false, exitCode: 1, stdout: "", stderr: "" };
+      }
+      if (cmd.includes("git mv")) {
+        return {
+          success: false,
+          exitCode: 128,
+          stdout: "",
+          stderr: "fatal: bad source",
+        };
+      }
+      return { success: true, exitCode: 0, stdout: "", stderr: "" };
+    });
+    getSandboxMock.mockReturnValue(
+      sandbox as unknown as ReturnType<typeof getSandboxMock>,
+    );
+    const result = await runRestoreSourceDeck(makeEnv(), {
+      userEmail: "alice@example.com",
+      slug: "hello",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.phase).toBe("move");
+      expect(result.error).toMatch(/bad source/);
+    }
+  });
+
+  it("returns phase:test_gate when the gate fails and does NOT open a PR or write a pending record", async () => {
+    setHappyPathRestoreMocks();
+    runSandboxTestGateMock.mockResolvedValue({
+      ok: false,
+      failedPhase: "build",
+      phases: [
+        { phase: "install", ok: true, command: "npm ci", stdout: "", stderr: "", exitCode: 0 },
+        { phase: "typecheck", ok: true, command: "npm run typecheck", stdout: "", stderr: "", exitCode: 0 },
+        { phase: "test", ok: true, command: "npm test", stdout: "", stderr: "", exitCode: 0 },
+        { phase: "build", ok: false, command: "npm run build", stdout: "", stderr: "vite error", exitCode: 1 },
+      ],
+    });
+    const env = makeEnv();
+    const result = await runRestoreSourceDeck(env, {
+      userEmail: "alice@example.com",
+      slug: "hello",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.phase).toBe("test_gate");
+      expect(result.failedTestGatePhase).toBe("build");
+    }
+    expect(openPullRequestMock).not.toHaveBeenCalled();
+    const putCalls = (env.DECKS.put as unknown as ReturnType<typeof vi.fn>).mock
+      .calls;
+    expect(putCalls.find((c: unknown[]) =>
+      String(c[0]).startsWith("pending-source-action:"),
+    )).toBeUndefined();
+  });
+
+  it("returns phase:github_push when the commit/push fails", async () => {
+    setHappyPathRestoreMocks();
+    commitAndPushInSandboxMock.mockResolvedValue({
+      ok: false,
+      error: "remote rejected",
+    });
+    const env = makeEnv();
+    const result = await runRestoreSourceDeck(env, {
+      userEmail: "alice@example.com",
+      slug: "hello",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.phase).toBe("github_push");
+      expect(result.error).toMatch(/remote rejected/);
+    }
+    expect(openPullRequestMock).not.toHaveBeenCalled();
+    const putCalls = (env.DECKS.put as unknown as ReturnType<typeof vi.fn>).mock
+      .calls;
+    expect(putCalls.find((c: unknown[]) =>
+      String(c[0]).startsWith("pending-source-action:"),
+    )).toBeUndefined();
+  });
+
+  it("returns phase:open_pr when the GitHub PR API rejects the request, and does NOT persist a pending record", async () => {
+    setHappyPathRestoreMocks();
+    openPullRequestMock.mockResolvedValue({
+      ok: false,
+      kind: "rate_limited",
+      message: "API rate limit exceeded",
+    });
+    const env = makeEnv();
+    const result = await runRestoreSourceDeck(env, {
+      userEmail: "alice@example.com",
+      slug: "hello",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.phase).toBe("open_pr");
+      expect(result.error).toMatch(/rate limit/);
+    }
+    const putCalls = (env.DECKS.put as unknown as ReturnType<typeof vi.fn>).mock
+      .calls;
+    expect(putCalls.find((c: unknown[]) =>
+      String(c[0]).startsWith("pending-source-action:"),
+    )).toBeUndefined();
+  });
+});
+
+describe("handleSourceDeckLifecycle — POST /api/admin/source-decks/<slug>/restore", () => {
+  function buildRequest(
+    slug: string,
+    init: { withAuth?: boolean; method?: string } = {},
+  ): Request {
+    const headers: Record<string, string> = {};
+    if (init.withAuth !== false) {
+      headers["cf-access-authenticated-user-email"] = "alice@example.com";
+    }
+    return new Request(
+      `https://example.com/api/admin/source-decks/${slug}/restore`,
+      {
+        method: init.method ?? "POST",
+        headers,
+      },
+    );
+  }
+
+  it("returns 403 when Access auth is missing", async () => {
+    setHappyPathRestoreMocks();
+    const res = await handleSourceDeckLifecycle(
+      buildRequest("hello", { withAuth: false }),
+      makeEnv(),
+    );
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(403);
+  });
+
+  it("returns 200 + { ok, prUrl, branch, prNumber, action } on success", async () => {
+    setHappyPathRestoreMocks();
+    const res = await handleSourceDeckLifecycle(
+      buildRequest("hello"),
+      makeEnv(),
+    );
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(200);
+    const body = (await res!.json()) as {
+      ok: boolean;
+      prUrl: string;
+      branch: string;
+      prNumber: number;
+      action: string;
+    };
+    expect(body.ok).toBe(true);
+    expect(body.prUrl).toBe(
+      "https://github.com/mcdays94/slide-of-hand/pull/248",
+    );
+    expect(body.branch).toBe("restore/hello-1700000000000");
+    expect(body.prNumber).toBe(248);
+    expect(body.action).toBe("restore");
+  });
+
+  it("returns 409 with `connect GitHub` copy when the user has no stored GitHub token", async () => {
+    setHappyPathRestoreMocks();
+    getStoredGitHubTokenMock.mockResolvedValue(null);
+    const res = await handleSourceDeckLifecycle(
+      buildRequest("hello"),
+      makeEnv(),
+    );
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(409);
+    const body = (await res!.json()) as { error: string };
+    expect(body.error).toMatch(/connect GitHub/i);
+  });
+
+  it("returns 400 with `archive_missing` when the archive folder doesn't exist on main", async () => {
+    setHappyPathRestoreMocks();
+    const sandbox = makeSandboxStub();
+    sandbox.exec.mockImplementation(async (cmd: string) => {
+      if (cmd.startsWith("test -d src/decks/archive/")) {
+        return { success: false, exitCode: 1, stdout: "", stderr: "" };
+      }
+      return { success: true, exitCode: 0, stdout: "", stderr: "" };
+    });
+    getSandboxMock.mockReturnValue(
+      sandbox as unknown as ReturnType<typeof getSandboxMock>,
+    );
+    const res = await handleSourceDeckLifecycle(
+      buildRequest("ghost"),
+      makeEnv(),
+    );
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(400);
+    const body = (await res!.json()) as { error: string; phase: string };
+    expect(body.phase).toBe("archive_missing");
+  });
+
+  it("returns 400 with `active_exists` when the public folder is already present", async () => {
+    setHappyPathRestoreMocks();
+    const sandbox = makeSandboxStub();
+    sandbox.exec.mockImplementation(async (cmd: string) => {
+      if (cmd.startsWith("test -d ")) {
+        // Both folders exist.
+        return { success: true, exitCode: 0, stdout: "", stderr: "" };
+      }
+      return { success: true, exitCode: 0, stdout: "", stderr: "" };
+    });
+    getSandboxMock.mockReturnValue(
+      sandbox as unknown as ReturnType<typeof getSandboxMock>,
+    );
+    const res = await handleSourceDeckLifecycle(
+      buildRequest("hello"),
+      makeEnv(),
+    );
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(400);
+    const body = (await res!.json()) as { error: string; phase: string };
+    expect(body.phase).toBe("active_exists");
+  });
+
+  it("returns 400 with the gate's failed phase when test_gate fails", async () => {
+    setHappyPathRestoreMocks();
+    runSandboxTestGateMock.mockResolvedValue({
+      ok: false,
+      failedPhase: "test",
+      phases: [],
+    });
+    const res = await handleSourceDeckLifecycle(
+      buildRequest("hello"),
+      makeEnv(),
+    );
+    expect(res!.status).toBe(400);
+    const body = (await res!.json()) as { error: string; phase: string };
+    expect(body.phase).toBe("test_gate");
+  });
+
+  it("returns 405 on non-POST methods", async () => {
+    const res = await handleSourceDeckLifecycle(
+      buildRequest("hello", { method: "GET" }),
+      makeEnv(),
+    );
+    expect(res!.status).toBe(405);
+  });
+
+  it("returns 400 on a malformed slug", async () => {
+    const res = await handleSourceDeckLifecycle(
+      buildRequest("BAD_SLUG"),
+      makeEnv(),
+    );
+    expect(res!.status).toBe(400);
+    const body = (await res!.json()) as { error: string };
+    expect(body.error).toMatch(/slug/i);
   });
 });

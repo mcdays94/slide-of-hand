@@ -898,9 +898,69 @@ describe("AdminIndex — Archived section (#243)", () => {
     expect(mockRefetchPending).not.toHaveBeenCalled();
   });
 
-  it("source-backed Restore (GitHub connected): does NOT hit the KV endpoint and surfaces a 'not yet wired' inline error", async () => {
+  it("source-backed Restore (GitHub connected): calls POST /api/admin/source-decks/<slug>/restore and does NOT hit the KV restore endpoint (#248)", async () => {
+    // Issue #248 — when GitHub is connected, source-backed Restore
+    // invokes the dedicated source-deck-lifecycle restore endpoint.
+    // The endpoint runs the gated GitHub-PR flow server-side and
+    // persists a pending restore record; the admin UI then refetches
+    // the pending list to project the deck back into Active with a
+    // Pending merge/deploy pill.
     mockGitHubState = "connected";
-    const fetchMock = vi.fn();
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        ok: true,
+        prUrl: "https://github.com/mcdays94/slide-of-hand/pull/248",
+        prNumber: 248,
+        branch: "restore/retired-source-1700000000000",
+        action: "restore",
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    mockEntries = [
+      entry("retired-source", "Retired Source", "source", "public", {
+        archived: true,
+      }),
+    ];
+    await renderAdmin();
+
+    fireEvent.click(
+      screen.getByTestId("lifecycle-menu-trigger-retired-source"),
+    );
+    fireEvent.click(
+      screen.getByTestId("lifecycle-menu-restore-retired-source"),
+    );
+    fireEvent.click(screen.getByTestId("confirm-dialog-confirm"));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/admin/source-decks/retired-source/restore");
+    expect((init as RequestInit).method).toBe("POST");
+    const headers = (init as RequestInit).headers as Record<string, string>;
+    expect(headers["cf-access-authenticated-user-email"]).toBe("dev@local");
+    // Crucially the KV restore endpoint was NOT hit.
+    expect(fetchMock.mock.calls.some(([u]) =>
+      String(u).startsWith("/api/admin/decks/"),
+    )).toBe(false);
+    // And the GitHub gate did NOT open — the user is already connected.
+    expect(screen.queryByTestId("github-connect-gate")).toBeNull();
+    // The hook's refetch was invoked so the pending pill appears
+    // without a full reload.
+    await waitFor(() => expect(mockRefetchPending).toHaveBeenCalled());
+  });
+
+  it("source-backed Restore (GitHub connected): surfaces a server error inline without closing the dialog (#248)", async () => {
+    mockGitHubState = "connected";
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 400,
+      json: async () => ({
+        error: "Archive folder src/decks/archive/retired-source/ does not exist on `main`.",
+        phase: "archive_missing",
+      }),
+    });
     vi.stubGlobal("fetch", fetchMock);
 
     mockEntries = [
@@ -920,11 +980,14 @@ describe("AdminIndex — Archived section (#243)", () => {
 
     await waitFor(() =>
       expect(screen.getByTestId("restore-error").textContent).toMatch(
-        /not wired|follow-up/i,
+        /does not exist/i,
       ),
     );
-    expect(fetchMock).not.toHaveBeenCalled();
-    expect(screen.queryByTestId("github-connect-gate")).toBeNull();
+    // The dialog stays open so the user can retry / cancel.
+    expect(screen.getByTestId("confirm-dialog")).toBeDefined();
+    // refetch was NOT called on failure — there's no new pending
+    // record to project.
+    expect(mockRefetchPending).not.toHaveBeenCalled();
   });
 
   it("KV archived Delete: uses the typed-slug dialog from the Archived section and removes the card", async () => {
@@ -1388,6 +1451,116 @@ describe("AdminIndex — GitHub connect gate for source actions (#251)", () => {
       expect(screen.queryByTestId("github-connect-gate")).toBeNull(),
     );
     expect(mockRefetchPending).toHaveBeenCalled();
+  });
+
+  it("Retry path for Restore: after status flips to connected, Retry invokes the source-restore endpoint and closes the gate on success (#248)", async () => {
+    mockGitHubState = "disconnected";
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        ok: true,
+        prUrl: "https://github.com/mcdays94/slide-of-hand/pull/248",
+        prNumber: 248,
+        branch: "restore/retired-source-1700000000000",
+        action: "restore",
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    mockEntries = [
+      entry("retired-source", "Retired Source", "source", "public", {
+        archived: true,
+      }),
+    ];
+    const { rerender } = await renderAdmin();
+
+    fireEvent.click(
+      screen.getByTestId("lifecycle-menu-trigger-retired-source"),
+    );
+    fireEvent.click(
+      screen.getByTestId("lifecycle-menu-restore-retired-source"),
+    );
+    fireEvent.click(screen.getByTestId("confirm-dialog-confirm"));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("github-connect-gate")).toBeDefined(),
+    );
+
+    // Simulate the user completing OAuth in another tab.
+    mockGitHubState = "connected";
+    const AdminIndex = await loadAdminIndex();
+    rerender(
+      <SettingsProvider>
+        <MemoryRouter>
+          <AdminIndex />
+        </MemoryRouter>
+      </SettingsProvider>,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("github-connect-gate-retry")).toBeDefined(),
+    );
+
+    fireEvent.click(screen.getByTestId("github-connect-gate-retry"));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const [url] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/admin/source-decks/retired-source/restore");
+    await waitFor(() =>
+      expect(screen.queryByTestId("github-connect-gate")).toBeNull(),
+    );
+    expect(mockRefetchPending).toHaveBeenCalled();
+  });
+
+  it("Retry path for Restore: surfaces server error inside the gate on failure (#248)", async () => {
+    mockGitHubState = "disconnected";
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 400,
+      json: async () => ({
+        error: "Archive folder src/decks/archive/retired-source/ does not exist on `main`.",
+        phase: "archive_missing",
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    mockEntries = [
+      entry("retired-source", "Retired Source", "source", "public", {
+        archived: true,
+      }),
+    ];
+    const { rerender } = await renderAdmin();
+
+    fireEvent.click(
+      screen.getByTestId("lifecycle-menu-trigger-retired-source"),
+    );
+    fireEvent.click(
+      screen.getByTestId("lifecycle-menu-restore-retired-source"),
+    );
+    fireEvent.click(screen.getByTestId("confirm-dialog-confirm"));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("github-connect-gate")).toBeDefined(),
+    );
+
+    mockGitHubState = "connected";
+    const AdminIndex = await loadAdminIndex();
+    rerender(
+      <SettingsProvider>
+        <MemoryRouter>
+          <AdminIndex />
+        </MemoryRouter>
+      </SettingsProvider>,
+    );
+
+    fireEvent.click(screen.getByTestId("github-connect-gate-retry"));
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("github-connect-gate-error").textContent,
+      ).toMatch(/does not exist/i),
+    );
+    expect(screen.getByTestId("github-connect-gate")).toBeDefined();
   });
 
   it("Retry path for Archive: surfaces server error inside the gate on failure (#247)", async () => {
