@@ -33,6 +33,10 @@ import {
   type ElementOverridesEnv,
 } from "./element-overrides";
 import { handleDecks, type DecksEnv } from "./decks";
+import {
+  handlePendingSourceActions,
+  type PendingSourceActionsEnv,
+} from "./pending-source-actions";
 import { handleImages, type ImagesEnv } from "./images";
 import { handleAuthStatus, type AuthStatusEnv } from "./auth-status";
 import { handleAgent, type AgentEnv } from "./agent";
@@ -88,6 +92,7 @@ export interface Env
     AnalyticsEnv,
     ElementOverridesEnv,
     DecksEnv,
+    PendingSourceActionsEnv,
     ImagesEnv,
     AuthStatusEnv,
     AgentEnv,
@@ -125,6 +130,15 @@ export default {
     if (elementOverridesResponse) return elementOverridesResponse;
     const decksResponse = await handleDecks(request, env);
     if (decksResponse) return decksResponse;
+    // Pending source action store (issue #246 / PRD #242). Persists
+    // markers for source-backed deck actions whose GitHub PRs are
+    // still in flight, so the admin UI can project the expected
+    // state. Owns `/api/admin/deck-source-actions[/<slug>]`.
+    const pendingSourceActionsResponse = await handlePendingSourceActions(
+      request,
+      env,
+    );
+    if (pendingSourceActionsResponse) return pendingSourceActionsResponse;
     const imagesResponse = await handleImages(request, env);
     if (imagesResponse) return imagesResponse;
     // Agent route (issue #131 phase 1). Must run BEFORE the ASSETS

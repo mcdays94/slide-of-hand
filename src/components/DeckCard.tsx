@@ -60,6 +60,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import type { DeckMeta } from "@/framework/viewer/types";
+import type { PendingSourceActionType } from "@/lib/pending-source-actions";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { DeckLifecycleMenu } from "./DeckLifecycleMenu";
 import { TypedSlugConfirmDialog } from "./TypedSlugConfirmDialog";
@@ -69,6 +70,31 @@ const HOVER_PREVIEW_INTERVAL_MS = 600;
 
 export type DeckCardView = "grid" | "list";
 export type DeckCardVisibility = "public" | "private";
+
+/**
+ * Pending source action overlay (issue #246). When set, the card
+ * renders a small Pending pill next to the kicker that:
+ *
+ *   - Labels the in-flight action ("Pending archive" / "Pending
+ *     restore" / "Pending delete").
+ *   - Links the author to the open GitHub PR (`prUrl`).
+ *   - Surfaces a Clear pending button that invokes `onClear`. Clear
+ *     only removes the local KV marker — it does NOT close the PR.
+ *
+ * Card placement (Active vs Archived section) is handled by the
+ * parent — see `AdminIndex`'s projection rules.
+ */
+export interface DeckCardPending {
+  action: PendingSourceActionType;
+  prUrl: string;
+  /**
+   * Optional Clear callback. When provided the pill renders a small
+   * Clear button alongside the PR link. Errors thrown by the
+   * callback are surfaced inline next to the pill so the user can
+   * retry.
+   */
+  onClear?: (slug: string) => Promise<void> | void;
+}
 
 export interface DeckCardProps {
   meta: DeckMeta;
@@ -113,6 +139,12 @@ export interface DeckCardProps {
    * animation is rendered — list-mode cards never animate.
    */
   hoverPreviewSlideCount?: number;
+  /**
+   * Pending source action overlay (issue #246). When provided, the
+   * card renders a Pending pill linking to the open GitHub PR plus a
+   * Clear pending affordance.
+   */
+  pending?: DeckCardPending;
 }
 
 const MAX_VISIBLE_TAGS = 3;
@@ -149,6 +181,7 @@ export function DeckCard({
   onDelete,
   ideHref,
   hoverPreviewSlideCount = 0,
+  pending,
 }: DeckCardProps) {
   const visibleTags = meta.tags?.slice(0, MAX_VISIBLE_TAGS) ?? [];
   const hasTags = visibleTags.length > 0;
@@ -224,6 +257,14 @@ export function DeckCard({
   const [restoring, setRestoring] = useState(false);
   const [restoreError, setRestoreError] = useState<string | null>(null);
 
+  // Clear-pending state (issue #246). Tracks the in-flight DELETE so
+  // the Clear button can read "Clearing…" and surface a failure
+  // inline without dismissing the pending pill.
+  const [clearingPending, setClearingPending] = useState(false);
+  const [clearPendingError, setClearPendingError] = useState<string | null>(
+    null,
+  );
+
   useEffect(() => {
     if (!pendingDelete) setDeleteError(null);
   }, [pendingDelete]);
@@ -297,6 +338,23 @@ export function DeckCard({
     }
   }, [onRestore, meta.slug]);
 
+  const handleClearPending = useCallback(async () => {
+    if (!pending?.onClear) return;
+    setClearingPending(true);
+    setClearPendingError(null);
+    try {
+      await pending.onClear(meta.slug);
+      // Pending pill is unmounted by the parent (the projection map
+      // re-resolves and drops this slug). No local cleanup needed.
+      setClearingPending(false);
+    } catch (e) {
+      setClearPendingError(
+        e instanceof Error ? e.message : "Network error — try again.",
+      );
+      setClearingPending(false);
+    }
+  }, [pending, meta.slug]);
+
   // Lifecycle-aware callbacks for the menu. Active decks expose
   // Archive + Delete; archived decks expose Restore + Delete.
   const menuOnArchive =
@@ -331,6 +389,27 @@ export function DeckCard({
             : "cf-card group relative flex h-full flex-col overflow-hidden"
         }
       >
+        {/*
+          Issue #246 — pending source action overlay. Rendered as a
+          sibling of the `<Link>` (NOT a child) because the pill itself
+          contains a PR link `<a>`; nesting `<a>` in `<a>` is invalid
+          HTML. The pill sits along the top of the card and visually
+          overlays the hero strip via `relative z-10` so it reads as
+          an in-flight banner. `pointer-events-auto` on the pill's
+          interactive children lets clicks reach the PR link and the
+          Clear button without leaking to the card's outer Link.
+        */}
+        {pending && (
+          <div className="relative z-10 -mb-2 px-3 pt-3">
+            <PendingActionPill
+              slug={meta.slug}
+              pending={pending}
+              onClear={pending.onClear ? handleClearPending : undefined}
+              clearing={clearingPending}
+              clearError={clearPendingError}
+            />
+          </div>
+        )}
         <Link
           to={to}
           data-testid="deck-card"
@@ -551,5 +630,96 @@ export function DeckCard({
         />
       )}
     </>
+  );
+}
+
+// ─── Pending action pill ─────────────────────────────────────────────
+//
+// Small, opinionated subcomponent (issue #246) that renders the
+// pending-source-action overlay: a labelled pill, a PR link, and an
+// optional Clear button. Sits inside the card meta-block (above the
+// title) so it reads as informational context for the deck, not as a
+// destructive action.
+//
+// The pill is `data-no-advance` so clicks within don't propagate to
+// the wrapping `<Link>` click target. The PR link uses `data-interactive`
+// + `e.stopPropagation()` so the card's outer `<Link>` doesn't intercept
+// navigation when the author follows it to GitHub.
+
+interface PendingActionPillProps {
+  slug: string;
+  pending: DeckCardPending;
+  onClear?: () => void;
+  clearing: boolean;
+  clearError: string | null;
+}
+
+const PENDING_LABEL: Record<PendingSourceActionType, string> = {
+  archive: "Pending archive",
+  restore: "Pending restore",
+  delete: "Pending delete",
+};
+
+function PendingActionPill({
+  slug,
+  pending,
+  onClear,
+  clearing,
+  clearError,
+}: PendingActionPillProps) {
+  return (
+    <div
+      data-testid={`pending-action-${slug}`}
+      data-pending-action={pending.action}
+      data-no-advance
+      className="flex flex-col gap-1 rounded-md border border-cf-orange/40 bg-cf-orange/10 px-3 py-2"
+    >
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <span
+            data-testid={`pending-pill-${slug}`}
+            className="font-mono text-[10px] uppercase tracking-[0.25em] text-cf-orange"
+          >
+            {PENDING_LABEL[pending.action]}
+          </span>
+          <a
+            href={pending.prUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            data-interactive
+            data-testid={`pending-pr-link-${slug}`}
+            onClick={(e) => e.stopPropagation()}
+            className="font-mono text-[10px] uppercase tracking-[0.2em] text-cf-orange underline decoration-cf-orange/40 underline-offset-4 hover:decoration-cf-orange"
+          >
+            View PR
+          </a>
+        </div>
+        {onClear && (
+          <button
+            type="button"
+            data-interactive
+            data-testid={`pending-clear-${slug}`}
+            disabled={clearing}
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              onClear();
+            }}
+            className="rounded border border-cf-orange/40 px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.2em] text-cf-orange transition-colors hover:bg-cf-orange/20 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {clearing ? "Clearing…" : "Clear pending"}
+          </button>
+        )}
+      </div>
+      {clearError && (
+        <p
+          role="alert"
+          data-testid={`pending-clear-error-${slug}`}
+          className="font-mono text-[10px] uppercase tracking-[0.2em] text-cf-orange"
+        >
+          {clearError}
+        </p>
+      )}
+    </div>
   );
 }

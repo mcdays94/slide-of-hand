@@ -33,7 +33,11 @@ import {
   type Surface,
 } from "@/lib/use-view-preference";
 import { useSettings } from "@/framework/viewer/useSettings";
-import { DeckCard, type DeckCardVisibility } from "./DeckCard";
+import {
+  DeckCard,
+  type DeckCardPending,
+  type DeckCardVisibility,
+} from "./DeckCard";
 
 export interface DeckCardGridItem {
   meta: DeckMeta;
@@ -63,6 +67,13 @@ export interface DeckCardGridItem {
   canRestore?: boolean;
   /** Optional "Open in IDE" link target for source decks (admin / dev only). */
   ideHref?: string;
+  /**
+   * Pending source action overlay (issue #246). When set the card
+   * renders a Pending pill linking to the open GitHub PR plus an
+   * optional Clear pending button. Only meaningful for source-backed
+   * decks — the parent (AdminIndex) is the projection gate.
+   */
+  pending?: DeckCardPending;
 }
 
 export interface DeckCardGridProps {
@@ -173,6 +184,7 @@ export function DeckCardGrid({
                 onArchive={showArchive ? onArchive : undefined}
                 onRestore={showRestore ? onRestore : undefined}
                 hoverPreviewSlideCount={hoverPreviewSlideCount}
+                pending={it.pending}
               />
             </li>
           );

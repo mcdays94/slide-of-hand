@@ -37,6 +37,17 @@
  * badge + per-card lifecycle dialogs ALL live inside `<DeckCardGrid>` /
  * `<DeckCard>`. This route is thin: build the items array, hand it to
  * the grid, supply the lifecycle side-effects.
+ *
+ * Pending source actions (issue #246): source-backed decks whose
+ * lifecycle action is mid-flight in a GitHub PR get a Pending pill,
+ * a PR link, and a Clear pending button on their card. The pending
+ * record's `expectedState` field also drives placement:
+ *   - pending archive  (expectedState=archived) → Archived section
+ *   - pending restore  (expectedState=active)   → Active section
+ *   - pending delete   (expectedState=deleted)  → Archived section
+ *                                                 with Pending delete copy
+ * KV-backed decks ignore pending projection — their lifecycle is
+ * immediate (PR #245).
  */
 
 import { useCallback, useMemo, useState } from "react";
@@ -52,10 +63,19 @@ import {
   type DeckCardGridItem,
 } from "@/components/DeckCardGrid";
 import { useSettings } from "@/framework/viewer/useSettings";
+import { usePendingSourceActions } from "@/lib/use-pending-source-actions";
+import type { PendingSourceAction } from "@/lib/pending-source-actions";
 
 export default function AdminIndex() {
   const { entries } = useAdminDataDeckList();
   const { settings, setSetting } = useSettings();
+  // Pending source actions (issue #246) — markers for source-backed
+  // deck lifecycle actions whose GitHub PRs are still in flight. Used
+  // to project the EXPECTED placement of a deck onto the admin list
+  // before the PR has merged + redeployed, so the author sees the
+  // outcome immediately instead of having to remember which PR they
+  // opened. KV-backed decks are NEVER subject to pending projection.
+  const { actions: pendingActions, clearPending } = usePendingSourceActions();
   // Local-state list of KV slugs that have been deleted in this session.
   // We optimistically hide them while the admin list refetches via
   // `window.location.reload()` (which fully re-runs the hook). For the
@@ -219,25 +239,72 @@ export default function AdminIndex() {
   // card between sections before the registry hook re-resolves. The
   // override beats the persisted `meta.archived` so the card moves
   // immediately on a successful archive/restore POST.
+  //
+  // Issue #246 — pending source actions project the EXPECTED state
+  // for source-backed decks onto placement:
+  //   - pending archive  (expectedState=archived) → Archived
+  //   - pending restore  (expectedState=active)   → Active
+  //   - pending delete   (expectedState=deleted)  → Archived (with
+  //     "Pending delete" copy on the pill — we don't drop the card
+  //     because the PR may never merge)
+  // KV-backed decks ignore the pending projection (lifecycle is
+  // immediate from #245).
   const { activeEntries, archivedEntries } = useMemo(() => {
     const alive = entries.filter((e) => !deletedSlugs.has(e.meta.slug));
-    const isArchivedNow = (slug: string, metaArchived: boolean | undefined) =>
-      slug in archivedOverrides
-        ? archivedOverrides[slug] === true
-        : metaArchived === true;
+    const isArchivedNow = (
+      slug: string,
+      metaArchived: boolean | undefined,
+      isSource: boolean,
+    ): boolean => {
+      // Pending source actions override placement for source-backed
+      // decks only. A pending archive or pending delete pulls the
+      // card into Archived; a pending restore pushes it into Active.
+      const pending = isSource ? pendingActions[slug] : undefined;
+      if (pending) {
+        return pending.expectedState !== "active";
+      }
+      // No pending projection — fall back to the KV override map
+      // (issue #245) and finally the persisted `meta.archived`.
+      if (slug in archivedOverrides) {
+        return archivedOverrides[slug] === true;
+      }
+      return metaArchived === true;
+    };
     const archived = alive.filter((e) =>
-      isArchivedNow(e.meta.slug, e.meta.archived),
+      isArchivedNow(
+        e.meta.slug,
+        e.meta.archived,
+        (e.source ?? "source") === "source",
+      ),
     );
     const active = alive
-      .filter((e) => !isArchivedNow(e.meta.slug, e.meta.archived))
+      .filter(
+        (e) =>
+          !isArchivedNow(
+            e.meta.slug,
+            e.meta.archived,
+            (e.source ?? "source") === "source",
+          ),
+      )
       .filter((e) => settings.showDrafts || e.meta.draft !== true);
     return { activeEntries: active, archivedEntries: archived };
-  }, [entries, deletedSlugs, archivedOverrides, settings.showDrafts]);
+  }, [
+    entries,
+    deletedSlugs,
+    archivedOverrides,
+    settings.showDrafts,
+    pendingActions,
+  ]);
 
   // Translate active registry entries into grid items. KV-backed
   // decks are deletable; source decks are not (they live in code).
   const activeItems: DeckCardGridItem[] = activeEntries.map((entry) =>
-    toGridItem(entry, { showIdeButton, projectRoot }),
+    toGridItem(entry, {
+      showIdeButton,
+      projectRoot,
+      pendingActions,
+      clearPending,
+    }),
   );
 
   // Archived entries get the same card chrome plus the lifecycle
@@ -247,14 +314,26 @@ export default function AdminIndex() {
   // (source decks have no delete backend yet). The IDE link is
   // dropped — the deck is retired, opening it for editing is not the
   // intended flow.
+  //
+  // Issue #246 — source-backed archived rows may carry a pending
+  // source action projection. The pending pill renders the same way
+  // here as in Active.
   const archivedItems: DeckCardGridItem[] = archivedEntries.map((entry) => {
     const isSource = (entry.source ?? "source") === "source";
+    const pending = isSource ? pendingActions[entry.meta.slug] : undefined;
     return {
       meta: entry.meta,
       to: `/admin/decks/${entry.meta.slug}`,
       visibility: entry.visibility,
       canDelete: !isSource,
       canRestore: true,
+      pending: pending
+        ? {
+            action: pending.action,
+            prUrl: pending.prUrl,
+            onClear: clearPending,
+          }
+        : undefined,
     };
   });
 
@@ -391,6 +470,10 @@ function DraftFilterToggle({ value, onChange }: DraftFilterToggleProps) {
 interface ToGridItemContext {
   showIdeButton: boolean;
   projectRoot: string;
+  /** Pending source actions keyed by slug (issue #246). */
+  pendingActions: Record<string, PendingSourceAction>;
+  /** Clear-pending handler (issue #246) — passed to source-backed pending cards. */
+  clearPending: (slug: string) => Promise<void>;
 }
 
 function toGridItem(
@@ -418,6 +501,10 @@ function toGridItem(
   // throws a friendly inline error if the user confirms.
   const canArchive = true;
 
+  // Pending source actions project ONLY onto source-backed decks
+  // (issue #246). KV decks get an immediate lifecycle from PR #245.
+  const pending = isSource ? ctx.pendingActions[entry.meta.slug] : undefined;
+
   return {
     meta: entry.meta,
     to: `/admin/decks/${entry.meta.slug}`,
@@ -425,5 +512,12 @@ function toGridItem(
     canDelete,
     canArchive,
     ideHref: ideHref || undefined,
+    pending: pending
+      ? {
+          action: pending.action,
+          prUrl: pending.prUrl,
+          onClear: ctx.clearPending,
+        }
+      : undefined,
   };
 }

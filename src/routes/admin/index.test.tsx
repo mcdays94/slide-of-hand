@@ -49,6 +49,24 @@ vi.mock("@/lib/decks-registry", async () => {
   };
 });
 
+// Mutable map of pending source actions the mocked hook returns. The
+// mock reads it on every call so tests can swap the value before
+// render. Defaults to empty so existing tests that pre-date issue #246
+// continue to assert "no pending pill anywhere" without ceremony.
+let mockPendingActions: Record<
+  string,
+  import("@/lib/pending-source-actions").PendingSourceAction
+> = {};
+const mockClearPending = vi.fn(async () => {});
+
+vi.mock("@/lib/use-pending-source-actions", () => ({
+  usePendingSourceActions: () => ({
+    actions: mockPendingActions,
+    isLoading: false,
+    clearPending: mockClearPending,
+  }),
+}));
+
 const ORIGINAL_HOSTNAME = window.location.hostname;
 function setHostname(value: string) {
   Object.defineProperty(window.location, "hostname", {
@@ -85,6 +103,8 @@ function entry(
 beforeEach(() => {
   setHostname("localhost");
   mockEntries = [];
+  mockPendingActions = {};
+  mockClearPending.mockClear();
   window.localStorage.clear();
 });
 
@@ -845,5 +865,168 @@ describe("AdminIndex — Archived section (#243)", () => {
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe("/api/admin/decks/retired-kv");
     expect((init as RequestInit).method).toBe("DELETE");
+  });
+});
+
+// ─── Pending source actions (issue #246 / PRD #242) ──────────────────
+// Source-backed decks with a pending GitHub PR action surface a
+// Pending pill + PR link + Clear pending button on their card, and
+// the pending record's `expectedState` drives placement: pending
+// archive / delete → Archived; pending restore → Active. KV-backed
+// decks ignore the projection (their lifecycle is immediate from
+// PR #245).
+describe("AdminIndex — pending source actions (#246)", () => {
+  const PR_URL = "https://github.com/mcdays94/slide-of-hand/pull/123";
+  function pendingFor(
+    slug: string,
+    action: "archive" | "restore" | "delete",
+  ): import("@/lib/pending-source-actions").PendingSourceAction {
+    const expectedState =
+      action === "archive"
+        ? "archived"
+        : action === "restore"
+          ? "active"
+          : "deleted";
+    return {
+      slug,
+      action,
+      prUrl: PR_URL,
+      expectedState,
+      createdAt: "2026-05-15T11:23:45.000Z",
+    };
+  }
+
+  async function renderAdmin() {
+    const AdminIndex = await loadAdminIndex();
+    return render(
+      <SettingsProvider>
+        <MemoryRouter>
+          <AdminIndex />
+        </MemoryRouter>
+      </SettingsProvider>,
+    );
+  }
+
+  it("projects pending archive: source deck moves from Active to Archived with a Pending archive pill", async () => {
+    mockEntries = [entry("alpha", "Alpha", "source")];
+    mockPendingActions = { alpha: pendingFor("alpha", "archive") };
+    await renderAdmin();
+    const archived = screen.getByTestId("admin-archived-section");
+    expect(archived.textContent).toMatch(/Alpha/);
+    expect(archived.textContent).toMatch(/Pending archive/i);
+    // PR link is rendered with the prUrl.
+    const link = screen.getByTestId("pending-pr-link-alpha") as HTMLAnchorElement;
+    expect(link.href).toBe(PR_URL);
+    expect(link.target).toBe("_blank");
+    expect(link.rel).toMatch(/noopener/);
+    // Active section, if it renders, must NOT contain Alpha.
+    const active = screen.getByTestId("admin-active-section");
+    expect(active.textContent).not.toMatch(/Alpha/);
+  });
+
+  it("projects pending restore: archived source deck moves from Archived to Active with a Pending restore pill", async () => {
+    mockEntries = [
+      entry("beta", "Beta", "source", "public", { archived: true }),
+    ];
+    mockPendingActions = { beta: pendingFor("beta", "restore") };
+    await renderAdmin();
+    const active = screen.getByTestId("admin-active-section");
+    expect(active.textContent).toMatch(/Beta/);
+    expect(active.textContent).toMatch(/Pending restore/i);
+    // Archived section unmounts entirely when there are no other
+    // archived rows.
+    expect(screen.queryByTestId("admin-archived-section")).toBeNull();
+  });
+
+  it("projects pending delete: source deck stays Archived with a Pending delete pill", async () => {
+    mockEntries = [
+      entry("gamma", "Gamma", "source", "public", { archived: true }),
+    ];
+    mockPendingActions = { gamma: pendingFor("gamma", "delete") };
+    await renderAdmin();
+    const archived = screen.getByTestId("admin-archived-section");
+    expect(archived.textContent).toMatch(/Gamma/);
+    expect(archived.textContent).toMatch(/Pending delete/i);
+  });
+
+  it("projects pending delete from an Active source deck: card moves to Archived with Pending delete copy", async () => {
+    // Edge case: the source deck is still Active on disk but a
+    // pending delete is open. The card relocates to Archived
+    // immediately so the author sees the expected outcome.
+    mockEntries = [entry("delta", "Delta", "source")];
+    mockPendingActions = { delta: pendingFor("delta", "delete") };
+    await renderAdmin();
+    const archived = screen.getByTestId("admin-archived-section");
+    expect(archived.textContent).toMatch(/Delta/);
+    expect(archived.textContent).toMatch(/Pending delete/i);
+    const active = screen.getByTestId("admin-active-section");
+    expect(active.textContent).not.toMatch(/Delta/);
+  });
+
+  it("renders a Clear pending button alongside the pill", async () => {
+    mockEntries = [entry("alpha", "Alpha", "source")];
+    mockPendingActions = { alpha: pendingFor("alpha", "archive") };
+    await renderAdmin();
+    expect(screen.getByTestId("pending-clear-alpha")).toBeDefined();
+  });
+
+  it("Clear pending invokes the clearPending handler with the slug", async () => {
+    mockEntries = [entry("alpha", "Alpha", "source")];
+    mockPendingActions = { alpha: pendingFor("alpha", "archive") };
+    await renderAdmin();
+    fireEvent.click(screen.getByTestId("pending-clear-alpha"));
+    await waitFor(() =>
+      expect(mockClearPending).toHaveBeenCalledWith("alpha"),
+    );
+  });
+
+  it("Clear pending surfaces a server error inline next to the pill", async () => {
+    mockClearPending.mockImplementationOnce(async () => {
+      throw new Error("kv unavailable");
+    });
+    mockEntries = [entry("alpha", "Alpha", "source")];
+    mockPendingActions = { alpha: pendingFor("alpha", "archive") };
+    await renderAdmin();
+    fireEvent.click(screen.getByTestId("pending-clear-alpha"));
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("pending-clear-error-alpha").textContent,
+      ).toMatch(/kv unavailable/),
+    );
+  });
+
+  it("KV-backed decks ignore pending source action records (no projection, no pill)", async () => {
+    // Even if a pending record somehow ends up in KV against a
+    // KV-backed deck slug, the admin must NOT project it — the KV
+    // deck lifecycle is immediate (PR #245) and projection would
+    // misrepresent reality.
+    mockEntries = [entry("kv-deck", "KV Deck", "kv")];
+    mockPendingActions = { "kv-deck": pendingFor("kv-deck", "archive") };
+    await renderAdmin();
+    // KV-deck stays in Active section despite the pending archive.
+    expect(screen.getByTestId("admin-active-section").textContent).toMatch(
+      /KV Deck/,
+    );
+    expect(screen.queryByTestId("admin-archived-section")).toBeNull();
+    // No pending pill anywhere.
+    expect(screen.queryByTestId("pending-pill-kv-deck")).toBeNull();
+  });
+
+  it("source-backed deck with no pending action is unchanged (no pill, normal placement)", async () => {
+    mockEntries = [entry("alpha", "Alpha", "source")];
+    mockPendingActions = {};
+    await renderAdmin();
+    expect(screen.queryByTestId("pending-pill-alpha")).toBeNull();
+    expect(screen.getByTestId("admin-active-section").textContent).toMatch(
+      /Alpha/,
+    );
+  });
+
+  it("pending pill exposes a data-pending-action attribute carrying the action type", async () => {
+    mockEntries = [entry("alpha", "Alpha", "source")];
+    mockPendingActions = { alpha: pendingFor("alpha", "delete") };
+    await renderAdmin();
+    const pill = screen.getByTestId("pending-action-alpha");
+    expect(pill.getAttribute("data-pending-action")).toBe("delete");
   });
 });
