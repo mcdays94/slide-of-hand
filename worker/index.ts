@@ -37,6 +37,10 @@ import {
   handlePendingSourceActions,
   type PendingSourceActionsEnv,
 } from "./pending-source-actions";
+import {
+  handleSourceDeckLifecycle,
+  type SourceDeckLifecycleEnv,
+} from "./source-deck-lifecycle";
 import { handleImages, type ImagesEnv } from "./images";
 import { handleAuthStatus, type AuthStatusEnv } from "./auth-status";
 import { handleAgent, type AgentEnv } from "./agent";
@@ -93,6 +97,7 @@ export interface Env
     ElementOverridesEnv,
     DecksEnv,
     PendingSourceActionsEnv,
+    SourceDeckLifecycleEnv,
     ImagesEnv,
     AuthStatusEnv,
     AgentEnv,
@@ -139,6 +144,18 @@ export default {
       env,
     );
     if (pendingSourceActionsResponse) return pendingSourceActionsResponse;
+    // Source-backed deck lifecycle actions via gated GitHub draft PR
+    // (issue #247 / PRD #242). Owns
+    // `POST /api/admin/source-decks/<slug>/archive`. The handler
+    // clones slide-of-hand inside a Cloudflare Sandbox, moves the
+    // deck folder, runs the test gate, opens a draft PR, and writes
+    // a pending source-action record to KV so the admin UI projects
+    // the expected archived state immediately.
+    const sourceDeckLifecycleResponse = await handleSourceDeckLifecycle(
+      request,
+      env,
+    );
+    if (sourceDeckLifecycleResponse) return sourceDeckLifecycleResponse;
     const imagesResponse = await handleImages(request, env);
     if (imagesResponse) return imagesResponse;
     // Agent route (issue #131 phase 1). Must run BEFORE the ASSETS

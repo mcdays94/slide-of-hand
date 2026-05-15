@@ -41,6 +41,17 @@ export interface UsePendingSourceActionsResult {
    * caller can surface the message inline.
    */
   clearPending: (slug: string) => Promise<void>;
+  /**
+   * Re-fetch the pending action list from the server. Useful after a
+   * source-backed lifecycle action (#247-249) succeeds — the Worker
+   * has just written a new record to KV and we want to project it
+   * onto the admin UI without waiting for a full reload.
+   *
+   * Returns a Promise that resolves once the local map reflects the
+   * server's current state (or stays unchanged on a transient
+   * failure). Never throws — refetch is best-effort.
+   */
+  refetch: () => Promise<void>;
 }
 
 interface PendingSourceActionsResponse {
@@ -51,42 +62,48 @@ export function usePendingSourceActions(): UsePendingSourceActionsResult {
   const [actions, setActions] = useState<PendingSourceActionMap>({});
   const [isLoading, setIsLoading] = useState(true);
 
+  const fetchActions = useCallback(async (): Promise<void> => {
+    try {
+      const res = await fetch("/api/admin/deck-source-actions", {
+        cache: "no-store",
+        headers: adminWriteHeaders(),
+      });
+      if (!res.ok) {
+        setActions({});
+        return;
+      }
+      const body = (await res.json()) as PendingSourceActionsResponse;
+      const map: PendingSourceActionMap = {};
+      if (Array.isArray(body.actions)) {
+        for (const entry of body.actions) {
+          if (entry && typeof entry.slug === "string") {
+            map[entry.slug] = entry;
+          }
+        }
+      }
+      setActions(map);
+    } catch {
+      // Best-effort — keep whatever was last seen if the network
+      // blips. The initial-load path explicitly resets to {} above
+      // when the response is non-OK; for refetch we prefer to keep
+      // optimistic state rather than wipe it on a transient error.
+    }
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      try {
-        const res = await fetch("/api/admin/deck-source-actions", {
-          cache: "no-store",
-          headers: adminWriteHeaders(),
-        });
-        if (!res.ok) {
-          if (!cancelled) {
-            setActions({});
-            setIsLoading(false);
-          }
-          return;
-        }
-        const body = (await res.json()) as PendingSourceActionsResponse;
-        if (cancelled) return;
-        const map: PendingSourceActionMap = {};
-        if (Array.isArray(body.actions)) {
-          for (const entry of body.actions) {
-            if (entry && typeof entry.slug === "string") {
-              map[entry.slug] = entry;
-            }
-          }
-        }
-        setActions(map);
-      } catch {
-        if (!cancelled) setActions({});
-      } finally {
-        if (!cancelled) setIsLoading(false);
-      }
+      await fetchActions();
+      if (!cancelled) setIsLoading(false);
     })();
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [fetchActions]);
+
+  const refetch = useCallback(async (): Promise<void> => {
+    await fetchActions();
+  }, [fetchActions]);
 
   const clearPending = useCallback(async (slug: string) => {
     const res = await fetch(
@@ -111,5 +128,5 @@ export function usePendingSourceActions(): UsePendingSourceActionsResult {
     });
   }, []);
 
-  return { actions, isLoading, clearPending };
+  return { actions, isLoading, clearPending, refetch };
 }
