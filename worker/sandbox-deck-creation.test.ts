@@ -116,10 +116,12 @@ vi.mock("@cloudflare/sandbox", () => ({
 }));
 
 import {
+  ensureDraftFalseInMetaContent,
   ensureDraftTrueInMetaContent,
   runCreateDeckDraft,
   runIterateOnDeckDraft,
   runPublishDraft,
+  setDraftFlagInMetaContent,
   type DeckCreationSnapshot,
   type PublishDraftEnv,
   type SandboxDeckCreationEnv,
@@ -908,6 +910,81 @@ describe("ensureDraftTrueInMetaContent (unit)", () => {
   });
 });
 
+describe("ensureDraftFalseInMetaContent / setDraftFlagInMetaContent(value=false) (unit)", () => {
+  // Symmetric to ensureDraftTrueInMetaContent — used by
+  // `runPublishDraft` (#191 slice 5) to flip a draft's
+  // `draft: true` flag to `false` as part of the publish commit.
+  //
+  // Asymmetric behaviour vs the value=true mode: when the field is
+  // ABSENT, the helper MUST NOT inject `draft: false`. Publishing
+  // a deck that never carried a draft flag should leave its
+  // meta.ts visually unchanged so the PR diff doesn't gain a
+  // spurious line.
+
+  it("rewrites draft: true to draft: false", () => {
+    const input = `export const meta: DeckMeta = {\n  draft: true,\n};`;
+    const out = ensureDraftFalseInMetaContent(input);
+    expect(out).toMatch(/draft:\s*false/);
+    expect(out).not.toMatch(/draft:\s*true/);
+  });
+
+  it("preserves an existing draft: false (no double-rewrite)", () => {
+    const input = `export const meta: DeckMeta = {\n  draft: false,\n};`;
+    const out = ensureDraftFalseInMetaContent(input);
+    // Same content in, same content out — `draft: false` → `draft: false`
+    // is a textual no-op via the normalisation branch.
+    expect(out).toBe(input);
+  });
+
+  it("does NOT inject draft: false when the field is absent (typed meta)", () => {
+    // Publish-of-non-draft case: the deck's meta has no `draft`
+    // field, so the publish commit should leave the file untouched
+    // rather than clutter the diff.
+    const input = `export const meta: DeckMeta = {\n  slug: "x",\n  title: "T",\n};`;
+    expect(ensureDraftFalseInMetaContent(input)).toBe(input);
+  });
+
+  it("does NOT inject draft: false when the field is absent (untyped meta)", () => {
+    const input = `export const meta = {\n  slug: "x",\n};`;
+    expect(ensureDraftFalseInMetaContent(input)).toBe(input);
+  });
+
+  it("preserves unrelated fields and layout when rewriting", () => {
+    const input = [
+      `import type { DeckMeta } from "@/framework/viewer/types";`,
+      "",
+      `export const meta: DeckMeta = {`,
+      `  slug: "my",`,
+      `  title: "Hello",`,
+      `  date: "2026-06-01",`,
+      `  draft: true,`,
+      `  author: "Alice",`,
+      `};`,
+    ].join("\n");
+    const out = ensureDraftFalseInMetaContent(input);
+    // The only difference should be the draft value.
+    expect(out).toBe(input.replace("draft: true", "draft: false"));
+  });
+
+  it("returns content unchanged when no meta object is present (parse miss)", () => {
+    const input = `export const NOT_meta = {\n  draft: nope\n};`;
+    expect(ensureDraftFalseInMetaContent(input)).toBe(input);
+  });
+
+  it("setDraftFlagInMetaContent is parameterised by value (sanity check)", () => {
+    // Documents that the underlying helper is symmetric — both
+    // exported wrappers ultimately call into the same function.
+    const draftTrueInput = `export const meta = {\n  draft: true,\n};`;
+    expect(setDraftFlagInMetaContent(draftTrueInput, false)).toMatch(
+      /draft:\s*false/,
+    );
+    const draftFalseInput = `export const meta = {\n  draft: false,\n};`;
+    expect(setDraftFlagInMetaContent(draftFalseInput, true)).toMatch(
+      /draft:\s*true/,
+    );
+  });
+});
+
 // ── runIterateOnDeckDraft ────────────────────────────────────────────
 
 function setIterateHappyPathMocks() {
@@ -1156,9 +1233,19 @@ describe("runIterateOnDeckDraft — failure modes", () => {
  * Build a sandbox stub with an `exec` mock that succeeds by default
  * (used for the cp step in runPublishDraft). Each test that wants
  * the cp to fail overrides this.
+ *
+ * Also exposes `readFile` / `writeFile` mocks used by the publish
+ * flow to flip `meta.draft: true` to `false` (#191 slice 5). The
+ * default `readFile` returns a representative draft `meta.ts`
+ * carrying `draft: true`; `writeFile` resolves to a success result.
+ * Tests that care about the flip read from these mocks; tests that
+ * don't are unaffected — the readFile is wrapped in a try/catch in
+ * `runPublishDraft` and any failure is silently ignored.
  */
 function makeSandboxStub(): {
   exec: ReturnType<typeof vi.fn>;
+  readFile: ReturnType<typeof vi.fn>;
+  writeFile: ReturnType<typeof vi.fn>;
 } {
   return {
     exec: vi.fn(async () => ({
@@ -1167,6 +1254,22 @@ function makeSandboxStub(): {
       stdout: "",
       stderr: "",
     })),
+    readFile: vi.fn(async (path: string) => ({
+      success: true,
+      path,
+      content: [
+        `import type { DeckMeta } from "@/framework/viewer/types";`,
+        "",
+        `export const meta: DeckMeta = {`,
+        `  slug: "my",`,
+        `  title: "T",`,
+        `  date: "2026-06-01",`,
+        `  draft: true,`,
+        `};`,
+      ].join("\n"),
+      timestamp: new Date().toISOString(),
+    })),
+    writeFile: vi.fn(async () => ({ success: true })),
   };
 }
 
@@ -1468,5 +1571,125 @@ describe("runPublishDraft — error phases", () => {
       expect(result.phase).toBe("open_pr");
       expect(result.error).toContain("rate limit");
     }
+  });
+});
+
+describe("runPublishDraft — flips meta.draft (#191 slice 5)", () => {
+  // Symmetric to the creation-as-draft slice: publishing MUST rewrite
+  // `meta.draft: true` to `meta.draft: false` in the commit that
+  // lands on GitHub, regardless of what the draft on Artifacts
+  // carried. The flip happens AFTER the cp from /workspace/draft to
+  // /workspace/slide-of-hand and BEFORE the test gate, so the gate
+  // sees the post-flip content.
+
+  it("rewrites draft: true to draft: false in the meta.ts inside the GitHub checkout", async () => {
+    const { sandbox } = setPublishHappyPathMocks();
+    // Default readFile mock already returns a draft: true meta —
+    // see makeSandboxStub. The orchestrator should write the
+    // flipped content back via writeFile.
+    await runPublishDraft(makePublishEnv(), {
+      userEmail: "alice@example.com",
+      slug: "my",
+    });
+    expect(sandbox.readFile).toHaveBeenCalledWith(
+      "/workspace/slide-of-hand/src/decks/public/my/meta.ts",
+    );
+    expect(sandbox.writeFile).toHaveBeenCalledTimes(1);
+    const [writtenPath, writtenContent] = sandbox.writeFile.mock.calls[0];
+    expect(writtenPath).toBe(
+      "/workspace/slide-of-hand/src/decks/public/my/meta.ts",
+    );
+    expect(writtenContent).toMatch(/\bdraft:\s*false\b/);
+    expect(writtenContent).not.toMatch(/\bdraft:\s*true\b/);
+  });
+
+  it("does NOT write back when meta.draft is absent (publish-of-non-draft is a no-op)", async () => {
+    const { sandbox } = setPublishHappyPathMocks();
+    // Override the default readFile to return a meta with NO
+    // `draft` field — this models the "user republishing an
+    // already-published deck" or "deck that never went through the
+    // creation-as-draft slice" case.
+    sandbox.readFile.mockResolvedValueOnce({
+      success: true,
+      path: "/workspace/slide-of-hand/src/decks/public/my/meta.ts",
+      content: [
+        `export const meta: DeckMeta = {`,
+        `  slug: "my",`,
+        `  title: "T",`,
+        `  date: "2026-06-01",`,
+        `};`,
+      ].join("\n"),
+      timestamp: new Date().toISOString(),
+    });
+    await runPublishDraft(makePublishEnv(), {
+      userEmail: "alice@example.com",
+      slug: "my",
+    });
+    expect(sandbox.writeFile).not.toHaveBeenCalled();
+  });
+
+  it("does NOT write back when meta.draft is already false (idempotent re-publish)", async () => {
+    const { sandbox } = setPublishHappyPathMocks();
+    sandbox.readFile.mockResolvedValueOnce({
+      success: true,
+      path: "/workspace/slide-of-hand/src/decks/public/my/meta.ts",
+      content: [
+        `export const meta: DeckMeta = {`,
+        `  slug: "my",`,
+        `  draft: false,`,
+        `};`,
+      ].join("\n"),
+      timestamp: new Date().toISOString(),
+    });
+    await runPublishDraft(makePublishEnv(), {
+      userEmail: "alice@example.com",
+      slug: "my",
+    });
+    expect(sandbox.writeFile).not.toHaveBeenCalled();
+  });
+
+  it("continues the publish flow when reading meta.ts fails (best-effort)", async () => {
+    const { sandbox } = setPublishHappyPathMocks();
+    // A read failure shouldn't tank the entire publish — the test
+    // gate runs next and will catch a genuinely-broken meta.ts.
+    sandbox.readFile.mockRejectedValueOnce(new Error("EIO"));
+    const result = await runPublishDraft(makePublishEnv(), {
+      userEmail: "alice@example.com",
+      slug: "my",
+    });
+    expect(result.ok).toBe(true);
+    expect(sandbox.writeFile).not.toHaveBeenCalled();
+    // The downstream steps still ran:
+    expect(runSandboxTestGateMock).toHaveBeenCalledTimes(1);
+    expect(commitAndPushInSandboxMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("runs the flip BEFORE the test gate so the gate sees the post-flip content", async () => {
+    const { sandbox } = setPublishHappyPathMocks();
+    // Record the order in which readFile (the flip read) and
+    // runSandboxTestGate fire. The flip MUST come first so a
+    // gate-time assertion on `draft: false` would actually see it.
+    const callOrder: string[] = [];
+    sandbox.readFile.mockImplementationOnce(async (path: string) => {
+      callOrder.push("readFile");
+      return {
+        success: true,
+        path,
+        content: `export const meta = { draft: true };`,
+        timestamp: new Date().toISOString(),
+      };
+    });
+    runSandboxTestGateMock.mockImplementationOnce(async () => {
+      callOrder.push("testGate");
+      return {
+        ok: true,
+        phases: [],
+      };
+    });
+    await runPublishDraft(makePublishEnv(), {
+      userEmail: "alice@example.com",
+      slug: "my",
+    });
+    expect(callOrder).toEqual(["readFile", "testGate"]);
   });
 });
