@@ -237,41 +237,53 @@ function buildPromptNote(prompt: string, modelId?: string): string {
 }
 
 /**
- * Post-process the generated `meta.ts` content to guarantee
- * `draft: true` is present (issue #191 — creation-as-draft slice).
+ * Post-process `meta.ts` content to set `meta.draft` to a specific
+ * boolean value (issue #191 — drafts umbrella).
  *
- * Belt-and-braces companion to the system-prompt instruction in
- * `worker/ai-deck-gen.ts`: even if the model forgets, gets it wrong,
- * or outputs `draft: false`, the orchestrator enforces the invariant
- * at apply time so the deck lands as a draft on disk.
+ * The behaviour is asymmetric by design:
+ *
+ *   - For `value=true` (creation-as-draft, slice 4): full enforcement.
+ *     Normalises any existing `draft: <literal>` assignment AND
+ *     injects `draft: true` when the field is missing entirely.
+ *
+ *   - For `value=false` (publish, slice 5): rewrite-only. Normalises
+ *     an existing `draft: <literal>` assignment but does NOT inject
+ *     when the field is absent. Publishing a deck that never carried
+ *     a `draft` flag should not clutter its diff with a brand-new
+ *     `draft: false` line.
  *
  * Three branches, in order:
  *
  *   1. An existing `draft: <literal>` assignment is normalised to
- *      `draft: true`. Covers `false`, `undefined`, `null`, and the
- *      already-correct `true` case (no-op).
- *   2. No `draft` assignment found — inject `draft: true,` right
- *      after the opening `{` of the meta object literal.
+ *      `draft: <value>`. Covers `true`, `false`, `undefined`, and
+ *      `null`. When the existing value already matches `<value>` the
+ *      replacement is a textual no-op (same string in, same string
+ *      out).
+ *   2. No `draft` assignment found:
+ *        - `value=true` — inject `draft: true,` right after the
+ *          opening `{` of the meta object literal.
+ *        - `value=false` — return content unchanged (no injection).
  *   3. The meta object literal can't be located by regex — return
- *      content unchanged. The downstream commit still proceeds; the
- *      deck just won't carry the flag. Better than refusing the
- *      whole turn over a parse miss.
+ *      content unchanged.
  *
- * Only applies to the FIRST creation. Iteration MUST NOT call this —
- * preserve whatever's on disk (see `runIterateOnDeckDraft`).
+ * Only applies at the creation + publish boundaries. Iteration MUST
+ * NOT call this (see `runIterateOnDeckDraft`).
  *
  * Exported for unit-test introspection.
  */
-export function ensureDraftTrueInMetaContent(content: string): string {
-  // 1. Existing assignment → normalise to true. Allowed RHS literals
-  //    cover the realistic accidental outputs (`false` if the model
-  //    misreads "draft" as opt-in, `undefined`/`null` if it's hedging).
+export function setDraftFlagInMetaContent(
+  content: string,
+  value: boolean,
+): string {
+  // 1. Existing assignment → normalise to `value`.
   const draftAssignmentRe = /\bdraft\s*:\s*(?:true|false|undefined|null)\b/;
   if (draftAssignmentRe.test(content)) {
-    return content.replace(draftAssignmentRe, "draft: true");
+    return content.replace(draftAssignmentRe, `draft: ${value}`);
   }
-  // 2. Inject after the meta object's opening brace. Handles both
-  //    `export const meta: DeckMeta = {` and `export const meta = {`.
+  // 2. Inject only when value is true. Publish (value=false) leaves
+  //    a non-draft deck's meta.ts untouched so the PR diff doesn't
+  //    gain a spurious `draft: false` line.
+  if (!value) return content;
   const metaOpenRe = /(export\s+const\s+meta\s*(?::\s*\w+)?\s*=\s*\{)/;
   if (metaOpenRe.test(content)) {
     return content.replace(metaOpenRe, "$1\n  draft: true,");
@@ -279,6 +291,24 @@ export function ensureDraftTrueInMetaContent(content: string): string {
   // 3. Parse miss — return unchanged. The prompt-side instruction is
   //    the only line of defence left in this branch.
   return content;
+}
+
+/**
+ * Slice 4 alias. Preserved for call-site stability + so existing
+ * unit tests of the creation-as-draft branch keep exercising the
+ * same public surface.
+ */
+export function ensureDraftTrueInMetaContent(content: string): string {
+  return setDraftFlagInMetaContent(content, true);
+}
+
+/**
+ * Slice 5 alias. Used by `runPublishDraft` to flip an existing
+ * `meta.draft: true` to `false` as part of the publish commit.
+ * No-op when the field is absent or already `false`.
+ */
+export function ensureDraftFalseInMetaContent(content: string): string {
+  return setDraftFlagInMetaContent(content, false);
 }
 
 /**
@@ -1063,6 +1093,32 @@ export async function runPublishDraft(
         copyResult.stderr ||
         `Failed to copy draft files from ${srcDir} (exit ${copyResult.exitCode ?? "unknown"}).`,
     };
+  }
+
+  // 7b. Publish-flips-draft (#191, slice 5): the draft on Artifacts
+  // carries `draft: true` (creation-as-draft slice writes it). The
+  // commit going to GitHub MUST flip that to `draft: false` so the
+  // PR — and `main` once merged — sees the deck as published. The
+  // helper is a no-op when the field is absent (publish of a deck
+  // that never had a draft flag stays visually unchanged) and when
+  // it's already `false`. Any file-read / file-write hiccup here is
+  // best-effort: log and continue with the test gate against the
+  // un-flipped content so a transient FS issue doesn't block a
+  // publish that's otherwise sound. The downstream "no effective
+  // changes" gate will still surface a no-op publish elsewhere.
+  const metaPathInGh = `${ghClone.workdir}/src/decks/public/${input.slug}/meta.ts`;
+  try {
+    const metaRead = await sandbox.readFile(metaPathInGh);
+    if (metaRead.success && typeof metaRead.content === "string") {
+      const flipped = ensureDraftFalseInMetaContent(metaRead.content);
+      if (flipped !== metaRead.content) {
+        await sandbox.writeFile(metaPathInGh, flipped);
+      }
+    }
+  } catch {
+    // Best-effort: a meta.ts read/write failure shouldn't break the
+    // entire publish flow. The test gate runs next and will catch a
+    // genuinely-broken meta.ts.
   }
 
   // 8. Test gate against the GH checkout. This is the slow step
