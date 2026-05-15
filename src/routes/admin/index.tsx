@@ -19,17 +19,24 @@
  * The "Open in IDE" affordance is rendered only for source decks — KV
  * decks have no on-disk source file to open.
  *
- * Issue #130 / #127: KV-backed deck cards expose a hover-revealed
- * trashcan that opens a `<ConfirmDialog>`. Confirming hits
- * `DELETE /api/admin/decks/<slug>` and triggers `window.location.reload()`
- * to re-pull the admin list. Build-time decks have no UI trashcan because
- * they live in source files — deletion is a `git rm`, not a runtime
- * action.
+ * Lifecycle action menu (issue #244 / PRD #242): each card exposes a
+ * hover-revealed action menu in its corner. Active KV decks show
+ * Archive + Delete; archived KV decks show Restore + Delete. Source
+ * decks show Archive on active rows and Restore on archived rows.
+ * Delete uses a typed-slug confirmation primitive
+ * (`<TypedSlugConfirmDialog>`); Archive / Restore use a simple
+ * confirmation. This slice is the UI shape only — Archive / Restore
+ * surface a friendly "not yet wired" inline error if the user confirms.
+ * Later slices (#245 KV, #247-249 source) wire the real backends.
+ *
+ * Delete continues to call `DELETE /api/admin/decks/<slug>` and reload
+ * for KV-backed decks (the legacy issue #130 flow). Source decks have
+ * no delete backend yet — they don't expose Delete in this slice.
  *
  * Composition: the card grid + Grid/List toggle + per-card visibility
- * badge + per-card delete dialog ALL live inside `<DeckCardGrid>` /
- * `<DeckCard>` (issue #127). This route is now thin: build the items
- * array, hand it to the grid, supply the delete side-effect.
+ * badge + per-card lifecycle dialogs ALL live inside `<DeckCardGrid>` /
+ * `<DeckCard>`. This route is thin: build the items array, hand it to
+ * the grid, supply the lifecycle side-effects.
  */
 
 import { useCallback, useMemo, useState } from "react";
@@ -55,9 +62,11 @@ export default function AdminIndex() {
   // unit-test path the hook is mocked, so `useAdminDataDeckList` won't
   // re-fetch in response to a state change — `deletedSlugs` makes the
   // delete UX correct in both worlds.
-  // Issue #243: delete actions exist only on Active KV decks today.
-  // Archived rows do not expose a trashcan in this slice (full
-  // Restore / Delete-for-archive comes in PRD #242 slice 2+).
+  // Issue #244: the lifecycle action menu now also surfaces Archive
+  // (active) and Restore (archived), but the real backends ship later
+  // (#245 KV, #247-249 source). For now both stubs throw a friendly
+  // error so the menu shape is testable and the user gets honest
+  // feedback if they confirm.
   const [deletedSlugs, setDeletedSlugs] = useState<Set<string>>(
     () => new Set(),
   );
@@ -113,6 +122,25 @@ export default function AdminIndex() {
     }
   }, []);
 
+  /**
+   * Issue #244: UI-only stubs for Archive / Restore. They surface a
+   * friendly inline error so the confirmation dialog's existing
+   * `*-error` slot makes the "not yet wired" state visible. Later
+   * slices replace these with real KV / source GitHub PR flows.
+   */
+  const handleArchive = useCallback(async (_slug: string) => {
+    void _slug;
+    throw new Error(
+      "Archive backend is not wired yet — coming in a follow-up slice.",
+    );
+  }, []);
+  const handleRestore = useCallback(async (_slug: string) => {
+    void _slug;
+    throw new Error(
+      "Restore backend is not wired yet — coming in a follow-up slice.",
+    );
+  }, []);
+
   // Issue #243: split the merged admin list into Active vs Archived.
   // Archived wins over Draft on placement — a deck with both flags
   // lives in the Archived section, not the Active draft-filter path.
@@ -133,16 +161,23 @@ export default function AdminIndex() {
     toGridItem(entry, { showIdeButton, projectRoot }),
   );
 
-  // Archived entries get the same card chrome but with all action
-  // affordances stripped: no trashcan (Restore / Delete-for-archive
-  // ships in later slices of PRD #242), no IDE link (the deck is
-  // retired — opening it for editing is not the intended flow).
-  const archivedItems: DeckCardGridItem[] = archivedEntries.map((entry) => ({
-    meta: entry.meta,
-    to: `/admin/decks/${entry.meta.slug}`,
-    visibility: entry.visibility,
-    canDelete: false,
-  }));
+  // Archived entries get the same card chrome plus the lifecycle
+  // action menu (issue #244). Restore appears on every archived card
+  // (the UI surface is universal across source + KV); Delete appears
+  // only on KV-backed archived decks, mirroring the active-side gate
+  // (source decks have no delete backend yet). The IDE link is
+  // dropped — the deck is retired, opening it for editing is not the
+  // intended flow.
+  const archivedItems: DeckCardGridItem[] = archivedEntries.map((entry) => {
+    const isSource = (entry.source ?? "source") === "source";
+    return {
+      meta: entry.meta,
+      to: `/admin/decks/${entry.meta.slug}`,
+      visibility: entry.visibility,
+      canDelete: !isSource,
+      canRestore: true,
+    };
+  });
 
   // Headline copy: prefer talking about the active set since the
   // Archived section is its own heading + helper line.
@@ -191,6 +226,7 @@ export default function AdminIndex() {
           surface="admin"
           items={activeItems}
           onDelete={handleDelete}
+          onArchive={handleArchive}
         />
       </section>
 
@@ -207,7 +243,12 @@ export default function AdminIndex() {
               Retired decks. Public links return not found.
             </p>
           </div>
-          <DeckCardGrid surface="admin" items={archivedItems} />
+          <DeckCardGrid
+            surface="admin"
+            items={archivedItems}
+            onDelete={handleDelete}
+            onRestore={handleRestore}
+          />
         </section>
       )}
     </main>
@@ -288,16 +329,22 @@ function toGridItem(
           entry.meta.slug,
         )
       : undefined;
-  // Only KV-backed decks expose the delete trashcan. Source decks
-  // live in code — deleting them is a `git rm`, not a runtime API
-  // call.
+  // Only KV-backed decks expose the runtime Delete action. Source
+  // decks live in code — deleting them is a `git rm`, not a runtime
+  // API call. (Source Delete via GitHub PR ships in a later slice.)
   const canDelete = !isSource;
+  // Archive is exposed on every active deck via the lifecycle menu
+  // (issue #244). The real backend ships in a later slice; this slice
+  // only surfaces the UI shape, and the AdminIndex's `handleArchive`
+  // throws a friendly inline error if the user confirms.
+  const canArchive = true;
 
   return {
     meta: entry.meta,
     to: `/admin/decks/${entry.meta.slug}`,
     visibility: entry.visibility,
     canDelete,
+    canArchive,
     ideHref: ideHref || undefined,
   };
 }
