@@ -425,6 +425,7 @@ describe("<NotesEditor> settings-driven default mode (#126)", () => {
       aiAssistantModel: "kimi-k2.6",
       showAssistantReasoning: false,
       tocSidebarEdge: "right",
+      showDrafts: true,
     };
     render(
       <SettingsProvider initialSettings={settings}>
@@ -456,6 +457,7 @@ describe("<NotesEditor> settings-driven default mode (#126)", () => {
       aiAssistantModel: "kimi-k2.6",
       showAssistantReasoning: false,
       tocSidebarEdge: "right",
+      showDrafts: true,
     };
     render(
       <SettingsProvider initialSettings={settings}>
