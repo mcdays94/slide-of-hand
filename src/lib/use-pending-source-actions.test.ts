@@ -143,3 +143,123 @@ describe("usePendingSourceActions — clearPending", () => {
     ).rejects.toThrow(/kv unavailable/);
   });
 });
+
+// ─── reconcile (issue #250) ──────────────────────────────────────
+describe("usePendingSourceActions — reconcile", () => {
+  it("POSTs the sourceState and drops the local entry on { reconciled: true }", async () => {
+    const fetchMock = vi
+      .fn()
+      // Initial list fetch.
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          actions: [
+            {
+              slug: "hello",
+              action: "archive",
+              prUrl: PR_URL,
+              expectedState: "archived",
+              createdAt: "2026-05-15T11:23:45.000Z",
+            },
+          ],
+        }),
+      })
+      // Reconcile call.
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          reconciled: true,
+          action: "archive",
+          cleared: ["pending-source-action:hello"],
+        }),
+      });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => usePendingSourceActions());
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(result.current.actions.hello).toBeDefined();
+
+    let reconcileResult: { reconciled: boolean } = { reconciled: false };
+    await act(async () => {
+      reconcileResult = await result.current.reconcile("hello", "archived");
+    });
+
+    expect(reconcileResult.reconciled).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const [url, init] = fetchMock.mock.calls[1];
+    expect(url).toBe("/api/admin/deck-source-actions/hello/reconcile");
+    expect((init as RequestInit).method).toBe("POST");
+    expect(
+      JSON.parse((init as RequestInit).body as string),
+    ).toEqual({ sourceState: "archived" });
+    expect(result.current.actions.hello).toBeUndefined();
+  });
+
+  it("keeps the local entry on { reconciled: false } (server mismatch)", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          actions: [
+            {
+              slug: "hello",
+              action: "archive",
+              prUrl: PR_URL,
+              expectedState: "archived",
+              createdAt: "2026-05-15T11:23:45.000Z",
+            },
+          ],
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ reconciled: false }),
+      });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => usePendingSourceActions());
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+    await act(async () => {
+      await result.current.reconcile("hello", "active");
+    });
+    expect(result.current.actions.hello).toBeDefined();
+  });
+
+  it("swallows network failures (entry stays put, next render can retry)", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          actions: [
+            {
+              slug: "hello",
+              action: "archive",
+              prUrl: PR_URL,
+              expectedState: "archived",
+              createdAt: "2026-05-15T11:23:45.000Z",
+            },
+          ],
+        }),
+      })
+      .mockRejectedValueOnce(new Error("offline"));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => usePendingSourceActions());
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+    let res: { reconciled: boolean } = { reconciled: true };
+    await act(async () => {
+      res = await result.current.reconcile("hello", "archived");
+    });
+    expect(res.reconciled).toBe(false);
+    expect(result.current.actions.hello).toBeDefined();
+  });
+});

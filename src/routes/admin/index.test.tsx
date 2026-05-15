@@ -59,6 +59,16 @@ let mockPendingActions: Record<
 > = {};
 const mockClearPending = vi.fn(async () => {});
 const mockRefetchPending = vi.fn(async () => {});
+// Issue #250 — reconcile mock. Default behaviour mirrors the real
+// hook: on a `reconciled: true` response, the local map drops the
+// entry. Tests that exercise the reconcile flow swap the
+// implementation per-case.
+const mockReconcile = vi.fn(
+  async (
+    _slug: string,
+    _sourceState: "active" | "archived" | "deleted",
+  ): Promise<{ reconciled: boolean }> => ({ reconciled: false }),
+);
 
 vi.mock("@/lib/use-pending-source-actions", () => ({
   usePendingSourceActions: () => ({
@@ -66,6 +76,7 @@ vi.mock("@/lib/use-pending-source-actions", () => ({
     isLoading: false,
     clearPending: mockClearPending,
     refetch: mockRefetchPending,
+    reconcile: mockReconcile,
   }),
 }));
 
@@ -133,6 +144,8 @@ beforeEach(() => {
   mockPendingActions = {};
   mockClearPending.mockClear();
   mockRefetchPending.mockClear();
+  mockReconcile.mockClear();
+  mockReconcile.mockImplementation(async () => ({ reconciled: false }));
   // Default GitHub OAuth state is "disconnected" so the new source
   // lifecycle gate (#251) intercepts by default. Tests covering the
   // legacy "not yet wired" stub error explicitly flip to "connected".
@@ -1836,5 +1849,166 @@ describe("AdminIndex — source-backed Delete (#249)", () => {
       expect(screen.queryByTestId("github-connect-gate")).toBeNull(),
     );
     expect(mockRefetchPending).toHaveBeenCalled();
+  });
+});
+
+// ─── Automatic reconciliation (issue #250) ────────────────────────
+// Once the deployed source state matches a pending action's
+// expectedState, the admin must fire `/reconcile` so the worker
+// clears the marker (and, for delete, the source-delete side data).
+// Stale pending records — where the source state still does NOT
+// match — must stay visible.
+describe("AdminIndex — pending reconciliation (#250)", () => {
+  const PR_URL = "https://github.com/mcdays94/slide-of-hand/pull/123";
+  function pendingFor(
+    slug: string,
+    action: "archive" | "restore" | "delete",
+  ): import("@/lib/pending-source-actions").PendingSourceAction {
+    const expectedState =
+      action === "archive"
+        ? "archived"
+        : action === "restore"
+          ? "active"
+          : "deleted";
+    return {
+      slug,
+      action,
+      prUrl: PR_URL,
+      expectedState,
+      createdAt: "2026-05-15T11:23:45.000Z",
+    };
+  }
+
+  async function renderAdmin() {
+    const AdminIndex = await loadAdminIndex();
+    return render(
+      <SettingsProvider>
+        <MemoryRouter>
+          <AdminIndex />
+        </MemoryRouter>
+      </SettingsProvider>,
+    );
+  }
+
+  it("reconciles pending archive when the source deck is already archived", async () => {
+    // Source state: deck is archived on disk. Pending marker
+    // expects archived. The effect should fire reconcile with
+    // sourceState=archived.
+    mockEntries = [
+      entry("alpha", "Alpha", "source", "public", { archived: true }),
+    ];
+    mockPendingActions = { alpha: pendingFor("alpha", "archive") };
+    await renderAdmin();
+    await waitFor(() =>
+      expect(mockReconcile).toHaveBeenCalledWith("alpha", "archived"),
+    );
+  });
+
+  it("reconciles pending restore when the source deck is active", async () => {
+    mockEntries = [entry("beta", "Beta", "source")];
+    mockPendingActions = { beta: pendingFor("beta", "restore") };
+    await renderAdmin();
+    await waitFor(() =>
+      expect(mockReconcile).toHaveBeenCalledWith("beta", "active"),
+    );
+  });
+
+  it("reconciles pending delete when the source deck has disappeared", async () => {
+    // The deck is absent from the entry list — source-deleted.
+    mockEntries = [entry("survivor", "Survivor", "source")];
+    mockPendingActions = { gamma: pendingFor("gamma", "delete") };
+    await renderAdmin();
+    await waitFor(() =>
+      expect(mockReconcile).toHaveBeenCalledWith("gamma", "deleted"),
+    );
+  });
+
+  it("does NOT reconcile a stale pending archive (source still active)", async () => {
+    // PR is still open: the source hasn't caught up yet. Marker
+    // expects archived but source is active. Effect must not fire.
+    mockEntries = [entry("alpha", "Alpha", "source")];
+    mockPendingActions = { alpha: pendingFor("alpha", "archive") };
+    await renderAdmin();
+    // Give the effect a chance to run before asserting non-call.
+    await new Promise((r) => setTimeout(r, 20));
+    expect(mockReconcile).not.toHaveBeenCalled();
+  });
+
+  it("does NOT reconcile a stale pending restore (source still archived)", async () => {
+    mockEntries = [
+      entry("beta", "Beta", "source", "public", { archived: true }),
+    ];
+    mockPendingActions = { beta: pendingFor("beta", "restore") };
+    await renderAdmin();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(mockReconcile).not.toHaveBeenCalled();
+  });
+
+  it("does NOT reconcile a stale pending delete (source still present)", async () => {
+    mockEntries = [
+      entry("gamma", "Gamma", "source", "public", { archived: true }),
+    ];
+    mockPendingActions = { gamma: pendingFor("gamma", "delete") };
+    await renderAdmin();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(mockReconcile).not.toHaveBeenCalled();
+  });
+
+  it("does NOT fire reconcile for KV-backed decks (lifecycle is immediate, no source PR)", async () => {
+    mockEntries = [entry("kv-deck", "KV Deck", "kv")];
+    mockPendingActions = { "kv-deck": pendingFor("kv-deck", "archive") };
+    await renderAdmin();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(mockReconcile).not.toHaveBeenCalled();
+  });
+
+  it("does not duplicate reconcile calls across re-renders for the same slug", async () => {
+    // The reconcile fires a single time even when the effect deps
+    // change (e.g. unrelated re-render). The in-flight guard tracks
+    // the slug until the promise resolves.
+    type Resolver = (v: { reconciled: boolean }) => void;
+    const resolverRef: { current: Resolver | null } = { current: null };
+    mockReconcile.mockImplementationOnce(
+      () =>
+        new Promise<{ reconciled: boolean }>((res) => {
+          resolverRef.current = res;
+        }),
+    );
+    mockEntries = [
+      entry("alpha", "Alpha", "source", "public", { archived: true }),
+    ];
+    mockPendingActions = { alpha: pendingFor("alpha", "archive") };
+    const AdminIndex = await loadAdminIndex();
+    const view = render(
+      <SettingsProvider>
+        <MemoryRouter>
+          <AdminIndex />
+        </MemoryRouter>
+      </SettingsProvider>,
+    );
+    await waitFor(() =>
+      expect(mockReconcile).toHaveBeenCalledTimes(1),
+    );
+    // Force a re-render: mutate the mock entries to add an unrelated
+    // row, then re-render the same tree. The mocked hook returns the
+    // current `mockEntries`, so the AdminIndex effect re-runs — and
+    // the guard must suppress the duplicate reconcile call for the
+    // already-in-flight slug.
+    mockEntries = [
+      entry("alpha", "Alpha", "source", "public", { archived: true }),
+      entry("filler", "Filler", "source"),
+    ];
+    view.rerender(
+      <SettingsProvider>
+        <MemoryRouter>
+          <AdminIndex />
+        </MemoryRouter>
+      </SettingsProvider>,
+    );
+    await new Promise((r) => setTimeout(r, 20));
+    expect(mockReconcile).toHaveBeenCalledTimes(1);
+    // Resolve the in-flight promise so React state updates settle
+    // before test teardown.
+    resolverRef.current?.({ reconciled: true });
   });
 });

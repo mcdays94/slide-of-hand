@@ -24,11 +24,23 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import type { PendingSourceAction } from "./pending-source-actions";
+import type {
+  PendingSourceAction,
+  PendingSourceActionExpectedState,
+} from "./pending-source-actions";
 import { adminWriteHeaders } from "./admin-fetch";
 
 export interface PendingSourceActionMap {
   [slug: string]: PendingSourceAction;
+}
+
+export interface ReconcileResult {
+  /** True if the server cleared the pending record on this call. */
+  reconciled: boolean;
+  /** Action recorded by the pending marker (when reconciled). */
+  action?: PendingSourceAction["action"];
+  /** KV keys the server reports as cleaned up (delete reconcile only). */
+  cleared?: string[];
 }
 
 export interface UsePendingSourceActionsResult {
@@ -52,6 +64,22 @@ export interface UsePendingSourceActionsResult {
    * failure). Never throws — refetch is best-effort.
    */
   refetch: () => Promise<void>;
+  /**
+   * Reconcile the pending marker for `slug` against the deployed
+   * source state the caller has observed (issue #250). Fires
+   * `POST /api/admin/deck-source-actions/<slug>/reconcile` with
+   * `{ sourceState }`; when the server reports `reconciled: true`,
+   * the local map drops the entry so the admin projection stops
+   * showing a pending pill.
+   *
+   * Best-effort — failures are swallowed and the local map stays as
+   * it was. The next render that still finds the entry pending +
+   * the source state matching will retry on its own.
+   */
+  reconcile: (
+    slug: string,
+    sourceState: PendingSourceActionExpectedState,
+  ) => Promise<ReconcileResult>;
 }
 
 interface PendingSourceActionsResponse {
@@ -128,5 +156,53 @@ export function usePendingSourceActions(): UsePendingSourceActionsResult {
     });
   }, []);
 
-  return { actions, isLoading, clearPending, refetch };
+  /**
+   * Issue #250 — reconcile a pending marker against deployed source
+   * state. The Worker (re)validates the persisted `expectedState`
+   * matches the asserted `sourceState`; on a server-side match the
+   * pending record is cleared (plus source-delete side data for a
+   * delete reconcile). The local map then drops the entry so the
+   * admin projection stops surfacing a pill.
+   *
+   * Errors are swallowed: the next render still sees the entry and
+   * (assuming the source state still matches) will retry. We avoid
+   * throwing here because reconciliation is a background concern, not
+   * a user-initiated action.
+   */
+  const reconcile = useCallback(
+    async (
+      slug: string,
+      sourceState: PendingSourceActionExpectedState,
+    ): Promise<ReconcileResult> => {
+      try {
+        const res = await fetch(
+          `/api/admin/deck-source-actions/${encodeURIComponent(slug)}/reconcile`,
+          {
+            method: "POST",
+            headers: {
+              ...adminWriteHeaders(),
+              "content-type": "application/json",
+            },
+            body: JSON.stringify({ sourceState }),
+          },
+        );
+        if (!res.ok) return { reconciled: false };
+        const body = (await res.json()) as ReconcileResult;
+        if (body?.reconciled === true) {
+          setActions((prev) => {
+            if (!(slug in prev)) return prev;
+            const next = { ...prev };
+            delete next[slug];
+            return next;
+          });
+        }
+        return body ?? { reconciled: false };
+      } catch {
+        return { reconciled: false };
+      }
+    },
+    [],
+  );
+
+  return { actions, isLoading, clearPending, refetch, reconcile };
 }
