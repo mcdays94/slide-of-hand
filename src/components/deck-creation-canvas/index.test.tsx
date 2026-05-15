@@ -10,8 +10,9 @@
  * Issue #178 sub-pieces (1) + (3).
  */
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -520,6 +521,170 @@ describe("<DeckCreationCanvas> — syntax highlighting", () => {
     );
     await waitFor(() => {
       expect(highlightSpy).toHaveBeenCalledWith("export default {};", "tsx");
+    });
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// `ai_gen` empty-state progress overlay.
+//
+// During `ai_gen` the model runs `generateObject` single-shot — no files land
+// for ~1-3 minutes, then all files appear at once. The canvas used to look
+// dead for the whole window. The overlay below replaces the empty file-tree
+// grid with a clear "Composing your deck" indicator + elapsed timer so the
+// user knows the AI is working. See ComposingOverlay.tsx.
+// ────────────────────────────────────────────────────────────────────────────
+describe("<DeckCreationCanvas> — ai_gen composing overlay", () => {
+  it("renders the composing overlay when phase === 'ai_gen' AND files is empty", () => {
+    const messages = [
+      msgWithSnapshot({
+        phase: "ai_gen",
+        files: [],
+      }),
+    ];
+    render(<DeckCreationCanvas messages={messages} />);
+
+    const overlay = screen.getByTestId("deck-creation-composing-overlay");
+    expect(overlay).toBeDefined();
+    expect(screen.getByText(/Composing your deck/i)).toBeDefined();
+    expect(screen.getByText(/Typically 1-3 minutes/i)).toBeDefined();
+  });
+
+  it("renders the PhaseStrip alongside the overlay so the user still sees ai_gen as active", () => {
+    const messages = [
+      msgWithSnapshot({
+        phase: "ai_gen",
+        files: [],
+      }),
+    ];
+    render(<DeckCreationCanvas messages={messages} />);
+
+    // PhaseStrip remains visible above the overlay.
+    expect(screen.getByTestId("deck-creation-phase-strip")).toBeDefined();
+    expect(
+      screen
+        .getByTestId("deck-creation-phase-chip-ai_gen")
+        .getAttribute("data-state"),
+    ).toBe("current");
+
+    // The grid (file tree + content) is hidden during this state — the
+    // overlay takes over the body area. The tree's testid (which the file-
+    // list tests above rely on) is not in the DOM.
+    expect(
+      screen.queryByTestId(
+        "deck-creation-file-tree-item-src/decks/public/my/meta.ts",
+      ),
+    ).toBeNull();
+  });
+
+  it("does NOT render the composing overlay once files start to land", () => {
+    const messages = [
+      msgWithSnapshot({
+        phase: "ai_gen",
+        files: [
+          {
+            path: "src/decks/public/my/meta.ts",
+            content: "export const meta = {};",
+            state: "writing",
+          },
+        ],
+        currentFile: "src/decks/public/my/meta.ts",
+      }),
+    ];
+    render(<DeckCreationCanvas messages={messages} slug="my" />);
+
+    expect(
+      screen.queryByTestId("deck-creation-composing-overlay"),
+    ).toBeNull();
+  });
+
+  it("does NOT render the composing overlay in any non-ai_gen phase, even with empty files", () => {
+    const messages = [
+      msgWithSnapshot({
+        phase: "clone",
+        files: [],
+      }),
+    ];
+    render(<DeckCreationCanvas messages={messages} />);
+
+    expect(
+      screen.queryByTestId("deck-creation-composing-overlay"),
+    ).toBeNull();
+  });
+
+  describe("elapsed timer", () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("starts at 0:00 and advances every second in mm:ss format", () => {
+      const messages = [
+        msgWithSnapshot({
+          phase: "ai_gen",
+          files: [],
+        }),
+      ];
+      render(<DeckCreationCanvas messages={messages} />);
+
+      const timer = screen.getByTestId("deck-creation-composing-timer");
+      expect(timer.textContent).toBe("0:00");
+
+      act(() => {
+        vi.advanceTimersByTime(1000);
+      });
+      expect(timer.textContent).toBe("0:01");
+
+      act(() => {
+        vi.advanceTimersByTime(22_000);
+      });
+      expect(timer.textContent).toBe("0:23");
+
+      act(() => {
+        vi.advanceTimersByTime(60_000);
+      });
+      expect(timer.textContent).toBe("1:23");
+    });
+
+    it("resets to 0:00 when the overlay re-mounts (new ai_gen with empty files)", () => {
+      const composing = msgWithSnapshot({
+        phase: "ai_gen",
+        files: [],
+      });
+      const populated = msgWithSnapshot({
+        phase: "ai_gen",
+        files: [
+          {
+            path: "src/decks/public/my/meta.ts",
+            content: "...",
+            state: "done",
+          },
+        ],
+      });
+
+      const view = render(<DeckCreationCanvas messages={[composing]} />);
+      act(() => {
+        vi.advanceTimersByTime(5000);
+      });
+      expect(
+        screen.getByTestId("deck-creation-composing-timer").textContent,
+      ).toBe("0:05");
+
+      // Files land — overlay unmounts.
+      view.rerender(<DeckCreationCanvas messages={[populated]} slug="my" />);
+      expect(
+        screen.queryByTestId("deck-creation-composing-timer"),
+      ).toBeNull();
+
+      // A second generation kicks off (e.g. iteration on a new draft) —
+      // overlay remounts, timer should restart from 0:00 (not pick up
+      // the prior 0:05).
+      view.rerender(<DeckCreationCanvas messages={[composing]} />);
+      expect(
+        screen.getByTestId("deck-creation-composing-timer").textContent,
+      ).toBe("0:00");
     });
   });
 });

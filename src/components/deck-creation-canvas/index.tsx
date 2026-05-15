@@ -26,6 +26,7 @@ import { PhaseStrip } from "./PhaseStrip";
 import { FileTree } from "./FileTree";
 import { FileContent } from "./FileContent";
 import { ErrorOverlay } from "./ErrorOverlay";
+import { ComposingOverlay } from "./ComposingOverlay";
 
 export interface DeckCreationCanvasProps {
   messages: ReadonlyArray<DeckCreationMessage>;
@@ -136,6 +137,13 @@ export function DeckCreationCanvas({
   const isErrored = snapshot.phase === "error";
   const slug = slugProp ?? inferSlug(snapshot.files);
 
+  // During the silent `ai_gen` window — `generateObject` runs single-shot
+  // and emits no files for ~1-3 min — replace the empty file-tree grid
+  // with the composing overlay. PhaseStrip stays above so the user still
+  // sees `ai_gen` as the active phase. See ComposingOverlay.tsx.
+  const isComposing =
+    snapshot.phase === "ai_gen" && snapshot.files.length === 0;
+
   return (
     <div
       data-testid="deck-creation-canvas"
@@ -153,18 +161,22 @@ export function DeckCreationCanvas({
           {...(onRetry ? { onRetry } : {})}
         />
       ) : null}
-      <div className="grid flex-1 grid-cols-[minmax(180px,_240px)_1fr] gap-4 overflow-hidden">
-        <aside className="overflow-y-auto rounded-lg border border-cf-text/10 bg-cf-bg-100 p-2">
-          <FileTree
-            files={snapshot.files}
-            slug={slug}
-            {...(activeFile?.path ? { activePath: activeFile.path } : {})}
-          />
-        </aside>
-        <section className="overflow-hidden rounded-lg border border-cf-text/10 bg-cf-bg-100">
-          <FileContent file={fileToShow} slug={slug} />
-        </section>
-      </div>
+      {isComposing ? (
+        <ComposingOverlay />
+      ) : (
+        <div className="grid flex-1 grid-cols-[minmax(180px,_240px)_1fr] gap-4 overflow-hidden">
+          <aside className="overflow-y-auto rounded-lg border border-cf-text/10 bg-cf-bg-100 p-2">
+            <FileTree
+              files={snapshot.files}
+              slug={slug}
+              {...(activeFile?.path ? { activePath: activeFile.path } : {})}
+            />
+          </aside>
+          <section className="overflow-hidden rounded-lg border border-cf-text/10 bg-cf-bg-100">
+            <FileContent file={fileToShow} slug={slug} />
+          </section>
+        </div>
+      )}
     </div>
   );
 }
