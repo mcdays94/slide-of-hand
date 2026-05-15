@@ -67,6 +67,31 @@ vi.mock("@/lib/use-pending-source-actions", () => ({
   }),
 }));
 
+// Mutable GitHub OAuth connection state (issue #251). The hook is
+// re-read every render so a test can mutate `mockGitHubState` before
+// the next interaction to simulate post-OAuth state transitions.
+//
+// Default state is "disconnected" because that's the most common path
+// (a fresh admin without OAuth setup) AND it's the path the gate must
+// guard. Tests covering the legacy "not yet wired" stub error must
+// explicitly set state="connected" to get past the gate.
+let mockGitHubState: "checking" | "connected" | "disconnected" =
+  "disconnected";
+const mockGitHubRefetch = vi.fn();
+const mockGitHubDisconnect = vi.fn();
+
+vi.mock("@/lib/use-github-oauth", () => ({
+  useGitHubOAuth: () => ({
+    state: mockGitHubState,
+    username: mockGitHubState === "connected" ? "alice-gh" : null,
+    scopes: [],
+    connectedAt: null,
+    refetch: mockGitHubRefetch,
+    disconnect: mockGitHubDisconnect,
+    startUrl: () => "/api/admin/auth/github/start?returnTo=%2Fadmin",
+  }),
+}));
+
 const ORIGINAL_HOSTNAME = window.location.hostname;
 function setHostname(value: string) {
   Object.defineProperty(window.location, "hostname", {
@@ -105,6 +130,12 @@ beforeEach(() => {
   mockEntries = [];
   mockPendingActions = {};
   mockClearPending.mockClear();
+  // Default GitHub OAuth state is "disconnected" so the new source
+  // lifecycle gate (#251) intercepts by default. Tests covering the
+  // legacy "not yet wired" stub error explicitly flip to "connected".
+  mockGitHubState = "disconnected";
+  mockGitHubRefetch.mockClear();
+  mockGitHubDisconnect.mockClear();
   window.localStorage.clear();
 });
 
@@ -131,7 +162,10 @@ describe("AdminIndex — delete affordance gating (#130, updated by #244)", () =
     expect(screen.getByTestId("lifecycle-menu-delete-kv-deck")).toBeDefined();
   });
 
-  it("build-time (source) active decks do NOT include a Delete menu item", async () => {
+  it("build-time (source) active decks DO include a Delete menu item now (gated by typed-slug + GitHub gate, #251)", async () => {
+    // Pre-#251 contract was "Source decks have no Delete affordance".
+    // Issue #251 lifts that block — source Delete is now exposed but
+    // gated by the typed-slug confirm AND the GitHub connect gate.
     mockEntries = [entry("hello", "Hello", "source")];
     const AdminIndex = await loadAdminIndex();
     render(
@@ -139,13 +173,11 @@ describe("AdminIndex — delete affordance gating (#130, updated by #244)", () =
         <AdminIndex />
       </MemoryRouter>,
     );
-    // Source decks still get a lifecycle menu (Archive is wired) but
-    // Delete is not present.
     fireEvent.click(screen.getByTestId("lifecycle-menu-trigger-hello"));
-    expect(screen.queryByTestId("lifecycle-menu-delete-hello")).toBeNull();
+    expect(screen.getByTestId("lifecycle-menu-delete-hello")).toBeDefined();
   });
 
-  it("renders Delete ONLY for the KV row in a mixed list", async () => {
+  it("renders Delete for BOTH source and KV rows in a mixed list (#251)", async () => {
     mockEntries = [
       entry("hello", "Hello", "source"),
       entry("kv-deck", "KV Deck", "kv"),
@@ -157,7 +189,7 @@ describe("AdminIndex — delete affordance gating (#130, updated by #244)", () =
       </MemoryRouter>,
     );
     fireEvent.click(screen.getByTestId("lifecycle-menu-trigger-hello"));
-    expect(screen.queryByTestId("lifecycle-menu-delete-hello")).toBeNull();
+    expect(screen.getByTestId("lifecycle-menu-delete-hello")).toBeDefined();
     fireEvent.click(screen.getByTestId("lifecycle-menu-trigger-kv-deck"));
     expect(screen.getByTestId("lifecycle-menu-delete-kv-deck")).toBeDefined();
   });
@@ -643,12 +675,11 @@ describe("AdminIndex — Archived section (#243)", () => {
     ).toBeNull();
   });
 
-  it("archived source decks expose Restore (not Delete) in the lifecycle menu (#244)", async () => {
-    // Source decks do not yet have a runtime Delete backend
-    // (PR #247-249 ship the GitHub PR flow). The Restore action
-    // still appears via the UI shell — its real backend is staged
-    // for a later slice and the stub surfaces an inline error if the
-    // user confirms.
+  it("archived source decks expose Restore AND Delete in the lifecycle menu (#251 lifts the prior Delete block)", async () => {
+    // Issue #244 originally hid Delete on source decks because
+    // there was no backend. Issue #251 introduces a GitHub-PR-backed
+    // source-action flow (gated by the connect gate when GitHub is
+    // not connected) and exposes Delete on source rows.
     mockEntries = [
       entry("retired-source", "Retired Source", "source", "public", {
         archived: true,
@@ -662,16 +693,16 @@ describe("AdminIndex — Archived section (#243)", () => {
       screen.getByTestId("lifecycle-menu-restore-retired-source"),
     ).toBeDefined();
     expect(
-      screen.queryByTestId("lifecycle-menu-delete-retired-source"),
-    ).toBeNull();
+      screen.getByTestId("lifecycle-menu-delete-retired-source"),
+    ).toBeDefined();
   });
 
-  it("active source decks expose Archive (not Delete) in the lifecycle menu (#244)", async () => {
+  it("active source decks expose Archive AND Delete in the lifecycle menu (#251)", async () => {
     mockEntries = [entry("hello", "Hello", "source")];
     await renderAdmin();
     fireEvent.click(screen.getByTestId("lifecycle-menu-trigger-hello"));
     expect(screen.getByTestId("lifecycle-menu-archive-hello")).toBeDefined();
-    expect(screen.queryByTestId("lifecycle-menu-delete-hello")).toBeNull();
+    expect(screen.getByTestId("lifecycle-menu-delete-hello")).toBeDefined();
   });
 
   it("active KV decks expose Archive + Delete in the lifecycle menu (#244)", async () => {
@@ -792,7 +823,11 @@ describe("AdminIndex — Archived section (#243)", () => {
     expect(screen.queryByTestId("admin-archived-section")).toBeNull();
   });
 
-  it("source-backed Archive: does NOT hit the KV endpoint and surfaces a 'not yet wired' inline error", async () => {
+  it("source-backed Archive (GitHub connected): does NOT hit the KV endpoint and surfaces a 'not yet wired' inline error", async () => {
+    // Issue #251 — when GitHub is connected, the source-backed
+    // archive path falls through to the existing stub error. The
+    // connect gate only intercepts when state !== "connected".
+    mockGitHubState = "connected";
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
 
@@ -810,9 +845,12 @@ describe("AdminIndex — Archived section (#243)", () => {
     );
     // Crucial: no KV endpoint call leaks for a source-backed deck.
     expect(fetchMock).not.toHaveBeenCalled();
+    // And the GitHub gate did NOT open — the user is already connected.
+    expect(screen.queryByTestId("github-connect-gate")).toBeNull();
   });
 
-  it("source-backed Restore: does NOT hit the KV endpoint and surfaces a 'not yet wired' inline error", async () => {
+  it("source-backed Restore (GitHub connected): does NOT hit the KV endpoint and surfaces a 'not yet wired' inline error", async () => {
+    mockGitHubState = "connected";
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
 
@@ -837,6 +875,7 @@ describe("AdminIndex — Archived section (#243)", () => {
       ),
     );
     expect(fetchMock).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("github-connect-gate")).toBeNull();
   });
 
   it("KV archived Delete: uses the typed-slug dialog from the Archived section and removes the card", async () => {
@@ -1028,5 +1067,299 @@ describe("AdminIndex — pending source actions (#246)", () => {
     await renderAdmin();
     const pill = screen.getByTestId("pending-action-alpha");
     expect(pill.getAttribute("data-pending-action")).toBe("delete");
+  });
+});
+
+// ─── GitHub connect gate for source lifecycle actions (#251) ─────────
+// Source-backed deck lifecycle actions (Archive / Restore / Delete)
+// open GitHub draft PRs. If the user is not GitHub-connected, the
+// admin must show an app-native gate explaining the dependency. KV-
+// backed lifecycle actions DO NOT pass through the gate.
+describe("AdminIndex — GitHub connect gate for source actions (#251)", () => {
+  async function renderAdmin() {
+    const AdminIndex = await loadAdminIndex();
+    return render(
+      <SettingsProvider>
+        <MemoryRouter>
+          <AdminIndex />
+        </MemoryRouter>
+      </SettingsProvider>,
+    );
+  }
+
+  it("source-backed Archive without GitHub connected: opens the gate and does NOT call the lifecycle backend", async () => {
+    mockGitHubState = "disconnected";
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    mockEntries = [entry("hello", "Hello", "source")];
+    await renderAdmin();
+
+    fireEvent.click(screen.getByTestId("lifecycle-menu-trigger-hello"));
+    fireEvent.click(screen.getByTestId("lifecycle-menu-archive-hello"));
+    fireEvent.click(screen.getByTestId("confirm-dialog-confirm"));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("github-connect-gate")).toBeDefined(),
+    );
+    // Nothing should have hit the network.
+    expect(fetchMock).not.toHaveBeenCalled();
+    // And the confirmation dialog should close cleanly (framer-motion's
+    // AnimatePresence exits the panel over ~150ms; waitFor lets the
+    // exit complete before we assert).
+    await waitFor(() =>
+      expect(screen.queryByTestId("confirm-dialog")).toBeNull(),
+    );
+  });
+
+  it("source-backed Restore without GitHub connected: opens the gate and does NOT call the lifecycle backend", async () => {
+    mockGitHubState = "disconnected";
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    mockEntries = [
+      entry("retired-source", "Retired Source", "source", "public", {
+        archived: true,
+      }),
+    ];
+    await renderAdmin();
+
+    fireEvent.click(
+      screen.getByTestId("lifecycle-menu-trigger-retired-source"),
+    );
+    fireEvent.click(
+      screen.getByTestId("lifecycle-menu-restore-retired-source"),
+    );
+    fireEvent.click(screen.getByTestId("confirm-dialog-confirm"));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("github-connect-gate")).toBeDefined(),
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("source-backed Delete without GitHub connected: opens the gate AFTER typed-slug confirmation", async () => {
+    mockGitHubState = "disconnected";
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    // Source decks now expose Delete via the menu (gated by the
+    // typed-slug guard, then by the GitHub gate). Use an active
+    // source deck so the menu surfaces Delete.
+    mockEntries = [entry("hello", "Hello", "source")];
+    await renderAdmin();
+
+    fireEvent.click(screen.getByTestId("lifecycle-menu-trigger-hello"));
+    fireEvent.click(screen.getByTestId("lifecycle-menu-delete-hello"));
+    // Type the slug so the destructive confirm enables.
+    fireEvent.change(screen.getByTestId("typed-slug-input"), {
+      target: { value: "hello" },
+    });
+    fireEvent.click(screen.getByTestId("confirm-dialog-confirm"));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("github-connect-gate")).toBeDefined(),
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("gate contains explanatory copy and a Connect GitHub CTA pointing at the OAuth start URL", async () => {
+    mockGitHubState = "disconnected";
+    mockEntries = [entry("hello", "Hello", "source")];
+    await renderAdmin();
+
+    fireEvent.click(screen.getByTestId("lifecycle-menu-trigger-hello"));
+    fireEvent.click(screen.getByTestId("lifecycle-menu-archive-hello"));
+    fireEvent.click(screen.getByTestId("confirm-dialog-confirm"));
+
+    const gate = await waitFor(() =>
+      screen.getByTestId("github-connect-gate"),
+    );
+    // Explanatory copy mentions draft PRs (the reason GitHub is needed).
+    expect(gate.textContent).toMatch(/draft PR/i);
+    // Action label + deck title appear in the body so the user
+    // remembers what they were trying to do.
+    expect(gate.textContent).toMatch(/archive/i);
+    expect(gate.textContent).toMatch(/Hello/);
+    // Connect CTA carries the OAuth start URL.
+    const connect = screen.getByTestId(
+      "github-connect-gate-connect",
+    ) as HTMLAnchorElement;
+    expect(connect.tagName).toBe("A");
+    expect(connect.getAttribute("href")).toContain(
+      "/api/admin/auth/github/start",
+    );
+  });
+
+  it("KV-backed Archive does NOT open the gate (and continues to hit the KV endpoint)", async () => {
+    mockGitHubState = "disconnected";
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({}),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    mockEntries = [entry("kv-deck", "KV Deck", "kv")];
+    await renderAdmin();
+
+    fireEvent.click(screen.getByTestId("lifecycle-menu-trigger-kv-deck"));
+    fireEvent.click(screen.getByTestId("lifecycle-menu-archive-kv-deck"));
+    fireEvent.click(screen.getByTestId("confirm-dialog-confirm"));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "/api/admin/decks/kv-deck/archive",
+    );
+    // Gate must NOT open for KV lifecycle actions.
+    expect(screen.queryByTestId("github-connect-gate")).toBeNull();
+  });
+
+  it("KV-backed Restore does NOT open the gate", async () => {
+    mockGitHubState = "disconnected";
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({}),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    mockEntries = [
+      entry("retired-kv", "Retired KV", "kv", "public", {
+        archived: true,
+      }),
+    ];
+    await renderAdmin();
+
+    fireEvent.click(screen.getByTestId("lifecycle-menu-trigger-retired-kv"));
+    fireEvent.click(screen.getByTestId("lifecycle-menu-restore-retired-kv"));
+    fireEvent.click(screen.getByTestId("confirm-dialog-confirm"));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "/api/admin/decks/retired-kv/restore",
+    );
+    expect(screen.queryByTestId("github-connect-gate")).toBeNull();
+  });
+
+  it("KV-backed Delete does NOT open the gate", async () => {
+    mockGitHubState = "disconnected";
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 204 });
+    vi.stubGlobal("fetch", fetchMock);
+
+    mockEntries = [entry("kv-deck", "KV Deck", "kv")];
+    await renderAdmin();
+
+    fireEvent.click(screen.getByTestId("lifecycle-menu-trigger-kv-deck"));
+    fireEvent.click(screen.getByTestId("lifecycle-menu-delete-kv-deck"));
+    fireEvent.change(screen.getByTestId("typed-slug-input"), {
+      target: { value: "kv-deck" },
+    });
+    fireEvent.click(screen.getByTestId("confirm-dialog-confirm"));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/admin/decks/kv-deck");
+    expect(screen.queryByTestId("github-connect-gate")).toBeNull();
+  });
+
+  it("Cancel on the gate closes it (and does not call the backend)", async () => {
+    mockGitHubState = "disconnected";
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    mockEntries = [entry("hello", "Hello", "source")];
+    await renderAdmin();
+
+    fireEvent.click(screen.getByTestId("lifecycle-menu-trigger-hello"));
+    fireEvent.click(screen.getByTestId("lifecycle-menu-archive-hello"));
+    fireEvent.click(screen.getByTestId("confirm-dialog-confirm"));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("github-connect-gate")).toBeDefined(),
+    );
+    fireEvent.click(screen.getByTestId("github-connect-gate-cancel"));
+    await waitFor(() =>
+      expect(screen.queryByTestId("github-connect-gate")).toBeNull(),
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("Retry path: after status flips to connected, Retry re-invokes the source action (which surfaces the 'not wired' error inline)", async () => {
+    mockGitHubState = "disconnected";
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    mockEntries = [entry("hello", "Hello", "source")];
+    const { rerender } = await renderAdmin();
+
+    fireEvent.click(screen.getByTestId("lifecycle-menu-trigger-hello"));
+    fireEvent.click(screen.getByTestId("lifecycle-menu-archive-hello"));
+    fireEvent.click(screen.getByTestId("confirm-dialog-confirm"));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("github-connect-gate")).toBeDefined(),
+    );
+
+    // Simulate the user completing OAuth in another tab: the hook's
+    // internal state flips to "connected" and React re-renders the
+    // AdminIndex on the next commit. In a unit test, we flip the
+    // mocked state and force a re-render via the testing-library
+    // `rerender` API.
+    mockGitHubState = "connected";
+    const AdminIndex = await loadAdminIndex();
+    rerender(
+      <SettingsProvider>
+        <MemoryRouter>
+          <AdminIndex />
+        </MemoryRouter>
+      </SettingsProvider>,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("github-connect-gate-retry")).toBeDefined(),
+    );
+
+    fireEvent.click(screen.getByTestId("github-connect-gate-retry"));
+    // The retry surfaces the "not wired" error inside the gate
+    // because the source-backed archive backend has not landed yet.
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("github-connect-gate-error").textContent,
+      ).toMatch(/not wired|follow-up/i),
+    );
+    // No KV endpoint call leaked — source actions never touch KV.
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("does NOT call window.confirm anywhere in the source-gate flow", async () => {
+    mockGitHubState = "disconnected";
+    const confirmSpy = vi
+      .spyOn(window, "confirm")
+      .mockImplementation(() => true);
+    vi.stubGlobal("fetch", vi.fn());
+
+    mockEntries = [entry("hello", "Hello", "source")];
+    await renderAdmin();
+
+    fireEvent.click(screen.getByTestId("lifecycle-menu-trigger-hello"));
+    fireEvent.click(screen.getByTestId("lifecycle-menu-archive-hello"));
+    fireEvent.click(screen.getByTestId("confirm-dialog-confirm"));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("github-connect-gate")).toBeDefined(),
+    );
+    fireEvent.click(screen.getByTestId("github-connect-gate-cancel"));
+    expect(confirmSpy).not.toHaveBeenCalled();
+    confirmSpy.mockRestore();
+  });
+
+  it("active source decks now expose Delete in the lifecycle menu (gated by typed-slug + GitHub gate)", async () => {
+    // Issue #251 lifts the previous block on Delete for source decks.
+    // The destructive action is now gated by two layers: typed-slug
+    // confirmation, then the GitHub connect gate.
+    mockEntries = [entry("hello", "Hello", "source")];
+    await renderAdmin();
+    fireEvent.click(screen.getByTestId("lifecycle-menu-trigger-hello"));
+    expect(screen.getByTestId("lifecycle-menu-delete-hello")).toBeDefined();
   });
 });

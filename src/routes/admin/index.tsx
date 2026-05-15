@@ -62,9 +62,30 @@ import {
   DeckCardGrid,
   type DeckCardGridItem,
 } from "@/components/DeckCardGrid";
+import {
+  GitHubConnectGate,
+  type GitHubConnectGateIntent,
+  type SourceLifecycleAction,
+} from "@/components/GitHubConnectGate";
 import { useSettings } from "@/framework/viewer/useSettings";
+import { useGitHubOAuth } from "@/lib/use-github-oauth";
 import { usePendingSourceActions } from "@/lib/use-pending-source-actions";
 import type { PendingSourceAction } from "@/lib/pending-source-actions";
+
+/**
+ * Friendly inline error string for source-backed lifecycle actions
+ * whose real backend has not landed yet (PR #247-249). Re-used from
+ * both the legacy stub path and the GitHub connect gate's Retry
+ * surface, so the copy stays consistent.
+ */
+const SOURCE_NOT_WIRED_MESSAGE: Record<SourceLifecycleAction, string> = {
+  archive:
+    "Source archive backend is not wired yet — coming in a follow-up slice.",
+  restore:
+    "Source restore backend is not wired yet — coming in a follow-up slice.",
+  delete:
+    "Source delete backend is not wired yet — coming in a follow-up slice.",
+};
 
 export default function AdminIndex() {
   const { entries } = useAdminDataDeckList();
@@ -76,6 +97,22 @@ export default function AdminIndex() {
   // outcome immediately instead of having to remember which PR they
   // opened. KV-backed decks are NEVER subject to pending projection.
   const { actions: pendingActions, clearPending } = usePendingSourceActions();
+  // GitHub OAuth connection (issue #251). Source-backed lifecycle
+  // actions require the user's GitHub token (we open draft PRs against
+  // the repo). When disconnected, the lifecycle handler routes the
+  // intent through `<GitHubConnectGate>` instead of running the stub.
+  const githubConnection = useGitHubOAuth();
+  // Stored intent for the source lifecycle action that triggered the
+  // gate. Captured on confirm so the Retry button (visible once the
+  // user has connected) can re-run the original action.
+  const [sourceLifecycleIntent, setSourceLifecycleIntent] =
+    useState<GitHubConnectGateIntent | null>(null);
+  // Inline error surfaced on the gate after a failed Retry. The
+  // source-action backends are stubs in this slice so Retry will
+  // currently always surface the SOURCE_NOT_WIRED_MESSAGE.
+  const [sourceLifecycleRetryError, setSourceLifecycleRetryError] = useState<
+    string | null
+  >(null);
   // Local-state list of KV slugs that have been deleted in this session.
   // We optimistically hide them while the admin list refetches via
   // `window.location.reload()` (which fully re-runs the hook). For the
@@ -106,49 +143,6 @@ export default function AdminIndex() {
   const showIdeButton = import.meta.env.DEV && projectRoot.length > 0;
 
   /**
-   * Side effect for a confirmed deletion. Hits the admin DELETE
-   * endpoint, optimistically hides the row on success, then triggers a
-   * full reload so the admin list re-pulls from KV. Throws on failure
-   * so the card's confirm dialog can surface the error inline and let
-   * the user retry without closing.
-   *
-   * The reload is a follow-up — see issue #130's acknowledged TODO: a
-   * cleaner refactor would expose `refetch` from `useAdminDataDeckList`.
-   * Until then, `window.location.reload()` is the cheapest correct
-   * approach.
-   */
-  const handleDelete = useCallback(async (slug: string) => {
-    const res = await fetch(
-      `/api/admin/decks/${encodeURIComponent(slug)}`,
-      {
-        method: "DELETE",
-        headers: adminWriteHeaders(),
-      },
-    );
-    if (!res.ok) {
-      let message = `Failed to delete deck (${res.status})`;
-      try {
-        const body = (await res.json()) as { error?: string };
-        if (body?.error) message = body.error;
-      } catch {
-        /* not JSON — keep generic message */
-      }
-      throw new Error(message);
-    }
-    // Success: optimistically hide the row, then schedule a reload.
-    // We defer the reload so React commits the closed-dialog state
-    // before the page tears down — keeps the visual transition clean.
-    setDeletedSlugs((prev) => {
-      const next = new Set(prev);
-      next.add(slug);
-      return next;
-    });
-    if (typeof window !== "undefined" && window.location?.reload) {
-      setTimeout(() => window.location.reload(), 0);
-    }
-  }, []);
-
-  /**
    * Issue #245: real KV archive / restore for KV-backed decks.
    *
    * Source-backed decks have no runtime mutation surface yet (the
@@ -177,12 +171,49 @@ export default function AdminIndex() {
     [entries],
   );
 
+  /**
+   * Look up a deck's title for the gate's body copy. Falls back to
+   * the slug if the registry entry is gone (shouldn't happen — the
+   * action menu is rooted in the same entry list — but better safe).
+   */
+  const findTitle = useCallback(
+    (slug: string): string => {
+      const found = entries.find((e) => e.meta.slug === slug);
+      return found?.meta.title ?? slug;
+    },
+    [entries],
+  );
+
+  /**
+   * Issue #251 — open the GitHub connect gate for a source-backed
+   * lifecycle action. Returns `true` if the gate intercepted (parent
+   * should resolve cleanly so the existing confirm dialog closes);
+   * `false` means the user is connected and the source stub path
+   * should run. KV decks should NEVER pass through this helper.
+   */
+  const tryOpenSourceGate = useCallback(
+    (action: SourceLifecycleAction, slug: string): boolean => {
+      if (githubConnection.state === "connected") return false;
+      setSourceLifecycleIntent({
+        action,
+        slug,
+        title: findTitle(slug),
+      });
+      setSourceLifecycleRetryError(null);
+      return true;
+    },
+    [githubConnection.state, findTitle],
+  );
+
   const handleArchive = useCallback(
     async (slug: string) => {
       if (findSource(slug) !== "kv") {
-        throw new Error(
-          "Archive backend is not wired yet — coming in a follow-up slice.",
-        );
+        // Source-backed archive: gate on GitHub. If we open the gate
+        // we resolve cleanly (no throw) so the existing confirm
+        // dialog closes — the gate is now the surface for the
+        // remaining intent.
+        if (tryOpenSourceGate("archive", slug)) return;
+        throw new Error(SOURCE_NOT_WIRED_MESSAGE.archive);
       }
       const res = await fetch(
         `/api/admin/decks/${encodeURIComponent(slug)}/archive`,
@@ -200,15 +231,14 @@ export default function AdminIndex() {
       }
       setArchivedOverrides((prev) => ({ ...prev, [slug]: true }));
     },
-    [findSource],
+    [findSource, tryOpenSourceGate],
   );
 
   const handleRestore = useCallback(
     async (slug: string) => {
       if (findSource(slug) !== "kv") {
-        throw new Error(
-          "Restore backend is not wired yet — coming in a follow-up slice.",
-        );
+        if (tryOpenSourceGate("restore", slug)) return;
+        throw new Error(SOURCE_NOT_WIRED_MESSAGE.restore);
       }
       const res = await fetch(
         `/api/admin/decks/${encodeURIComponent(slug)}/restore`,
@@ -226,8 +256,85 @@ export default function AdminIndex() {
       }
       setArchivedOverrides((prev) => ({ ...prev, [slug]: false }));
     },
-    [findSource],
+    [findSource, tryOpenSourceGate],
   );
+
+  /**
+   * Side effect for a confirmed deletion.
+   *
+   * KV decks (issue #130): DELETE /api/admin/decks/<slug>, optimistically
+   * hide the row, schedule a reload.
+   *
+   * Source decks (issue #251): gate on GitHub. If disconnected, the
+   * gate intercepts and the parent dialog closes cleanly. If
+   * connected, fall through to the stub error — the real source-delete
+   * backend ships in a later slice (#247-#249 PR flow).
+   *
+   * The reload for KV decks is a follow-up — see issue #130's
+   * acknowledged TODO: a cleaner refactor would expose `refetch` from
+   * `useAdminDataDeckList`. Until then, `window.location.reload()` is
+   * the cheapest correct approach.
+   */
+  const handleDelete = useCallback(
+    async (slug: string) => {
+      if (findSource(slug) !== "kv") {
+        if (tryOpenSourceGate("delete", slug)) return;
+        throw new Error(SOURCE_NOT_WIRED_MESSAGE.delete);
+      }
+      const res = await fetch(
+        `/api/admin/decks/${encodeURIComponent(slug)}`,
+        {
+          method: "DELETE",
+          headers: adminWriteHeaders(),
+        },
+      );
+      if (!res.ok) {
+        let message = `Failed to delete deck (${res.status})`;
+        try {
+          const body = (await res.json()) as { error?: string };
+          if (body?.error) message = body.error;
+        } catch {
+          /* not JSON — keep generic message */
+        }
+        throw new Error(message);
+      }
+      // Success: optimistically hide the row, then schedule a reload.
+      // We defer the reload so React commits the closed-dialog state
+      // before the page tears down — keeps the visual transition clean.
+      setDeletedSlugs((prev) => {
+        const next = new Set(prev);
+        next.add(slug);
+        return next;
+      });
+      if (typeof window !== "undefined" && window.location?.reload) {
+        setTimeout(() => window.location.reload(), 0);
+      }
+    },
+    [findSource, tryOpenSourceGate],
+  );
+
+  /**
+   * Issue #251 — Retry handler for the GitHub connect gate. Once the
+   * user has connected (the hook's status flips to `"connected"`),
+   * Retry replays the stored source intent. The source backends are
+   * stubs in this slice, so Retry currently surfaces the friendly
+   * "not yet wired" inline error.
+   */
+  const handleSourceLifecycleRetry = useCallback(() => {
+    if (!sourceLifecycleIntent) return;
+    setSourceLifecycleRetryError(
+      SOURCE_NOT_WIRED_MESSAGE[sourceLifecycleIntent.action],
+    );
+  }, [sourceLifecycleIntent]);
+
+  /**
+   * Issue #251 — Cancel / dismiss the gate. Clears both the intent
+   * and any inline retry error so the next open starts clean.
+   */
+  const handleSourceLifecycleCancel = useCallback(() => {
+    setSourceLifecycleIntent(null);
+    setSourceLifecycleRetryError(null);
+  }, []);
 
   // Issue #243: split the merged admin list into Active vs Archived.
   // Archived wins over Draft on placement — a deck with both flags
@@ -310,10 +417,10 @@ export default function AdminIndex() {
   // Archived entries get the same card chrome plus the lifecycle
   // action menu (issue #244). Restore appears on every archived card
   // (the UI surface is universal across source + KV); Delete appears
-  // only on KV-backed archived decks, mirroring the active-side gate
-  // (source decks have no delete backend yet). The IDE link is
-  // dropped — the deck is retired, opening it for editing is not the
-  // intended flow.
+  // on EVERY archived card too as of #251 — source Delete is routed
+  // through the GitHub connect gate when the user is not connected.
+  // The IDE link is dropped — the deck is retired, opening it for
+  // editing is not the intended flow.
   //
   // Issue #246 — source-backed archived rows may carry a pending
   // source action projection. The pending pill renders the same way
@@ -325,7 +432,7 @@ export default function AdminIndex() {
       meta: entry.meta,
       to: `/admin/decks/${entry.meta.slug}`,
       visibility: entry.visibility,
-      canDelete: !isSource,
+      canDelete: true,
       canRestore: true,
       pending: pending
         ? {
@@ -409,6 +516,22 @@ export default function AdminIndex() {
           />
         </section>
       )}
+
+      {/*
+        Issue #251 — GitHub connect gate. Mounted at the route root so
+        it overlays every deck card. Opens when a source-backed
+        lifecycle action runs without a connected GitHub token; closes
+        when the user cancels or successfully retries the intent.
+      */}
+      <GitHubConnectGate
+        isOpen={sourceLifecycleIntent !== null}
+        intent={sourceLifecycleIntent}
+        connectionState={githubConnection.state}
+        startUrl={githubConnection.startUrl()}
+        onCancel={handleSourceLifecycleCancel}
+        onRetry={handleSourceLifecycleRetry}
+        retryError={sourceLifecycleRetryError}
+      />
     </main>
   );
 }
@@ -491,10 +614,13 @@ function toGridItem(
           entry.meta.slug,
         )
       : undefined;
-  // Only KV-backed decks expose the runtime Delete action. Source
-  // decks live in code — deleting them is a `git rm`, not a runtime
-  // API call. (Source Delete via GitHub PR ships in a later slice.)
-  const canDelete = !isSource;
+  // Issue #251 — Delete is now exposed on BOTH KV and source rows.
+  // For KV decks Delete continues to call the runtime DELETE
+  // endpoint (issue #130). For source decks the click is gated by
+  // the typed-slug confirm AND then the GitHub connect gate; once
+  // the source-delete backend lands (#247-#249) the gate's Retry
+  // will invoke the real PR-creating flow.
+  const canDelete = true;
   // Archive is exposed on every active deck via the lifecycle menu
   // (issue #244). The real backend ships in a later slice; this slice
   // only surfaces the UI shape, and the AdminIndex's `handleArchive`
