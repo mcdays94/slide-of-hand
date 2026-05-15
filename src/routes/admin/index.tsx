@@ -50,7 +50,7 @@
  * immediate (PR #245).
  */
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   useAdminDataDeckList,
@@ -71,6 +71,10 @@ import { useSettings } from "@/framework/viewer/useSettings";
 import { useGitHubOAuth } from "@/lib/use-github-oauth";
 import { usePendingSourceActions } from "@/lib/use-pending-source-actions";
 import type { PendingSourceAction } from "@/lib/pending-source-actions";
+import {
+  shouldReconcile,
+  sourceStateForSlug,
+} from "@/lib/pending-source-action-reconcile";
 
 /**
  * Friendly inline error string for source-backed lifecycle actions
@@ -141,6 +145,7 @@ export default function AdminIndex() {
     actions: pendingActions,
     clearPending,
     refetch: refetchPending,
+    reconcile: reconcilePending,
   } = usePendingSourceActions();
   // GitHub OAuth connection (issue #251). Source-backed lifecycle
   // actions require the user's GitHub token (we open draft PRs against
@@ -178,6 +183,54 @@ export default function AdminIndex() {
   const [archivedOverrides, setArchivedOverrides] = useState<
     Record<string, boolean>
   >(() => ({}));
+
+  // Issue #250 — automatic reconciliation of pending source actions.
+  //
+  // The deployed source state is the source of truth: once a draft PR
+  // merges + the redeploy lands, the admin entry list catches up
+  // (source decks move folders, deleted decks vanish entirely). At
+  // that point the pending KV marker is redundant and must be
+  // cleared. We watch `(entries, pendingActions)` and call the
+  // worker's `/reconcile` endpoint for each pending record whose
+  // observed `sourceState` matches the persisted `expectedState`.
+  //
+  // The worker re-validates server-side before clearing — and for a
+  // matched delete, also clears source-delete side data (manifest,
+  // defensive deck record, decks-list entry) BEFORE clearing the
+  // pending record. Archive / restore preserve side data.
+  //
+  // A per-slug "in flight" set prevents the effect from re-firing
+  // the same reconcile request on every render (the hook's local
+  // state update is asynchronous — a strict-mode double-render or a
+  // rapid succession of renders could otherwise issue duplicate
+  // POSTs). Failures clear the slug from the set so a later render
+  // can retry.
+  const reconcileInFlight = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const targets: Array<{
+      slug: string;
+      sourceState: "active" | "archived" | "deleted";
+    }> = [];
+    for (const slug of Object.keys(pendingActions)) {
+      const pending = pendingActions[slug];
+      if (!pending) continue;
+      // Only project against source-backed entries. A pending record
+      // against a KV deck is unreachable in normal flows (admin
+      // projection drops it pre-render) but we re-gate defensively.
+      const entry = entries.find((e) => e.meta.slug === slug);
+      if (entry && (entry.source ?? "source") !== "source") continue;
+      const sourceState = sourceStateForSlug(slug, entries);
+      if (!shouldReconcile(pending, sourceState)) continue;
+      if (reconcileInFlight.current.has(slug)) continue;
+      targets.push({ slug, sourceState });
+    }
+    for (const target of targets) {
+      reconcileInFlight.current.add(target.slug);
+      void reconcilePending(target.slug, target.sourceState).finally(() => {
+        reconcileInFlight.current.delete(target.slug);
+      });
+    }
+  }, [entries, pendingActions, reconcilePending]);
 
   // `__PROJECT_ROOT__` is injected by vite.config.ts: an absolute path in
   // dev (`command === "serve"`), the empty string in production builds.

@@ -528,3 +528,372 @@ describe("handlePendingSourceActions — path coverage", () => {
     expect(res).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------- //
+// POST /reconcile — issue #250 / PRD #242
+// ---------------------------------------------------------------- //
+//
+// `POST /api/admin/deck-source-actions/<slug>/reconcile` clears a
+// pending record when the caller asserts the deployed source state
+// matches the pending action's `expectedState`. The Worker re-checks
+// the stored record server-side; mismatches do NOT clear the marker
+// (defence in depth: a stale client could otherwise force a clear).
+//
+// When the action is `delete` AND the asserted source state is
+// `deleted`, the endpoint additionally clears the deck's
+// source-delete side data (manifest:<slug>, defensive deck:<slug>,
+// decks-list index entry) BEFORE clearing the pending record. If any
+// cleanup step throws the pending record stays put so the next
+// reconcile attempt can retry. Archive / restore reconciliation do
+// NOT touch side data — those actions are reversible.
+
+function makeReconcileEnv(): {
+  env: PendingSourceActionsEnv & {
+    MANIFESTS: KVNamespace;
+    DECKS: KVNamespace;
+  };
+  decksKv: FakeKV;
+  manifestsKv: FakeKV;
+} {
+  const decksKv = new FakeKV();
+  const manifestsKv = new FakeKV();
+  return {
+    env: {
+      DECKS: decksKv as unknown as KVNamespace,
+      MANIFESTS: manifestsKv as unknown as KVNamespace,
+    },
+    decksKv,
+    manifestsKv,
+  };
+}
+
+async function seedPending(
+  env: PendingSourceActionsEnv,
+  payload: { slug: string; action: string; prUrl: string; expectedState: string },
+) {
+  await call(
+    adminRequest(
+      `https://example.com/api/admin/deck-source-actions/${payload.slug}`,
+      {
+        method: "POST",
+        body: JSON.stringify(payload),
+        headers: { "content-type": "application/json" },
+      },
+    ),
+    env,
+  );
+}
+
+function reconcileRequest(
+  slug: string,
+  body: { sourceState: string },
+): Request {
+  return adminRequest(
+    `https://example.com/api/admin/deck-source-actions/${slug}/reconcile`,
+    {
+      method: "POST",
+      body: JSON.stringify(body),
+      headers: { "content-type": "application/json" },
+    },
+  );
+}
+
+describe("POST /api/admin/deck-source-actions/<slug>/reconcile — Access gating", () => {
+  it("returns 403 without an Access header", async () => {
+    const { env } = makeReconcileEnv();
+    const res = await call(
+      new Request(
+        "https://example.com/api/admin/deck-source-actions/hello/reconcile",
+        {
+          method: "POST",
+          body: JSON.stringify({ sourceState: "archived" }),
+          headers: { "content-type": "application/json" },
+        },
+      ),
+      env,
+    );
+    expect(res.status).toBe(403);
+  });
+});
+
+describe("POST /reconcile — preconditions", () => {
+  it("405s on a non-POST method", async () => {
+    const { env } = makeReconcileEnv();
+    const res = await call(
+      adminRequest(
+        "https://example.com/api/admin/deck-source-actions/hello/reconcile",
+        { method: "GET" },
+      ),
+      env,
+    );
+    expect(res.status).toBe(405);
+  });
+
+  it("400s on an invalid slug", async () => {
+    const { env } = makeReconcileEnv();
+    const res = await call(
+      reconcileRequest("Not-A-Slug", { sourceState: "archived" }),
+      env,
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it("400s on invalid JSON body", async () => {
+    const { env } = makeReconcileEnv();
+    const res = await call(
+      adminRequest(
+        "https://example.com/api/admin/deck-source-actions/hello/reconcile",
+        {
+          method: "POST",
+          body: "not-json",
+          headers: { "content-type": "application/json" },
+        },
+      ),
+      env,
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it("400s on an unknown sourceState", async () => {
+    const { env } = makeReconcileEnv();
+    const res = await call(
+      reconcileRequest("hello", { sourceState: "pending-cleanup" }),
+      env,
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it("404s when no pending record exists for the slug", async () => {
+    const { env } = makeReconcileEnv();
+    const res = await call(
+      reconcileRequest("never-existed", { sourceState: "archived" }),
+      env,
+    );
+    expect(res.status).toBe(404);
+  });
+});
+
+describe("POST /reconcile — sourceState mismatch", () => {
+  it("returns 200 { reconciled: false } and leaves the record in place", async () => {
+    const { env, decksKv } = makeReconcileEnv();
+    await seedPending(env, archivePayload("hello"));
+    const res = await call(
+      reconcileRequest("hello", { sourceState: "active" }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { reconciled: boolean };
+    expect(body.reconciled).toBe(false);
+    // Record + index untouched.
+    expect(decksKv.store.get("pending-source-action:hello")).toBeDefined();
+    expect(
+      JSON.parse(decksKv.store.get("pending-source-actions-list")!),
+    ).toEqual(["hello"]);
+  });
+});
+
+describe("POST /reconcile — archive match", () => {
+  it("clears the pending record only (no side-data touched)", async () => {
+    const { env, decksKv, manifestsKv } = makeReconcileEnv();
+    await seedPending(env, archivePayload("hello"));
+    // Pre-seed side data so we can assert it survives reconciliation.
+    await manifestsKv.put("manifest:hello", JSON.stringify({ overrides: {} }));
+    await decksKv.put("deck:hello", JSON.stringify({ meta: {} }));
+
+    const res = await call(
+      reconcileRequest("hello", { sourceState: "archived" }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      reconciled: boolean;
+      action: string;
+      cleared: string[];
+    };
+    expect(body.reconciled).toBe(true);
+    expect(body.action).toBe("archive");
+    // Side data: archive must NOT clear manifest / deck / index entry.
+    expect(manifestsKv.store.get("manifest:hello")).toBeDefined();
+    expect(decksKv.store.get("deck:hello")).toBeDefined();
+    // Pending record + index both cleared.
+    expect(decksKv.store.get("pending-source-action:hello")).toBeUndefined();
+    expect(
+      JSON.parse(decksKv.store.get("pending-source-actions-list")!),
+    ).toEqual([]);
+    // `cleared` enumerates the keys actually deleted — for archive
+    // it's only the pending record + index entry.
+    expect(body.cleared).toContain("pending-source-action:hello");
+    expect(body.cleared).not.toContain("manifest:hello");
+    expect(body.cleared).not.toContain("deck:hello");
+  });
+});
+
+describe("POST /reconcile — restore match", () => {
+  it("clears the pending record only (no side-data touched)", async () => {
+    const { env, decksKv, manifestsKv } = makeReconcileEnv();
+    await seedPending(env, {
+      slug: "hello",
+      action: "restore",
+      prUrl: PR_URL,
+      expectedState: "active",
+    });
+    await manifestsKv.put("manifest:hello", JSON.stringify({ overrides: {} }));
+
+    const res = await call(
+      reconcileRequest("hello", { sourceState: "active" }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      reconciled: boolean;
+      action: string;
+      cleared: string[];
+    };
+    expect(body.reconciled).toBe(true);
+    expect(body.action).toBe("restore");
+    expect(manifestsKv.store.get("manifest:hello")).toBeDefined();
+    expect(decksKv.store.get("pending-source-action:hello")).toBeUndefined();
+    expect(body.cleared).not.toContain("manifest:hello");
+  });
+});
+
+describe("POST /reconcile — delete match", () => {
+  it("clears manifest:<slug>, defensive deck:<slug>, decks-list entry, then the pending record", async () => {
+    const { env, decksKv, manifestsKv } = makeReconcileEnv();
+    await seedPending(env, {
+      slug: "hello",
+      action: "delete",
+      prUrl: PR_URL,
+      expectedState: "deleted",
+    });
+    // Seed side data: manifest + a defensive deck record + the index
+    // entry. The decks-list value mirrors what the public-decks index
+    // would store; only the slug presence matters for cleanup.
+    await manifestsKv.put("manifest:hello", JSON.stringify({ overrides: {} }));
+    await decksKv.put("deck:hello", JSON.stringify({ meta: { slug: "hello" } }));
+    await decksKv.put(
+      "decks-list",
+      JSON.stringify([{ slug: "hello" }, { slug: "world" }]),
+    );
+
+    const res = await call(
+      reconcileRequest("hello", { sourceState: "deleted" }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      reconciled: boolean;
+      action: string;
+      cleared: string[];
+    };
+    expect(body.reconciled).toBe(true);
+    expect(body.action).toBe("delete");
+
+    // Side data cleared.
+    expect(manifestsKv.store.get("manifest:hello")).toBeUndefined();
+    expect(decksKv.store.get("deck:hello")).toBeUndefined();
+    // Index entry for the slug pruned; the other entries survive.
+    const indexAfter = JSON.parse(
+      decksKv.store.get("decks-list")!,
+    ) as Array<{ slug: string }>;
+    expect(indexAfter.find((e) => e.slug === "hello")).toBeUndefined();
+    expect(indexAfter.find((e) => e.slug === "world")).toBeDefined();
+    // Pending record + pending index both cleared.
+    expect(decksKv.store.get("pending-source-action:hello")).toBeUndefined();
+    expect(
+      JSON.parse(decksKv.store.get("pending-source-actions-list")!),
+    ).toEqual([]);
+    expect(body.cleared).toEqual(
+      expect.arrayContaining([
+        "manifest:hello",
+        "deck:hello",
+        "decks-list:hello",
+        "pending-source-action:hello",
+      ]),
+    );
+  });
+
+  it("does not throw when MANIFESTS is not bound (legacy env)", async () => {
+    const decksKv = new FakeKV();
+    const env: PendingSourceActionsEnv = {
+      DECKS: decksKv as unknown as KVNamespace,
+    };
+    await seedPending(env, {
+      slug: "hello",
+      action: "delete",
+      prUrl: PR_URL,
+      expectedState: "deleted",
+    });
+    const res = await call(
+      reconcileRequest("hello", { sourceState: "deleted" }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { reconciled: boolean };
+    expect(body.reconciled).toBe(true);
+    expect(decksKv.store.get("pending-source-action:hello")).toBeUndefined();
+  });
+
+  it("is a no-op when delete side-data was never present", async () => {
+    const { env, decksKv, manifestsKv } = makeReconcileEnv();
+    await seedPending(env, {
+      slug: "lonely",
+      action: "delete",
+      prUrl: PR_URL,
+      expectedState: "deleted",
+    });
+    const res = await call(
+      reconcileRequest("lonely", { sourceState: "deleted" }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { reconciled: boolean };
+    expect(body.reconciled).toBe(true);
+    // Pending record cleared.
+    expect(decksKv.store.get("pending-source-action:lonely")).toBeUndefined();
+    // No side data was ever there — none materialised.
+    expect(manifestsKv.store.get("manifest:lonely")).toBeUndefined();
+    expect(decksKv.store.get("deck:lonely")).toBeUndefined();
+  });
+
+  it("preserves the pending record if manifest cleanup throws", async () => {
+    const { env, decksKv } = makeReconcileEnv();
+    await seedPending(env, {
+      slug: "hello",
+      action: "delete",
+      prUrl: PR_URL,
+      expectedState: "deleted",
+    });
+    // Replace MANIFESTS with a binding whose delete() rejects so the
+    // handler enters its failure path. `get` must return a non-null
+    // value so the handler reaches the `delete` call (the cleanup
+    // guard skips the delete when the key isn't present). The
+    // pending record MUST stay intact so the next reconcile attempt
+    // can retry cleanly.
+    const explodingManifests = {
+      get: async () => JSON.stringify({ overrides: {} }),
+      put: async () => {},
+      delete: async () => {
+        throw new Error("kv unavailable");
+      },
+    } as unknown as KVNamespace;
+    const envWithFault = {
+      ...env,
+      MANIFESTS: explodingManifests,
+    };
+    let threw = false;
+    try {
+      await call(
+        reconcileRequest("hello", { sourceState: "deleted" }),
+        envWithFault,
+      );
+    } catch (err) {
+      threw = true;
+      expect((err as Error).message).toMatch(/kv unavailable/);
+    }
+    // The handler propagates the failure (so the client sees a 500
+    // from the runtime); the pending record is still in KV.
+    expect(threw).toBe(true);
+    expect(decksKv.store.get("pending-source-action:hello")).toBeDefined();
+  });
+});

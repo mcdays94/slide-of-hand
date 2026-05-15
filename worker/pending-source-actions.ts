@@ -66,11 +66,24 @@ import { isValidSlug } from "../src/lib/theme-tokens";
 import {
   validatePendingSourceAction,
   type PendingSourceAction,
+  type PendingSourceActionExpectedState,
 } from "../src/lib/pending-source-actions";
 import { requireAccessAuth } from "./access-auth";
 
 export interface PendingSourceActionsEnv {
   DECKS: KVNamespace;
+}
+
+/**
+ * Side-data env extension (issue #250). Reconciling a pending DELETE
+ * also clears the per-deck manifest record (`manifest:<slug>`) so a
+ * source-deleted deck doesn't leave a manifest override orphan
+ * behind. `MANIFESTS` is optional: legacy envs / tests that only
+ * seed `DECKS` skip manifest cleanup cleanly (KV `delete()` is
+ * idempotent in any case).
+ */
+interface PendingSourceActionsSideDataEnv {
+  MANIFESTS?: KVNamespace;
 }
 
 // ---------------------------------------------------------------- //
@@ -79,9 +92,24 @@ export interface PendingSourceActionsEnv {
 
 const KV_RECORD = (slug: string) => `pending-source-action:${slug}`;
 const KV_INDEX = "pending-source-actions-list";
+/**
+ * Side-data keys cleaned up after a successful pending DELETE
+ * reconciliation (issue #250). Mirrors the constants in `worker/decks.ts`
+ * — duplicated here so this module stays independent of the KV-deck
+ * lifecycle code (which is the right owner for `deck:<slug>` itself).
+ */
+const KV_MANIFEST = (slug: string) => `manifest:${slug}`;
+const KV_DECK = (slug: string) => `deck:${slug}`;
+const KV_DECKS_INDEX = "decks-list";
 
+// `/reconcile` lives under the existing single-item path. Matched
+// BEFORE `ITEM_PATH` so the bare item handler doesn't eat it.
+const RECONCILE_PATH = /^\/api\/admin\/deck-source-actions\/([^/]+)\/reconcile\/?$/;
 const LIST_PATH = /^\/api\/admin\/deck-source-actions\/?$/;
 const ITEM_PATH = /^\/api\/admin\/deck-source-actions\/([^/]+)\/?$/;
+
+const RECONCILE_SOURCE_STATES: ReadonlySet<PendingSourceActionExpectedState> =
+  new Set(["active", "archived", "deleted"]);
 
 const NO_STORE_HEADERS = {
   "content-type": "application/json",
@@ -195,6 +223,157 @@ async function handleClear(
 }
 
 // ---------------------------------------------------------------- //
+// Reconcile (issue #250 / PRD #242)
+// ---------------------------------------------------------------- //
+
+/**
+ * Clear `slug` from the `decks-list` index if present. The index is
+ * the only place a deleted source slug might still appear (the public
+ * decks index is keyed on KV decks, but if a slug ever materialised
+ * there — say via a half-completed New Deck flow — the cleanup path
+ * is the same).
+ *
+ * Returns true iff the slug was actually removed from the index.
+ */
+async function pruneDecksIndex(
+  env: PendingSourceActionsEnv,
+  slug: string,
+): Promise<boolean> {
+  const stored = (await env.DECKS.get(KV_DECKS_INDEX, "json")) as
+    | Array<{ slug: string }>
+    | null;
+  if (!Array.isArray(stored)) return false;
+  const next = stored.filter((entry) => entry && entry.slug !== slug);
+  if (next.length === stored.length) return false;
+  await env.DECKS.put(KV_DECKS_INDEX, JSON.stringify(next));
+  return true;
+}
+
+/**
+ * Reconcile a pending source action against the deployed source state
+ * the client has just observed. The handler re-reads the pending
+ * record, gates the clear on a server-side match between the
+ * persisted `expectedState` and the asserted `sourceState`, and (for
+ * a delete that matched) clears source-delete side data BEFORE
+ * clearing the pending record itself.
+ *
+ * The order matters: if any side-data delete throws we want the
+ * pending record to survive so a later reconcile attempt can retry
+ * the cleanup. KV writes are idempotent so a retry is safe.
+ *
+ * Wire shape:
+ *   request body: { sourceState: "active" | "archived" | "deleted" }
+ *   response (200):
+ *     { reconciled: boolean, action?: PendingSourceActionType,
+ *       cleared?: string[] }
+ *   response (404): no pending record for the slug
+ *   response (400): bad slug / body / sourceState value
+ *
+ * The `cleared` array is the set of KV keys actually deleted on this
+ * reconcile pass. Useful for the admin UI to log what happened and
+ * for tests to make explicit assertions.
+ */
+async function handleReconcile(
+  slug: string,
+  request: Request,
+  env: PendingSourceActionsEnv & PendingSourceActionsSideDataEnv,
+): Promise<Response> {
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return badRequest("invalid JSON body");
+  }
+  if (!body || typeof body !== "object") {
+    return badRequest("body must be an object");
+  }
+  const sourceState = (body as { sourceState?: unknown }).sourceState;
+  if (
+    typeof sourceState !== "string" ||
+    !RECONCILE_SOURCE_STATES.has(sourceState as PendingSourceActionExpectedState)
+  ) {
+    return badRequest(
+      "sourceState must be one of: active, archived, deleted",
+    );
+  }
+  const observedState = sourceState as PendingSourceActionExpectedState;
+
+  const stored = (await env.DECKS.get(
+    KV_RECORD(slug),
+    "json",
+  )) as PendingSourceAction | null;
+  if (!stored) {
+    return new Response(
+      JSON.stringify({ error: "no pending record for slug" }),
+      { status: 404, headers: NO_STORE_HEADERS },
+    );
+  }
+
+  // Server-side authoritative check: the pending record's persisted
+  // `expectedState` must match the asserted `sourceState`. Otherwise
+  // the client and the deployed source disagree; leave the marker
+  // alone.
+  if (stored.expectedState !== observedState) {
+    return new Response(
+      JSON.stringify({ reconciled: false, action: stored.action }),
+      { status: 200, headers: NO_STORE_HEADERS },
+    );
+  }
+
+  const cleared: string[] = [];
+
+  // Source-delete side-data cleanup runs FIRST (issue #250). Archive
+  // and restore preserve all side data — we keep them reversible.
+  // If any of these steps throw, the catch is left to the runtime so
+  // the client gets a 5xx and the pending record stays put: the next
+  // attempt will retry cleanly because KV deletes are idempotent.
+  if (stored.action === "delete" && observedState === "deleted") {
+    if (env.MANIFESTS) {
+      // KV `get` then `delete` lets us report only the keys that were
+      // actually present in `cleared`. The delete is idempotent so
+      // an absent key is silently fine; we just don't surface it in
+      // the response.
+      const manifest = await env.MANIFESTS.get(KV_MANIFEST(slug));
+      if (manifest !== null) {
+        await env.MANIFESTS.delete(KV_MANIFEST(slug));
+        cleared.push(KV_MANIFEST(slug));
+      }
+    }
+    // Defensive: source decks should never have a `deck:<slug>`
+    // record, but if one ever appeared (e.g. a stub that escaped a
+    // half-completed New Deck flow) we clean it up here so the slug
+    // doesn't linger anywhere in KV.
+    const deckRecord = await env.DECKS.get(KV_DECK(slug));
+    if (deckRecord !== null) {
+      await env.DECKS.delete(KV_DECK(slug));
+      cleared.push(KV_DECK(slug));
+    }
+    // Same logic for the public decks-list index. We use a marker
+    // suffix (`decks-list:<slug>`) in the `cleared` array so the
+    // caller can distinguish "slug removed from the index" from "the
+    // index key itself was deleted".
+    const indexPruned = await pruneDecksIndex(env, slug);
+    if (indexPruned) cleared.push(`${KV_DECKS_INDEX}:${slug}`);
+  }
+
+  // Clear the pending record + the pending index entry LAST so the
+  // side-data cleanup above gets a chance to fail loudly without
+  // losing the marker.
+  await env.DECKS.delete(KV_RECORD(slug));
+  await removeFromIndex(env, slug);
+  cleared.push(KV_RECORD(slug));
+
+  return new Response(
+    JSON.stringify({
+      reconciled: true,
+      action: stored.action,
+      cleared,
+    }),
+    { status: 200, headers: NO_STORE_HEADERS },
+  );
+}
+
+// ---------------------------------------------------------------- //
 // Router
 // ---------------------------------------------------------------- //
 
@@ -205,10 +384,24 @@ async function handleClear(
  */
 export async function handlePendingSourceActions(
   request: Request,
-  env: PendingSourceActionsEnv,
+  env: PendingSourceActionsEnv & PendingSourceActionsSideDataEnv,
 ): Promise<Response | null> {
   const url = new URL(request.url);
   const path = url.pathname;
+
+  // Subresource `/reconcile` lives under the single-item path and
+  // MUST match before the bare item handler — that handler only
+  // accepts `POST` / `DELETE` and would otherwise route reconcile
+  // straight into `handleUpsert` (which would 400 the body shape).
+  const reconcileMatch = path.match(RECONCILE_PATH);
+  if (reconcileMatch) {
+    const denied = requireAccessAuth(request);
+    if (denied) return denied;
+    const slug = decodeURIComponent(reconcileMatch[1]);
+    if (!isValidSlug(slug)) return badRequest("invalid slug");
+    if (request.method === "POST") return handleReconcile(slug, request, env);
+    return methodNotAllowed(["POST"]);
+  }
 
   const itemMatch = path.match(ITEM_PATH);
   if (itemMatch) {
