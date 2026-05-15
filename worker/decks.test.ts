@@ -131,6 +131,50 @@ describe("GET /api/decks", () => {
     // Even the existence of the private deck must not leak.
     expect(JSON.stringify(body)).not.toContain("secret-deck");
   });
+
+  // ── Draft filtering (issue #191 / slice 2) ────────────────────────────
+  //
+  // `meta.draft === true` decks are hidden from `/api/decks` (the public
+  // list). They still exist in KV and remain visible via the Access-gated
+  // admin list (`/api/admin/decks`) so authors can find and finish them.
+  // ──────────────────────────────────────────────────────────────────────
+
+  it("filters out decks with draft === true (drafts must not leak)", async () => {
+    const { env, kv } = makeEnv();
+    await kv.put(
+      "decks-list",
+      JSON.stringify([
+        {
+          slug: "published",
+          title: "Published",
+          date: "2026-05-07",
+          visibility: "public",
+          draft: false,
+        },
+        {
+          slug: "wip",
+          title: "WIP",
+          date: "2026-05-07",
+          visibility: "public",
+          draft: true,
+        },
+        {
+          slug: "no-draft-flag",
+          title: "No Draft Flag",
+          date: "2026-05-07",
+          visibility: "public",
+        },
+      ]),
+    );
+    const res = await call(new Request("https://example.com/api/decks"), env);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { decks: Array<{ slug: string }> };
+    expect(body.decks.map((d) => d.slug).sort()).toEqual([
+      "no-draft-flag",
+      "published",
+    ]);
+    expect(JSON.stringify(body)).not.toContain("wip");
+  });
 });
 
 // ---------------------------------------------------------------- //
@@ -241,6 +285,44 @@ describe("GET /api/admin/decks", () => {
     const body = (await res.json()) as { decks: unknown[] };
     expect(body.decks).toEqual([]);
   });
+
+  // Issue #191 / slice 2 — admin list MUST include drafts so authors can
+  // find them. The public list filters them out (see "GET /api/decks").
+  it("includes draft decks (admin sees drafts)", async () => {
+    const { env, kv } = makeEnv();
+    await kv.put(
+      "decks-list",
+      JSON.stringify([
+        {
+          slug: "published",
+          title: "Published",
+          date: "2026-05-07",
+          visibility: "public",
+        },
+        {
+          slug: "wip",
+          title: "WIP",
+          date: "2026-05-07",
+          visibility: "public",
+          draft: true,
+        },
+      ]),
+    );
+    const res = await call(
+      adminRequest("https://example.com/api/admin/decks"),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      decks: Array<{ slug: string; draft?: boolean }>;
+    };
+    expect(body.decks.map((d) => d.slug).sort()).toEqual([
+      "published",
+      "wip",
+    ]);
+    const wip = body.decks.find((d) => d.slug === "wip");
+    expect(wip?.draft).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------- //
@@ -310,6 +392,46 @@ describe("POST /api/admin/decks/<slug>", () => {
     // Summary must NOT include slide / slot data.
     expect(list[0].slides).toBeUndefined();
     expect(list[0].slots).toBeUndefined();
+  });
+
+  // Issue #191 / slice 2 — the index summary MUST carry `draft` so the
+  // public list handler can filter on it. Without this, drafts saved via
+  // POST would not be filterable downstream.
+  it("propagates meta.draft into the decks-list index summary", async () => {
+    const { env, kv } = makeEnv();
+    await call(
+      adminRequest("https://example.com/api/admin/decks/wip", {
+        method: "POST",
+        body: JSON.stringify(
+          makeDeck("wip", "public", { draft: true }),
+        ),
+        headers: { "content-type": "application/json" },
+      }),
+      env,
+    );
+    const list = JSON.parse(kv.store.get("decks-list")!) as Array<
+      Record<string, unknown>
+    >;
+    expect(list).toHaveLength(1);
+    expect(list[0].slug).toBe("wip");
+    expect(list[0].draft).toBe(true);
+  });
+
+  it("omits draft from the index summary when not set", async () => {
+    const { env, kv } = makeEnv();
+    await call(
+      adminRequest("https://example.com/api/admin/decks/published", {
+        method: "POST",
+        body: JSON.stringify(makeDeck("published", "public")),
+        headers: { "content-type": "application/json" },
+      }),
+      env,
+    );
+    const list = JSON.parse(kv.store.get("decks-list")!) as Array<
+      Record<string, unknown>
+    >;
+    expect(list).toHaveLength(1);
+    expect("draft" in list[0]).toBe(false);
   });
 
   it("replaces an existing entry in the decks-list index (no duplicates)", async () => {

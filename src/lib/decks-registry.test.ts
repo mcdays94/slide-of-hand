@@ -638,3 +638,146 @@ describe("useAdminDataDeckList", () => {
     );
   });
 });
+
+// ──────────────────────────────────────────────────────────────────────────
+// Draft filtering (issue #191 / slice 2)
+//
+// Public consumers (`/`) MUST drop decks with `meta.draft === true`. Admin
+// consumers (`/admin`) MUST keep them so authors can find and edit drafts.
+//
+// The filter applies on BOTH halves of the public deck list:
+//   - Build-time source decks (via `getPublicDeckMetas()` from the registry).
+//   - KV-backed decks (via `mergeDeckLists()` from the wire summaries).
+//
+// The admin counterparts (`getAllDeckMetas`, `getAllDeckEntries`,
+// `mergeAdminDeckLists`) MUST NOT filter — that's what makes the admin
+// surface authoritative.
+// ──────────────────────────────────────────────────────────────────────────
+
+const draftSummary = (
+  slug: string,
+  date: string,
+  rest: Partial<{
+    title: string;
+    description: string;
+    cover: string;
+    runtimeMinutes: number;
+    visibility: "public" | "private";
+    draft: boolean;
+  }> = {},
+) => ({
+  slug,
+  title: rest.title ?? `KV ${slug}`,
+  description: rest.description,
+  date,
+  cover: rest.cover,
+  runtimeMinutes: rest.runtimeMinutes,
+  visibility: rest.visibility ?? ("public" as const),
+  draft: rest.draft,
+});
+
+describe("mergeDeckLists — draft filtering (issue #191)", () => {
+  it("drops KV summaries with draft === true from the public list", () => {
+    const merged = mergeDeckLists(
+      [],
+      [
+        draftSummary("kv-published", "2026-01-01"),
+        draftSummary("kv-draft", "2026-01-01", { draft: true }),
+      ],
+    );
+    expect(merged.map((m) => m.slug)).toEqual(["kv-published"]);
+  });
+
+  it("keeps KV summaries with draft === false or undefined", () => {
+    const merged = mergeDeckLists(
+      [],
+      [
+        draftSummary("kv-undef", "2026-02-01"),
+        draftSummary("kv-false", "2026-01-01", { draft: false }),
+      ],
+    );
+    expect(merged.map((m) => m.slug).sort()).toEqual(["kv-false", "kv-undef"]);
+  });
+
+  it("drops build-time DeckMetas with draft === true from the public list", () => {
+    const merged = mergeDeckLists(
+      [
+        meta("source-published", "2026-01-01"),
+        meta("source-draft", "2026-01-01", { draft: true }),
+      ],
+      [],
+    );
+    expect(merged.map((m) => m.slug)).toEqual(["source-published"]);
+  });
+
+  it("keeps build-time DeckMetas with draft === false or undefined", () => {
+    const merged = mergeDeckLists(
+      [
+        meta("source-undef", "2026-02-01"),
+        meta("source-false", "2026-01-01", { draft: false }),
+      ],
+      [],
+    );
+    expect(merged.map((m) => m.slug).sort()).toEqual([
+      "source-false",
+      "source-undef",
+    ]);
+  });
+});
+
+describe("mergeAdminDeckLists — drafts visible to admins (issue #191)", () => {
+  it("keeps KV summaries with draft === true (admin sees drafts)", () => {
+    const merged = mergeAdminDeckLists(
+      [],
+      [
+        draftSummary("kv-published", "2026-01-01"),
+        draftSummary("kv-draft", "2026-01-01", { draft: true }),
+      ],
+    );
+    const slugs = merged.map((e) => e.meta.slug).sort();
+    expect(slugs).toEqual(["kv-draft", "kv-published"]);
+  });
+
+  it("keeps build-time entries with draft === true (admin sees drafts)", () => {
+    const merged = mergeAdminDeckLists(
+      [
+        sourceEntry("source-draft", "2026-01-01", "public", { draft: true }),
+        sourceEntry("source-published", "2026-01-02"),
+      ],
+      [],
+    );
+    const slugs = merged.map((e) => e.meta.slug).sort();
+    expect(slugs).toEqual(["source-draft", "source-published"]);
+  });
+
+  it("preserves the draft flag on KV entries so admin UI can render a pill", () => {
+    const merged = mergeAdminDeckLists(
+      [],
+      [draftSummary("kv-draft", "2026-01-01", { draft: true })],
+    );
+    expect(merged[0]?.meta.draft).toBe(true);
+  });
+});
+
+// `useDataDeckList` is the hook the public route consumes. Confirm it
+// applies the draft filter when KV returns a mix of drafts + published
+// AND when the build-time half is dirty (the test re-mocks
+// `getPublicDeckMetas` to simulate a draft source deck).
+describe("useDataDeckList — draft filtering (issue #191)", () => {
+  it("hides KV decks with draft === true from the public list", async () => {
+    vi.stubGlobal(
+      "fetch",
+      mockFetch({
+        decks: [
+          draftSummary("kv-published", "2026-12-01"),
+          draftSummary("kv-draft", "2026-12-01", { draft: true }),
+        ],
+      }),
+    );
+    const { result } = renderHook(() => useDataDeckList());
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    const slugs = result.current.decks.map((d) => d.slug);
+    expect(slugs).toContain("kv-published");
+    expect(slugs).not.toContain("kv-draft");
+  });
+});

@@ -220,9 +220,21 @@ export function getAllDeckEntries(): RegistryEntry[] {
   return registry;
 }
 
-/** Public deck metas only. Use for the public index page. */
+/**
+ * Public deck metas only. Use for the public index page.
+ *
+ * Filters on two dimensions:
+ *   1. `visibility === "public"` — never leak private decks to the
+ *      public surface.
+ *   2. `meta.draft !== true` — hide work-in-progress decks (issue
+ *      #191). `undefined` / `false` both pass; only the explicit
+ *      `true` is dropped. Admin consumers use `getAllDeckMetas()` /
+ *      `getAllDeckEntries()` to see the full set including drafts.
+ */
 export function getPublicDeckMetas(): DeckMeta[] {
-  return registry.filter((e) => e.visibility === "public").map((e) => e.meta);
+  return registry
+    .filter((e) => e.visibility === "public" && e.meta.draft !== true)
+    .map((e) => e.meta);
 }
 
 /** Resolve a single deck's meta by slug (public or private in dev; public only in prod). */
@@ -394,6 +406,13 @@ export interface DataDeckSummary {
   cover?: string;
   visibility: Visibility;
   runtimeMinutes?: number;
+  /**
+   * Work-in-progress flag (issue #191). The Worker filters drafts out of
+   * the public list, but we keep the field on the wire shape so admin
+   * consumers (`useAdminDataDeckList`) can render a "Draft" pill — and
+   * so `mergeDeckLists` can defensively re-filter on the client side.
+   */
+  draft?: boolean;
 }
 
 interface DecksListResponse {
@@ -417,6 +436,11 @@ function summaryToDeckMeta(summary: DataDeckSummary): DeckMeta {
   if (summary.runtimeMinutes !== undefined) {
     meta.runtimeMinutes = summary.runtimeMinutes;
   }
+  // Issue #191 — propagate `draft` so admin UI (which surfaces the field
+  // as a pill) can render correctly off the merged list. The public
+  // `mergeDeckLists` drops drafts BEFORE calling this helper, so a draft
+  // entry never reaches the public index even if it's preserved here.
+  if (summary.draft === true) meta.draft = true;
   return meta;
 }
 
@@ -447,9 +471,16 @@ function dataDeckMetaToDeckMeta(m: DataDeckMeta): DeckMeta {
  * The KV entry is silently dropped — see the top-of-file comment for
  * why this is the only sane default.
  *
- * Filtering: KV summaries with `visibility !== "public"` are dropped.
- * The Worker should never return them on the public listing endpoint,
- * but we defensively re-filter on the client.
+ * Filtering: applied to BOTH halves.
+ *   - KV summaries with `visibility !== "public"` are dropped. The
+ *     Worker should never return them on the public listing endpoint,
+ *     but we defensively re-filter on the client.
+ *   - Entries with `draft === true` (issue #191) are dropped from both
+ *     the build-time list AND the KV list. The public index never shows
+ *     work-in-progress decks. The build-time half normally arrives
+ *     pre-filtered via `getPublicDeckMetas()`, but we re-apply here so
+ *     callers using the helper directly (tests, future call sites)
+ *     don't have to remember the rule.
  *
  * Sort order: `date` descending, then `slug` ascending (stable
  * tie-breaker so the order doesn't drift across renders).
@@ -458,13 +489,14 @@ export function mergeDeckLists(
   buildTime: DeckMeta[],
   kv: DataDeckSummary[],
 ): DeckMeta[] {
-  const buildTimeSlugs = new Set(buildTime.map((d) => d.slug));
+  const filteredBuildTime = buildTime.filter((m) => m.draft !== true);
+  const buildTimeSlugs = new Set(filteredBuildTime.map((d) => d.slug));
   const kvAsMeta = kv
-    .filter((s) => s.visibility === "public")
+    .filter((s) => s.visibility === "public" && s.draft !== true)
     .filter((s) => !buildTimeSlugs.has(s.slug))
     .map(summaryToDeckMeta);
 
-  const combined = [...buildTime, ...kvAsMeta];
+  const combined = [...filteredBuildTime, ...kvAsMeta];
   combined.sort((a, b) => {
     if (a.date === b.date) return a.slug.localeCompare(b.slug);
     return b.date.localeCompare(a.date);

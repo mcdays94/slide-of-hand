@@ -6,6 +6,9 @@
  *
  *   GET    /api/decks                 — public, returns `{ decks: DeckSummary[] }`
  *                                       (the `decks-list` denormalized index, public-only).
+ *                                       Filters out `visibility !== "public"` AND
+ *                                       `draft === true` (issue #191) so the public
+ *                                       index never shows work-in-progress decks.
  *                                       Edge-cached `Cache-Control: private, max-age=60`
  *                                       (per-browser only — see element-overrides.ts for
  *                                       why we avoid shared CDN caching on save-driven
@@ -95,6 +98,13 @@ interface DeckSummary {
   cover?: string;
   visibility: Visibility;
   runtimeMinutes?: number;
+  /**
+   * Work-in-progress flag (issue #191). When `true`, the public list
+   * handler filters this entry out — the deck is still in KV and visible
+   * via `/api/admin/decks`, but the public `/` index never shows it.
+   * Default: undefined (treated as "not a draft").
+   */
+  draft?: boolean;
 }
 
 // ---------------------------------------------------------------- //
@@ -233,6 +243,12 @@ function summaryFromDeck(deck: DataDeck): DeckSummary {
   if (deck.meta.runtimeMinutes !== undefined) {
     summary.runtimeMinutes = deck.meta.runtimeMinutes;
   }
+  // Issue #191 — propagate `draft` only when explicitly set, so the
+  // index summary stays minimal for non-draft decks (the vast majority).
+  // The public list handler reads this to filter drafts at the wire.
+  if (deck.meta.draft === true) {
+    summary.draft = true;
+  }
   return summary;
 }
 
@@ -260,7 +276,19 @@ async function removeFromIndex(env: DecksEnv, slug: string): Promise<void> {
 
 async function handlePublicList(env: DecksEnv): Promise<Response> {
   const list = await readIndex(env);
-  const publicOnly = list.filter((entry) => entry.visibility === "public");
+  // Two-pass filter:
+  //   1. visibility must be "public" — private decks never leak.
+  //   2. draft must NOT be true — work-in-progress decks (issue #191)
+  //      stay invisible on the public index. They remain reachable via
+  //      `/api/admin/decks` (Access-gated) so authors can still find
+  //      and finish them.
+  //
+  // `draft === undefined` and `draft === false` both pass — only the
+  // explicit `true` is filtered out. This matches the front-end
+  // `mergeDeckLists` semantics (defence in depth).
+  const publicOnly = list.filter(
+    (entry) => entry.visibility === "public" && entry.draft !== true,
+  );
   return new Response(JSON.stringify({ decks: publicOnly }), {
     status: 200,
     headers: READ_HEADERS,
