@@ -162,6 +162,16 @@ export interface Settings {
    * programmatic openings. Issue #211.
    */
   tocSidebarEdge: ToCSidebarEdge;
+  /**
+   * When `true` (default), the `/admin` deck index renders every
+   * deck — including those with `meta.draft === true`. When `false`,
+   * the admin index hides drafts from the grid so the author can
+   * see the same shape the public homepage will list. The toggle
+   * only governs the admin index's local render; the public
+   * homepage is filtered at the registry layer regardless of this
+   * preference. Issue #191.
+   */
+  showDrafts: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -172,6 +182,7 @@ export const DEFAULT_SETTINGS: Settings = {
   aiAssistantModel: "kimi-k2.6",
   showAssistantReasoning: false,
   tocSidebarEdge: "right",
+  showDrafts: true,
 };
 
 /**
@@ -253,6 +264,10 @@ export function readSettings(): Settings {
         partial.tocSidebarEdge === "left" || partial.tocSidebarEdge === "right"
           ? partial.tocSidebarEdge
           : DEFAULT_SETTINGS.tocSidebarEdge,
+      showDrafts:
+        typeof partial.showDrafts === "boolean"
+          ? partial.showDrafts
+          : DEFAULT_SETTINGS.showDrafts,
     };
   } catch {
     return { ...DEFAULT_SETTINGS };

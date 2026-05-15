@@ -91,6 +91,7 @@ describe("<SettingsProvider> + useSettings()", () => {
       aiAssistantModel: "kimi-k2.6",
       showAssistantReasoning: false,
       tocSidebarEdge: "right",
+      showDrafts: true,
     });
   });
 
@@ -165,6 +166,7 @@ describe("<SettingsProvider> + useSettings()", () => {
           aiAssistantModel: "kimi-k2.6",
           showAssistantReasoning: false,
           tocSidebarEdge: "right",
+          showDrafts: true,
         }}
       >
         <Probe />

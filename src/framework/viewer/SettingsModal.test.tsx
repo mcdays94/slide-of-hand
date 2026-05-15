@@ -198,6 +198,7 @@ describe("<SettingsModal>", () => {
       aiAssistantModel: "kimi-k2.6",
       showAssistantReasoning: false,
       tocSidebarEdge: "right",
+      showDrafts: true,
     });
 
     // Toggling again flips it back ON.
@@ -213,6 +214,7 @@ describe("<SettingsModal>", () => {
       aiAssistantModel: "kimi-k2.6",
       showAssistantReasoning: false,
       tocSidebarEdge: "right",
+      showDrafts: true,
     });
   });
 

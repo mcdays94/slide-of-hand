@@ -88,6 +88,7 @@ describe("writeSettings()", () => {
       aiAssistantModel: "kimi-k2.6",
       showAssistantReasoning: false,
       tocSidebarEdge: "right",
+      showDrafts: true,
     });
   });
 
@@ -499,5 +500,70 @@ describe("tocSidebarEdge (issue #211)", () => {
     expect(readSettings().tocSidebarEdge).toBe("left");
     writeSettings({ tocSidebarEdge: "right" });
     expect(readSettings().tocSidebarEdge).toBe("right");
+  });
+});
+
+// ─── showDrafts (issue #191 — admin draft filter) ──────────────────
+// Toggles whether draft decks (`meta.draft === true`) appear in the
+// `/admin` deck grid. Default `true` — admin sees everything by
+// default. The setting only governs the admin index; the public
+// homepage filter is enforced at the registry layer regardless of
+// this preference.
+describe("showDrafts (issue #191)", () => {
+  it("DEFAULT_SETTINGS.showDrafts defaults to true", () => {
+    expect(DEFAULT_SETTINGS.showDrafts).toBe(true);
+  });
+
+  it("readSettings returns the default showDrafts when storage is empty", () => {
+    expect(readSettings().showDrafts).toBe(true);
+  });
+
+  it("readSettings preserves a persisted `false` value", () => {
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ showDrafts: false }),
+    );
+    expect(readSettings().showDrafts).toBe(false);
+  });
+
+  it("readSettings preserves a persisted `true` value", () => {
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ showDrafts: true }),
+    );
+    expect(readSettings().showDrafts).toBe(true);
+  });
+
+  it("falls back to default when showDrafts is not a boolean", () => {
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ showDrafts: "yes" }),
+    );
+    expect(readSettings().showDrafts).toBe(true);
+  });
+
+  it("falls back to default when showDrafts is missing entirely", () => {
+    // Forward-compat with older bundles that pre-date this setting.
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ showSlideIndicators: false }),
+    );
+    expect(readSettings().showDrafts).toBe(true);
+  });
+
+  it("writeSettings persists showDrafts", () => {
+    const merged = writeSettings({ showDrafts: false });
+    expect(merged.showDrafts).toBe(false);
+    const persisted = JSON.parse(
+      window.localStorage.getItem(STORAGE_KEY)!,
+    ) as { showDrafts?: boolean };
+    expect(persisted.showDrafts).toBe(false);
+  });
+
+  it("round-trips through writeSettings + readSettings", () => {
+    writeSettings({ showDrafts: false });
+    expect(readSettings().showDrafts).toBe(false);
+    writeSettings({ showDrafts: true });
+    expect(readSettings().showDrafts).toBe(true);
   });
 });

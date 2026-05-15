@@ -32,7 +32,7 @@
  * array, hand it to the grid, supply the delete side-effect.
  */
 
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   useAdminDataDeckList,
@@ -44,9 +44,11 @@ import {
   DeckCardGrid,
   type DeckCardGridItem,
 } from "@/components/DeckCardGrid";
+import { useSettings } from "@/framework/viewer/useSettings";
 
 export default function AdminIndex() {
   const { entries } = useAdminDataDeckList();
+  const { settings, setSetting } = useSettings();
   // Local-state list of KV slugs that have been deleted in this session.
   // We optimistically hide them while the admin list refetches via
   // `window.location.reload()` (which fully re-runs the hook). For the
@@ -108,8 +110,18 @@ export default function AdminIndex() {
     }
   }, []);
 
-  const visibleEntries = entries.filter(
-    (e) => !deletedSlugs.has(e.meta.slug),
+  // Issue #191: admin can hide drafts (decks with `meta.draft === true`)
+  // from the grid via the in-chrome toggle below. Default is to show
+  // everything — admin sees every deck on first paint, and the toggle
+  // is a one-click affordance for previewing what the public homepage
+  // will list. Decks without `draft` set (or with `draft === false`)
+  // are always visible regardless of the toggle.
+  const visibleEntries = useMemo(
+    () =>
+      entries
+        .filter((e) => !deletedSlugs.has(e.meta.slug))
+        .filter((e) => settings.showDrafts || e.meta.draft !== true),
+    [entries, deletedSlugs, settings.showDrafts],
   );
 
   // Translate each registry entry into a grid item. KV-backed decks
@@ -132,18 +144,24 @@ export default function AdminIndex() {
               : `${visibleEntries.length} deck${visibleEntries.length === 1 ? "" : "s"} available · presenter mode active inside.`}
           </p>
         </div>
-        {/* Issue #171: New-deck creation is now a route (the
-            AI-first creator at /admin/decks/new) rather than a
-            modal. The button is a Link so it benefits from React
-            Router's client-side nav (no flash, no page reload). */}
-        <Link
-          to="/admin/decks/new"
-          data-interactive
-          data-testid="new-deck-button"
-          className="cf-btn-primary"
-        >
-          New deck
-        </Link>
+        <div className="flex items-center gap-3">
+          <DraftFilterToggle
+            value={settings.showDrafts}
+            onChange={(next) => setSetting("showDrafts", next)}
+          />
+          {/* Issue #171: New-deck creation is now a route (the
+              AI-first creator at /admin/decks/new) rather than a
+              modal. The button is a Link so it benefits from React
+              Router's client-side nav (no flash, no page reload). */}
+          <Link
+            to="/admin/decks/new"
+            data-interactive
+            data-testid="new-deck-button"
+            className="cf-btn-primary"
+          >
+            New deck
+          </Link>
+        </div>
       </div>
 
       <DeckCardGrid
@@ -152,6 +170,60 @@ export default function AdminIndex() {
         onDelete={handleDelete}
       />
     </main>
+  );
+}
+
+/**
+ * Small two-state segmented control for the drafts filter (issue
+ * #191). Mirrors the styling of `<SettingsSegmentedRow>` so the
+ * affordance reads as a settings-style toggle, not a primary action.
+ * Uppercase mono labels keep the chrome quiet; the orange-accent fill
+ * marks the active option.
+ */
+interface DraftFilterToggleProps {
+  value: boolean;
+  onChange: (next: boolean) => void;
+}
+
+function DraftFilterToggle({ value, onChange }: DraftFilterToggleProps) {
+  return (
+    <div
+      role="radiogroup"
+      aria-label="Drafts filter"
+      data-testid="admin-draft-filter"
+      className="flex shrink-0 items-center gap-1 rounded-md border border-cf-border bg-cf-bg-200 p-0.5"
+    >
+      <button
+        type="button"
+        role="radio"
+        aria-checked={value === true}
+        data-interactive
+        data-testid="admin-draft-filter-show"
+        onClick={() => onChange(true)}
+        className={`rounded px-3 py-1 font-mono text-[10px] uppercase tracking-[0.2em] transition-colors ${
+          value === true
+            ? "bg-cf-orange text-cf-bg-100"
+            : "text-cf-text-muted hover:text-cf-text"
+        }`}
+      >
+        Show drafts
+      </button>
+      <button
+        type="button"
+        role="radio"
+        aria-checked={value === false}
+        data-interactive
+        data-testid="admin-draft-filter-hide"
+        onClick={() => onChange(false)}
+        className={`rounded px-3 py-1 font-mono text-[10px] uppercase tracking-[0.2em] transition-colors ${
+          value === false
+            ? "bg-cf-orange text-cf-bg-100"
+            : "text-cf-text-muted hover:text-cf-text"
+        }`}
+      >
+        Hide drafts
+      </button>
+    </div>
   );
 }
 
