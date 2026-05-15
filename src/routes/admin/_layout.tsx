@@ -62,7 +62,7 @@ export default function AdminLayout() {
           <header className="flex items-center justify-between border-b border-cf-border px-6 py-4">
             <div className="flex items-center gap-3">
               <Link to="/admin" className="cf-tag text-cf-orange no-underline">
-                Slide of Hand · Admin
+                <span className="font-bold">Slide of Hand</span> · Admin
               </Link>
             </div>
             <div className="flex items-center gap-2">
