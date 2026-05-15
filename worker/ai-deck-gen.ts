@@ -81,11 +81,11 @@ export interface AiDeckGenInput {
   /** The user's natural-language prompt describing the deck. */
   userPrompt: string;
   /**
-   * Intended publish-time visibility of the deck. Embedded in the
-   * user message so the generated `meta.ts` carries
-   * `visibility: "public" | "private"` correctly. Issue #171
-   * visibility toggle. Defaults to "private" when unset (matches
-   * the new-deck creator UI default).
+   * Intended authoring visibility selected in the new-deck UI. Source
+   * deck `DeckMeta` does NOT currently carry a `visibility` field;
+   * fresh AI-generated source decks are protected by `draft: true`
+   * until publish. The value is still accepted for forward-compat and
+   * conversational context, but must not be emitted into `meta.ts`.
    */
   visibility?: "public" | "private";
   /**
@@ -158,6 +158,8 @@ const deckGenSchema = z.object({
     .max(72)
     .describe("One-line conventional-commit-style summary of this turn."),
 });
+
+type DeckGenObject = z.infer<typeof deckGenSchema>;
 
 /**
  * Build the system prompt describing the deck contract. Compact —
@@ -545,16 +547,17 @@ function buildUserMessage(input: AiDeckGenInput): string {
 
   parts.push(`User prompt: ${input.userPrompt}`);
 
-  // Tell the model the publish-time visibility so it sets
-  // `visibility: "public"` or `visibility: "private"` on the
-  // generated `meta.ts`'s `DeckMeta` object. Defaults to "private"
-  // when unset — matches the new-deck creator UI's default and the
-  // safer-floor principle (issue #171).
+  // Source-backed `DeckMeta` has no `visibility` field. The UI still
+  // sends the user's selected visibility for conversational context
+  // and future compatibility, but the generator MUST NOT emit it into
+  // `meta.ts` or TypeScript's excess-property check will fail when the
+  // draft is published into the source repo.
   const visibility = input.visibility ?? "private";
   parts.push(
-    `\nThe deck's intended publish-time visibility is: **${visibility}**. ` +
-      `Set \`visibility: "${visibility}"\` on the generated \`meta.ts\`'s ` +
-      `\`DeckMeta\` object so the deck is born with this value baked in.`,
+    `\nThe UI visibility selector is currently **${visibility}**, but source ` +
+      `deck \`DeckMeta\` does NOT have a \`visibility\` field. Do NOT add ` +
+      `\`visibility\` to \`meta.ts\`; the fresh draft is protected by ` +
+      `\`draft: true\` until publish.`,
   );
 
   // Creation-time instruction (issue #191): AI-generated decks are
@@ -747,12 +750,11 @@ export function streamDeckFiles(
   // The function still exposes the `partials` async iterable for
   // contract compatibility with the orchestrator. It yields a single
   // "all done" partial at the end instead of progressively.
-  const objectPromise = generateObject({
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    model: model as any,
-    schema: deckGenSchema,
+  const objectPromise = generateDeckObjectWithRetry({
+    model,
     system: buildSystemPrompt(input.slug),
     prompt: buildUserMessage(input),
+    slug: input.slug,
   });
 
   // `partials` yields exactly once — at the end, with all files
@@ -762,7 +764,9 @@ export function streamDeckFiles(
   // skipped.
   const partials: AsyncIterable<DeckGenPartial> = (async function* () {
     try {
-      const { object } = await objectPromise;
+      const resolved = await objectPromise;
+      if (!resolved.ok) return;
+      const { object } = resolved;
       const rawFiles = Array.isArray(object?.files) ? object.files : [];
       const validFiles = rawFiles.filter(
         (f): f is { path: string; content: string } =>
@@ -795,19 +799,64 @@ export function streamDeckFiles(
   // no-files-failure rule. Failure shapes (model_error /
   // path_violation / no_files) match the `AiDeckGenFailure` union
   // so callers can branch identically.
-  const result: Promise<AiDeckGenResult> = objectPromise.then(
-    ({ object }) => validateGeneratedObject(object, input.slug),
-    (err) => {
-      const message = err instanceof Error ? err.message : String(err);
-      return {
-        ok: false as const,
-        phase: "model_error" as const,
-        error: `Workers AI request failed: ${message}`,
-      };
-    },
+  const result: Promise<AiDeckGenResult> = objectPromise.then((resolved) =>
+    resolved.ok ? validateGeneratedObject(resolved.object, input.slug) : resolved.failure,
   );
 
   return { partials, result };
+}
+
+async function generateDeckObjectWithRetry(opts: {
+  model: unknown;
+  system: string;
+  prompt: string;
+  slug: string;
+}): Promise<
+  | { ok: true; object: DeckGenObject }
+  | { ok: false; failure: AiDeckGenFailure }
+> {
+  let prompt = opts.prompt;
+  let lastSemanticError = "";
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const { object } = await generateObject({
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        model: opts.model as any,
+        schema: deckGenSchema,
+        system: opts.system,
+        prompt,
+      });
+      const validation = validateGeneratedObject(object, opts.slug);
+      if (validation.ok) return { ok: true, object };
+      if (validation.phase !== "schema_violation") {
+        return { ok: false, failure: validation };
+      }
+      lastSemanticError = validation.error;
+      prompt =
+        opts.prompt +
+        `\n\nYour previous output failed validation: ${lastSemanticError}\n` +
+        "Try again. You MUST include meta.ts, index.tsx, and at least one numbered slide file. " +
+        "Every content field must be complete TypeScript/TSX source code only, with no tool-wrapper artifacts.";
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return {
+        ok: false,
+        failure: {
+          ok: false,
+          phase: "model_error",
+          error: `Workers AI request failed: ${message}`,
+        },
+      };
+    }
+  }
+  return {
+    ok: false,
+    failure: {
+      ok: false,
+      phase: "schema_violation",
+      error: `Model output failed validation after retry: ${lastSemanticError}`,
+    },
+  };
 }
 
 /**
@@ -844,9 +893,52 @@ function validateGeneratedObject(
       error: "Model returned no files. Try a more specific prompt.",
     };
   }
+  const semanticError = validateGeneratedDeckSemantics(object.files, slug);
+  if (semanticError) {
+    return {
+      ok: false,
+      phase: "schema_violation",
+      error: semanticError,
+    };
+  }
   return {
     ok: true,
     files: object.files,
     commitMessage: object.commitMessage,
   };
+}
+
+function validateGeneratedDeckSemantics(
+  files: Array<{ path: string; content: string }>,
+  slug: string,
+): string | null {
+  const base = `src/decks/public/${slug}/`;
+  const paths = new Set(files.map((f) => f.path));
+  const required = [`${base}meta.ts`, `${base}index.tsx`];
+  for (const path of required) {
+    if (!paths.has(path)) return `Model output is missing required file ${path}.`;
+  }
+  if (!files.some((f) => /^src\/decks\/public\/[^/]+\/\d{2}-[a-z0-9-]+\.tsx$/.test(f.path))) {
+    return "Model output must include at least one numbered slide file like 01-title.tsx.";
+  }
+  for (const file of files) {
+    if (!/\.(ts|tsx)$/.test(file.path)) {
+      return `Model output contains non-TypeScript file path ${file.path}.`;
+    }
+    if (/[<\/]parameter\b|<parameter\b|NOT_VALID/i.test(file.content) || /NOT_VALID/i.test(file.path)) {
+      return `Model output for ${file.path} contains tool-wrapper artifacts instead of source code.`;
+    }
+  }
+  const meta = files.find((f) => f.path === `${base}meta.ts`)?.content ?? "";
+  if (!/export\s+const\s+meta\b/.test(meta)) {
+    return "meta.ts must export `const meta`.";
+  }
+  if (/\bvisibility\s*:/.test(meta)) {
+    return "meta.ts must not set `visibility`; source DeckMeta does not support that field.";
+  }
+  const index = files.find((f) => f.path === `${base}index.tsx`)?.content ?? "";
+  if (!/export\s+default\s+deck\b|export\s+default\s+\{/.test(index)) {
+    return "index.tsx must default-export the Deck object.";
+  }
+  return null;
 }

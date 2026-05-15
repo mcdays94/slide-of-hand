@@ -21,8 +21,19 @@
 # https://developers.cloudflare.com/sandbox/concepts/sandboxes/#version-compatibility
 FROM docker.io/cloudflare/sandbox:0.10.0
 
-# No extra packages today — the lean base has everything phase 3c
-# needs (git for cloning the source repo; node + npm for the test
-# gate; bash + curl for misc). If a future slice needs more (e.g.
-# Playwright system libs for an e2e gate), add the `apt-get install`
-# block here as a new layer so the existing layers stay cache-warm.
+# The base image includes git, node, npm, bash, and curl, but the lean
+# variant does not ship a usable CA bundle for git HTTPS in local
+# `wrangler dev`. Without `ca-certificates`, cloning the remote
+# Cloudflare Artifacts git endpoint from the Sandbox fails with:
+#
+#   server certificate verification failed. CAfile: none CRLfile: none
+#
+# Install the distro CA bundle so both local Sandbox runs and deployed
+# container runs can verify GitHub / Artifacts HTTPS remotes normally.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates \
+  && update-ca-certificates \
+  && git config --system http.sslCAInfo /etc/ssl/certs/ca-certificates.crt \
+  && rm -rf /var/lib/apt/lists/*
+
+ENV GIT_SSL_CAINFO=/etc/ssl/certs/ca-certificates.crt

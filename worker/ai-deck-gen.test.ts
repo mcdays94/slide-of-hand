@@ -116,6 +116,14 @@ describe("streamDeckFiles — happy path", () => {
             path: "src/decks/public/hello/meta.ts",
             content: "export const meta = { slug: 'hello' };",
           },
+          {
+            path: "src/decks/public/hello/index.tsx",
+            content: "const deck = { meta, slides: [] }; export default deck;",
+          },
+          {
+            path: "src/decks/public/hello/01-title.tsx",
+            content: "export const titleSlide = { id: 'title' };",
+          },
         ],
         commitMessage: "Initial",
       }),
@@ -134,7 +142,7 @@ describe("streamDeckFiles — happy path", () => {
     );
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.files).toHaveLength(1);
+      expect(result.files).toHaveLength(3);
       expect(result.commitMessage).toBe("Initial");
     }
   });
@@ -153,7 +161,7 @@ describe("streamDeckFiles — happy path", () => {
           },
           {
             path: "src/decks/public/hello/index.tsx",
-            content: "import { meta } from './meta';",
+            content: "import { meta } from './meta'; const deck = { meta, slides: [] }; export default deck;",
           },
           {
             path: "src/decks/public/hello/01-title.tsx",
@@ -287,7 +295,118 @@ describe("streamDeckFiles — failure modes", () => {
       expect(result.error).toMatch(/no files/i);
     }
   });
-});
+
+  it("retries once when the model output is missing required deck files", async () => {
+    generateObjectMock
+      .mockReturnValueOnce(
+        fakeGenerateObject({
+          files: [
+            {
+              path: "src/decks/public/hello/meta.ts",
+              content: "export const meta = { slug: 'hello' };",
+            },
+          ],
+          commitMessage: "Broken",
+        }),
+      )
+      .mockReturnValueOnce(
+        fakeGenerateObject({
+          files: [
+            {
+              path: "src/decks/public/hello/meta.ts",
+              content: "export const meta = { slug: 'hello' };",
+            },
+            {
+              path: "src/decks/public/hello/index.tsx",
+              content: "const deck = { meta, slides: [] }; export default deck;",
+            },
+            {
+              path: "src/decks/public/hello/01-title.tsx",
+              content: "export const titleSlide = { id: 'title' };",
+            },
+          ],
+          commitMessage: "Fixed",
+        }),
+      );
+
+    const stream = streamDeckFiles(fakeAiBinding, {
+      slug: "hello",
+      userPrompt: "say hi",
+    });
+
+    const { result } = await collect(stream);
+
+    expect(generateObjectMock).toHaveBeenCalledTimes(2);
+    const retryPrompt = (generateObjectMock.mock.calls[1]?.[0] as { prompt: string }).prompt;
+    expect(retryPrompt).toMatch(/previous output failed validation/i);
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.commitMessage).toBe("Fixed");
+  });
+
+  it("returns schema_violation when semantic validation still fails after retry", async () => {
+    generateObjectMock.mockReturnValue(
+      fakeGenerateObject({
+        files: [
+          {
+            path: "src/decks/public/hello/NOT_VALID",
+            content: "<parameter name={bad}>",
+          },
+        ],
+        commitMessage: "Broken",
+      }),
+    );
+
+    const stream = streamDeckFiles(fakeAiBinding, {
+      slug: "hello",
+      userPrompt: "say hi",
+    });
+
+    const { partials, result } = await collect(stream);
+
+    expect(generateObjectMock).toHaveBeenCalledTimes(2);
+    expect(partials).toHaveLength(0);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.phase).toBe("schema_violation");
+      expect(result.error).toMatch(/failed validation after retry/i);
+    }
+  });
+
+  it("rejects source DeckMeta visibility because DeckMeta does not support it", async () => {
+    generateObjectMock.mockReturnValue(
+      fakeGenerateObject({
+        files: [
+          {
+            path: "src/decks/public/hello/meta.ts",
+            content: "export const meta = { slug: 'hello', visibility: 'private' };",
+          },
+          {
+            path: "src/decks/public/hello/index.tsx",
+            content: "const deck = { meta, slides: [] }; export default deck;",
+          },
+          {
+            path: "src/decks/public/hello/01-title.tsx",
+            content: "export const titleSlide = { id: 'title' };",
+          },
+        ],
+        commitMessage: "Bad visibility",
+      }),
+    );
+
+    const stream = streamDeckFiles(fakeAiBinding, {
+      slug: "hello",
+      userPrompt: "say hi",
+    });
+
+    const { result } = await collect(stream);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.phase).toBe("schema_violation");
+      expect(result.error).toMatch(/visibility/);
+    }
+  });
+  });
 
 describe("streamDeckFiles — creation-as-draft prompt (#191)", () => {
   // The post-process in `runCreateDeckDraft` is the load-bearing
