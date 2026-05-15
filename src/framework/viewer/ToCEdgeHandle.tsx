@@ -8,10 +8,12 @@
  * `useToCEdgeHover` and is wired up in `<Deck>`. Animations source
  * easings from `@/lib/motion` per AGENTS.md.
  *
- * Visual: 24×40 px monochrome button anchored mid-height, with a
- * small chevron glyph (`⟨` / `⟩`) hinting which way the sidebar
- * will open. Subtle border + muted text colour from the design
- * tokens — fits the "subtle is the brand" chrome aesthetic.
+ * Visual: 24×40 px button anchored mid-height with a small chevron
+ * glyph (`⟨` / `⟩`) hinting which way the sidebar will open. Brand
+ * orange accent (`cf-orange`, `#FF4801`) on the warm-cream surface
+ * — reads as a deliberate accent without becoming a filled CTA.
+ * Hover lifts a faint orange tint (`cf-orange-light`) behind the
+ * glyph for a touch more presence. Subtle is still the brand.
  */
 
 import { AnimatePresence, motion } from "framer-motion";
@@ -63,7 +65,7 @@ export function ToCEdgeHandle({ visible, side, onClick }: ToCEdgeHandleProps) {
                 : "Open slides from right"
             }
             onClick={onClick}
-            className={`flex h-10 w-6 items-center justify-center border border-cf-border bg-cf-bg-100/90 text-cf-text-muted shadow-sm backdrop-blur-sm transition-colors hover:bg-cf-bg-200 hover:text-cf-text ${
+            className={`flex h-10 w-6 items-center justify-center border border-cf-orange bg-cf-bg-100/90 text-cf-orange shadow-sm backdrop-blur-sm transition-colors hover:bg-cf-orange/15 hover:text-cf-orange ${
               isLeft
                 ? "rounded-r border-l-0"
                 : "rounded-l border-r-0"
