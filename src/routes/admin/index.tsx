@@ -62,14 +62,20 @@ export default function AdminIndex() {
   // unit-test path the hook is mocked, so `useAdminDataDeckList` won't
   // re-fetch in response to a state change — `deletedSlugs` makes the
   // delete UX correct in both worlds.
-  // Issue #244: the lifecycle action menu now also surfaces Archive
-  // (active) and Restore (archived), but the real backends ship later
-  // (#245 KV, #247-249 source). For now both stubs throw a friendly
-  // error so the menu shape is testable and the user gets honest
-  // feedback if they confirm.
   const [deletedSlugs, setDeletedSlugs] = useState<Set<string>>(
     () => new Set(),
   );
+  // Issue #245: KV archive/restore land local overrides for the
+  // lifecycle flag so the affected card jumps between Active and
+  // Archived immediately, without a full reload. The map is keyed by
+  // slug → next-archived-state; missing entries mean "use the value
+  // from the registry hook as-is". Unlike `deletedSlugs`, we cannot
+  // simply rely on a refetch because the mocked hook in unit tests
+  // does not re-resolve on state change, and even in production a
+  // reload would feel sluggish for a reversible action.
+  const [archivedOverrides, setArchivedOverrides] = useState<
+    Record<string, boolean>
+  >(() => ({}));
 
   // `__PROJECT_ROOT__` is injected by vite.config.ts: an absolute path in
   // dev (`command === "serve"`), the empty string in production builds.
@@ -123,37 +129,110 @@ export default function AdminIndex() {
   }, []);
 
   /**
-   * Issue #244: UI-only stubs for Archive / Restore. They surface a
-   * friendly inline error so the confirmation dialog's existing
-   * `*-error` slot makes the "not yet wired" state visible. Later
-   * slices replace these with real KV / source GitHub PR flows.
+   * Issue #245: real KV archive / restore for KV-backed decks.
+   *
+   * Source-backed decks have no runtime mutation surface yet (the
+   * GitHub PR flow ships in PRD #242 follow-up slices) so we keep the
+   * `not yet wired` inline error for those rows — preserves the
+   * friendly feedback from #244 while making clear that KV decks now
+   * work end-to-end.
+   *
+   * The KV→source split is decided by walking the registry entries
+   * for the slug and reading `entry.source`. We capture it inside the
+   * callback so the handler stays a pure `(slug: string) => void`
+   * that matches the `<DeckCardGrid>` prop contract.
+   *
+   * Local UI: on success we toggle `archivedOverrides[slug]` so the
+   * card jumps between sections immediately. We do NOT call
+   * `window.location.reload()` here because archive is a reversible,
+   * non-destructive lifecycle event — a full reload would feel
+   * heavier than the action warrants and would also fight the
+   * existing unit-test path where `useAdminDataDeckList` is mocked.
    */
-  const handleArchive = useCallback(async (_slug: string) => {
-    void _slug;
-    throw new Error(
-      "Archive backend is not wired yet — coming in a follow-up slice.",
-    );
-  }, []);
-  const handleRestore = useCallback(async (_slug: string) => {
-    void _slug;
-    throw new Error(
-      "Restore backend is not wired yet — coming in a follow-up slice.",
-    );
-  }, []);
+  const findSource = useCallback(
+    (slug: string): "source" | "kv" => {
+      const found = entries.find((e) => e.meta.slug === slug);
+      return (found?.source ?? "source") as "source" | "kv";
+    },
+    [entries],
+  );
+
+  const handleArchive = useCallback(
+    async (slug: string) => {
+      if (findSource(slug) !== "kv") {
+        throw new Error(
+          "Archive backend is not wired yet — coming in a follow-up slice.",
+        );
+      }
+      const res = await fetch(
+        `/api/admin/decks/${encodeURIComponent(slug)}/archive`,
+        { method: "POST", headers: adminWriteHeaders() },
+      );
+      if (!res.ok) {
+        let message = `Failed to archive deck (${res.status})`;
+        try {
+          const body = (await res.json()) as { error?: string };
+          if (body?.error) message = body.error;
+        } catch {
+          /* not JSON — keep generic message */
+        }
+        throw new Error(message);
+      }
+      setArchivedOverrides((prev) => ({ ...prev, [slug]: true }));
+    },
+    [findSource],
+  );
+
+  const handleRestore = useCallback(
+    async (slug: string) => {
+      if (findSource(slug) !== "kv") {
+        throw new Error(
+          "Restore backend is not wired yet — coming in a follow-up slice.",
+        );
+      }
+      const res = await fetch(
+        `/api/admin/decks/${encodeURIComponent(slug)}/restore`,
+        { method: "POST", headers: adminWriteHeaders() },
+      );
+      if (!res.ok) {
+        let message = `Failed to restore deck (${res.status})`;
+        try {
+          const body = (await res.json()) as { error?: string };
+          if (body?.error) message = body.error;
+        } catch {
+          /* not JSON — keep generic message */
+        }
+        throw new Error(message);
+      }
+      setArchivedOverrides((prev) => ({ ...prev, [slug]: false }));
+    },
+    [findSource],
+  );
 
   // Issue #243: split the merged admin list into Active vs Archived.
   // Archived wins over Draft on placement — a deck with both flags
   // lives in the Archived section, not the Active draft-filter path.
   // The Active section is subject to the `showDrafts` toggle (issue
   // #191); the Archived section is always visible (no toggle).
+  //
+  // Issue #245 — `archivedOverrides[slug]` lets the local UI flip a
+  // card between sections before the registry hook re-resolves. The
+  // override beats the persisted `meta.archived` so the card moves
+  // immediately on a successful archive/restore POST.
   const { activeEntries, archivedEntries } = useMemo(() => {
     const alive = entries.filter((e) => !deletedSlugs.has(e.meta.slug));
-    const archived = alive.filter((e) => e.meta.archived === true);
+    const isArchivedNow = (slug: string, metaArchived: boolean | undefined) =>
+      slug in archivedOverrides
+        ? archivedOverrides[slug] === true
+        : metaArchived === true;
+    const archived = alive.filter((e) =>
+      isArchivedNow(e.meta.slug, e.meta.archived),
+    );
     const active = alive
-      .filter((e) => e.meta.archived !== true)
+      .filter((e) => !isArchivedNow(e.meta.slug, e.meta.archived))
       .filter((e) => settings.showDrafts || e.meta.draft !== true);
     return { activeEntries: active, archivedEntries: archived };
-  }, [entries, deletedSlugs, settings.showDrafts]);
+  }, [entries, deletedSlugs, archivedOverrides, settings.showDrafts]);
 
   // Translate active registry entries into grid items. KV-backed
   // decks are deletable; source decks are not (they live in code).

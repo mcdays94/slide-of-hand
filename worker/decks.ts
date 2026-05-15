@@ -86,6 +86,19 @@ export interface DecksEnv {
 }
 
 /**
+ * Side-data env extension (issue #245). Delete must clear the per-deck
+ * manifest record (`manifest:<slug>`) so retired KV decks don't leave
+ * orphans behind. We accept the `MANIFESTS` binding as optional on a
+ * separate type so callers can decide at the top-level whether the
+ * binding is wired — the production `Env` (see `worker/index.ts`)
+ * extends both `DecksEnv` and `ManifestsEnv`, satisfying this shape;
+ * unit-test envs that only seed `DECKS` skip cleanup cleanly.
+ */
+interface DecksSideDataEnv {
+  MANIFESTS?: KVNamespace;
+}
+
+/**
  * Public summary shape stored in the `decks-list` index. Excludes slot
  * data and any non-summary fields so the public list endpoint stays
  * cheap to render and never leaks slot content.
@@ -125,11 +138,21 @@ interface DeckSummary {
 
 const KV_DECK = (slug: string) => `deck:${slug}`;
 const KV_INDEX = "decks-list";
+/** Side-data key for the per-deck manifest (issue #245 delete cleanup). */
+const KV_MANIFEST = (slug: string) => `manifest:${slug}`;
 
 const LIST_PATH = /^\/api\/decks\/?$/;
 const READ_PATH = /^\/api\/decks\/([^/]+)\/?$/;
 const ADMIN_LIST_PATH = /^\/api\/admin\/decks\/?$/;
 const ADMIN_ITEM_PATH = /^\/api\/admin\/decks\/([^/]+)\/?$/;
+/**
+ * Issue #245 — lifecycle subresource verbs on a single deck. Archive
+ * flips `meta.archived = true`; Restore clears it. POST instead of
+ * PATCH because the rest of this surface speaks POST (upsert) +
+ * DELETE (tombstone); adding PATCH for one pair would be inconsistent.
+ */
+const ADMIN_ARCHIVE_PATH = /^\/api\/admin\/decks\/([^/]+)\/archive\/?$/;
+const ADMIN_RESTORE_PATH = /^\/api\/admin\/decks\/([^/]+)\/restore\/?$/;
 
 const READ_HEADERS = {
   "content-type": "application/json",
@@ -402,11 +425,71 @@ async function handleAdminWrite(
 
 async function handleAdminDelete(
   slug: string,
-  env: DecksEnv,
+  env: DecksEnv & DecksSideDataEnv,
 ): Promise<Response> {
   await env.DECKS.delete(KV_DECK(slug));
   await removeFromIndex(env, slug);
+  // Issue #245 — clear per-deck side data so retired KV decks don't
+  // leave orphans behind. Today the only KV-backed side data is the
+  // manifest record (`manifest:<slug>` in `MANIFESTS`); other surfaces
+  // (themes, element overrides, analytics) are not keyed per-deck-slug
+  // and have their own lifecycles.
+  //
+  // The binding is optional on `DecksSideDataEnv` — legacy envs (and
+  // unit-test paths that only seed `DECKS`) skip cleanup cleanly. KV
+  // `delete()` is idempotent so it is safe to call against a missing
+  // key.
+  if (env.MANIFESTS) {
+    await env.MANIFESTS.delete(KV_MANIFEST(slug));
+  }
   return new Response(null, { status: 204 });
+}
+
+/**
+ * Issue #245 — toggle `meta.archived` on a KV-backed deck.
+ *
+ * Both archive and restore go through this helper. The mutation is:
+ *   1. Read the current `deck:<slug>` record (404 if missing).
+ *   2. Set / clear `meta.archived` (no-op if already in the target
+ *      state — both endpoints are idempotent).
+ *   3. Persist the record + the matching `decks-list` summary so
+ *      downstream consumers (public list, admin list) agree.
+ *
+ * Side data (manifest overrides, etc.) is NOT touched: archive is
+ * reversible by design and the side data must survive so restore
+ * puts the deck back in the same shape.
+ *
+ * The return shape mirrors `handleAdminWrite` (200 + the deck record)
+ * so the admin UI can pick up the updated summary fields without an
+ * extra round-trip.
+ */
+async function handleAdminLifecycle(
+  slug: string,
+  env: DecksEnv,
+  action: "archive" | "restore",
+): Promise<Response> {
+  const stored = (await env.DECKS.get(KV_DECK(slug), "json")) as
+    | DataDeck
+    | null;
+  if (!stored) return notFound();
+  const wantArchived = action === "archive";
+  const nextMeta = { ...stored.meta };
+  if (wantArchived) {
+    nextMeta.archived = true;
+  } else {
+    // Drop the key entirely on restore so the persisted record (and
+    // its summary) match the "never archived" shape exactly. This
+    // keeps the `summaryFromDeck` whitelist tidy and the post-restore
+    // record byte-for-byte equivalent to a fresh upsert.
+    delete nextMeta.archived;
+  }
+  const next: DataDeck = { ...stored, meta: nextMeta };
+  await env.DECKS.put(KV_DECK(slug), JSON.stringify(next));
+  await upsertIndex(env, summaryFromDeck(next));
+  return new Response(JSON.stringify(next), {
+    status: 200,
+    headers: NO_STORE_HEADERS,
+  });
 }
 
 // ---------------------------------------------------------------- //
@@ -420,12 +503,42 @@ async function handleAdminDelete(
  */
 export async function handleDecks(
   request: Request,
-  env: DecksEnv,
+  env: DecksEnv & DecksSideDataEnv,
 ): Promise<Response | null> {
   const url = new URL(request.url);
   const path = url.pathname;
 
   // --- Admin write paths first (most specific) ---
+
+  // Lifecycle subresources (`/archive`, `/restore`) live UNDER the
+  // single-item path so they must match before the bare item regex
+  // (which would otherwise eat `<slug>/archive` as a slug containing a
+  // slash via the broader `[^/]+` — except that group rejects slashes,
+  // so both paths COULD coexist; matching here keeps the routing intent
+  // explicit and the handlers small).
+  const archiveMatch = path.match(ADMIN_ARCHIVE_PATH);
+  if (archiveMatch) {
+    const denied = requireAccessAuth(request);
+    if (denied) return denied;
+    const slug = decodeURIComponent(archiveMatch[1]);
+    if (!isValidSlug(slug)) return badRequest("invalid slug");
+    if (request.method === "POST") {
+      return handleAdminLifecycle(slug, env, "archive");
+    }
+    return methodNotAllowed(["POST"]);
+  }
+
+  const restoreMatch = path.match(ADMIN_RESTORE_PATH);
+  if (restoreMatch) {
+    const denied = requireAccessAuth(request);
+    if (denied) return denied;
+    const slug = decodeURIComponent(restoreMatch[1]);
+    if (!isValidSlug(slug)) return badRequest("invalid slug");
+    if (request.method === "POST") {
+      return handleAdminLifecycle(slug, env, "restore");
+    }
+    return methodNotAllowed(["POST"]);
+  }
 
   if (ADMIN_ITEM_PATH.test(path)) {
     const denied = requireAccessAuth(request);

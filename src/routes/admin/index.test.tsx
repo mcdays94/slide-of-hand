@@ -662,33 +662,188 @@ describe("AdminIndex — Archived section (#243)", () => {
     expect(screen.getByTestId("lifecycle-menu-delete-kv-deck")).toBeDefined();
   });
 
-  it("Archive confirmation in this slice surfaces a 'not yet wired' inline error (no real backend)", async () => {
+  // Issue #245 — KV archive / restore are now wired to real Worker
+  // endpoints. Source-backed decks continue to surface the friendly
+  // "not yet wired" inline error (their backends ship later — see
+  // PRD #242 follow-up slices). The KV ↔ source split lives inside
+  // AdminIndex's handlers so the menu shape is identical across both.
+
+  it("KV active Archive: fires POST /api/admin/decks/<slug>/archive and moves card to Archived section", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({}),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
     mockEntries = [entry("kv-deck", "KV Deck", "kv")];
     await renderAdmin();
+
+    // Pre-flight: card lives in the Active section, no Archived
+    // section exists yet.
+    expect(screen.getByTestId("admin-active-section").textContent).toMatch(
+      /KV Deck/,
+    );
+    expect(screen.queryByTestId("admin-archived-section")).toBeNull();
+
     fireEvent.click(screen.getByTestId("lifecycle-menu-trigger-kv-deck"));
     fireEvent.click(screen.getByTestId("lifecycle-menu-archive-kv-deck"));
     fireEvent.click(screen.getByTestId("confirm-dialog-confirm"));
-    await waitFor(() =>
-      expect(screen.getByTestId("archive-error").textContent).toMatch(
-        /not wired|follow-up/i,
-      ),
-    );
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/admin/decks/kv-deck/archive");
+    expect((init as RequestInit).method).toBe("POST");
+    const headers = (init as RequestInit).headers as Record<string, string>;
+    expect(headers["cf-access-authenticated-user-email"]).toBe("dev@local");
+
+    // Local UI update: the card moves to the Archived section without
+    // a reload. The Active section no longer contains the deck title.
+    await waitFor(() => {
+      const archived = screen.queryByTestId("admin-archived-section");
+      expect(archived?.textContent).toMatch(/KV Deck/);
+      const active = screen.getByTestId("admin-active-section");
+      expect(active.textContent).not.toMatch(/KV Deck/);
+    });
   });
 
-  it("Restore confirmation in this slice surfaces a 'not yet wired' inline error (no real backend)", async () => {
+  it("KV archived Restore: fires POST /api/admin/decks/<slug>/restore and moves card to Active section", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({}),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
     mockEntries = [
       entry("retired-kv", "Retired KV", "kv", "public", {
         archived: true,
       }),
     ];
     await renderAdmin();
+
+    expect(screen.getByTestId("admin-archived-section").textContent).toMatch(
+      /Retired KV/,
+    );
+
     fireEvent.click(screen.getByTestId("lifecycle-menu-trigger-retired-kv"));
     fireEvent.click(screen.getByTestId("lifecycle-menu-restore-retired-kv"));
     fireEvent.click(screen.getByTestId("confirm-dialog-confirm"));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/admin/decks/retired-kv/restore");
+    expect((init as RequestInit).method).toBe("POST");
+
+    // After the restore resolves the card lives in Active and the
+    // Archived section unmounts (it was the only archived entry).
+    await waitFor(() => {
+      expect(screen.queryByTestId("admin-archived-section")).toBeNull();
+      expect(screen.getByTestId("admin-active-section").textContent).toMatch(
+        /Retired KV/,
+      );
+    });
+  });
+
+  it("KV active Archive: surfaces a server error inline without moving the card", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 500,
+      json: async () => ({ error: "kv unavailable" }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    mockEntries = [entry("kv-deck", "KV Deck", "kv")];
+    await renderAdmin();
+
+    fireEvent.click(screen.getByTestId("lifecycle-menu-trigger-kv-deck"));
+    fireEvent.click(screen.getByTestId("lifecycle-menu-archive-kv-deck"));
+    fireEvent.click(screen.getByTestId("confirm-dialog-confirm"));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("archive-error").textContent).toMatch(
+        /kv unavailable/,
+      ),
+    );
+    // Card stays in Active; the dialog stays open so the user can retry.
+    expect(screen.getByTestId("admin-active-section").textContent).toMatch(
+      /KV Deck/,
+    );
+    expect(screen.queryByTestId("admin-archived-section")).toBeNull();
+  });
+
+  it("source-backed Archive: does NOT hit the KV endpoint and surfaces a 'not yet wired' inline error", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    mockEntries = [entry("hello", "Hello", "source")];
+    await renderAdmin();
+
+    fireEvent.click(screen.getByTestId("lifecycle-menu-trigger-hello"));
+    fireEvent.click(screen.getByTestId("lifecycle-menu-archive-hello"));
+    fireEvent.click(screen.getByTestId("confirm-dialog-confirm"));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("archive-error").textContent).toMatch(
+        /not wired|follow-up/i,
+      ),
+    );
+    // Crucial: no KV endpoint call leaks for a source-backed deck.
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("source-backed Restore: does NOT hit the KV endpoint and surfaces a 'not yet wired' inline error", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    mockEntries = [
+      entry("retired-source", "Retired Source", "source", "public", {
+        archived: true,
+      }),
+    ];
+    await renderAdmin();
+
+    fireEvent.click(
+      screen.getByTestId("lifecycle-menu-trigger-retired-source"),
+    );
+    fireEvent.click(
+      screen.getByTestId("lifecycle-menu-restore-retired-source"),
+    );
+    fireEvent.click(screen.getByTestId("confirm-dialog-confirm"));
+
     await waitFor(() =>
       expect(screen.getByTestId("restore-error").textContent).toMatch(
         /not wired|follow-up/i,
       ),
     );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("KV archived Delete: uses the typed-slug dialog from the Archived section and removes the card", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 204,
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    mockEntries = [
+      entry("retired-kv", "Retired KV", "kv", "public", {
+        archived: true,
+      }),
+    ];
+    await renderAdmin();
+
+    fireEvent.click(screen.getByTestId("lifecycle-menu-trigger-retired-kv"));
+    fireEvent.click(screen.getByTestId("lifecycle-menu-delete-retired-kv"));
+    // Typed-slug guard from #244 still gates the destructive action.
+    fireEvent.change(screen.getByTestId("typed-slug-input"), {
+      target: { value: "retired-kv" },
+    });
+    fireEvent.click(screen.getByTestId("confirm-dialog-confirm"));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/admin/decks/retired-kv");
+    expect((init as RequestInit).method).toBe("DELETE");
   });
 });
