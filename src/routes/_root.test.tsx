@@ -237,4 +237,51 @@ describe("/ — public deck index", () => {
       ]);
     });
   });
+
+  // ── Slice 2 (#191) — draft filtering ───────────────────────────────────
+
+  it("hides build-time decks with meta.draft === true", async () => {
+    await renderRoot([
+      makeDeck("published", "2026-02-01"),
+      makeDeck("wip", "2026-03-01", { draft: true }),
+    ]);
+    await waitFor(() => {
+      const cards = screen.getAllByTestId("deck-card");
+      expect(cards.map((c) => c.getAttribute("href"))).toEqual([
+        "/decks/published",
+      ]);
+    });
+  });
+
+  it("renders build-time decks with draft === false or undefined", async () => {
+    await renderRoot([
+      makeDeck("a-undef", "2026-02-01"),
+      makeDeck("b-false", "2026-01-01", { draft: false }),
+    ]);
+    await waitFor(() => {
+      const cards = screen.getAllByTestId("deck-card");
+      const slugs = cards.map((c) => c.getAttribute("href"));
+      expect(slugs.sort()).toEqual(["/decks/a-undef", "/decks/b-false"]);
+    });
+  });
+
+  it("hides KV-backed decks with draft === true", async () => {
+    await renderRoot(
+      [],
+      [
+        summary("kv-published", "2026-02-01"),
+        // `draft` is not in the basic `summary()` factory — extend inline.
+        {
+          ...summary("kv-draft", "2026-03-01"),
+          draft: true,
+        },
+      ],
+    );
+    await waitFor(() => {
+      const cards = screen.getAllByTestId("deck-card");
+      expect(cards.map((c) => c.getAttribute("href"))).toEqual([
+        "/decks/kv-published",
+      ]);
+    });
+  });
 });
