@@ -243,6 +243,7 @@ You import these directly. Don't reinvent or re-export them.
 - Types: \`import type { Deck, DeckMeta, SlideDef } from "@/framework/viewer/types";\`
 - Phase hook: \`import { usePhase } from "@/framework/viewer/PhaseContext";\`
 - Reveal primitive: \`import { Reveal, RevealInline } from "@/framework/viewer/Reveal";\`
+- Citation primitives: \`import { Cite, SourceFooter, type Source } from "@/framework/citation";\`
 - Motion easings + presets: \`import { easeEntrance, easeStandard, easeButton, easeActive, staggerContainer, staggerItem } from "@/lib/motion";\`
 - Framer Motion: \`import { motion } from "framer-motion";\`
 
@@ -491,6 +492,32 @@ Em-dashes are FINE in code comments, JSDoc, and TypeScript
 identifiers (author-facing only). The rule is specifically about
 audience-visible text. Hyphens (\`-\`) in compound words like
 \`edge-native\` are not em-dashes and are fine.
+
+## Citations for factual claims
+
+When a slide states a factual claim (statistic, dated quote,
+external research finding, named-vendor benchmark), attribute it.
+
+- Inline marker next to the claim: \`<Cite n={1} />\` (optionally
+  \`<Cite n={1} href="https://…" />\`).
+- Matching footer at the bottom of the slide:
+  \`<SourceFooter sources={SOURCES} />\`.
+- Define sources inside the same slide file:
+  \`const SOURCES: Source[] = [{ n: 1, label: "Acme · State of X 2025", href: "https://…" }];\`
+  Numbers in \`SOURCES\` must line up with the \`n\` values used by
+  \`<Cite>\` markers above.
+- A \`Source\` may omit \`href\` when no public URL exists (book,
+  internal RFC, conference talk). The footer renders it as text.
+
+Do NOT fabricate sources. If your prompt did not provide a citation
+and you are not certain of a real public source, either drop the
+specific claim (keep the slide qualitative) or omit \`<Cite>\`
+entirely. Only cite well-known public docs (e.g. Cloudflare's own
+developer docs, an upstream RFC) when the claim genuinely maps to a
+canonical page. Hallucinated URLs are worse than no citation.
+
+Slides without factual claims do not need a \`<SourceFooter>\`. Title,
+cover, section, recap, and thanks slides almost never carry one.
 
 ## Click-to-advance discipline
 
