@@ -59,8 +59,9 @@ type MetaGlobResult = Record<string, MetaModule>;
 type DeckLoader = () => Promise<{ default: Deck }>;
 type LoaderGlobResult = Record<string, DeckLoader>;
 
-const META_PATH_RE = /\/decks\/(public|private)\/([^/]+)\/meta\.ts$/;
-const INDEX_PATH_RE = /\/decks\/(public|private)\/([^/]+)\/index\.tsx?$/;
+const META_PATH_RE = /\/decks\/(public|private|archive)\/([^/]+)\/meta\.ts$/;
+const INDEX_PATH_RE =
+  /\/decks\/(public|private|archive)\/([^/]+)\/index\.tsx?$/;
 
 export interface RegistryEntry {
   visibility: "public" | "private";
@@ -99,8 +100,8 @@ export function buildRegistry(
   for (const [path, mod] of Object.entries(modules)) {
     const match = META_PATH_RE.exec(path);
     if (!match) continue;
-    const [, visibility, folder] = match;
-    if (prod && visibility === "private") continue;
+    const [, kind, folder] = match;
+    if (prod && kind === "private") continue;
     const meta = mod.meta;
     if (!meta || typeof meta.slug !== "string" || typeof meta.title !== "string") {
       throw new Error(
@@ -112,10 +113,23 @@ export function buildRegistry(
         `[decks-registry] Slug mismatch in ${path}: meta.slug="${meta.slug}" but folder is "${folder}". They MUST match.`,
       );
     }
+    // Issue #243 — archive is a third top-level folder alongside
+    // public/private. Decks under `src/decks/archive/<slug>/` are
+    // treated as retired: the folder location IS the source of truth
+    // for "archived", so we inject `meta.archived = true` regardless
+    // of what their meta.ts says. Visibility for archived source
+    // decks is "public" (archived decks are not subject to the
+    // private-deck filtering — they are filtered separately by the
+    // archived flag).
+    const isArchive = kind === "archive";
+    const visibility: "public" | "private" = isArchive
+      ? "public"
+      : (kind as "public" | "private");
+    const entryMeta: DeckMeta = isArchive ? { ...meta, archived: true } : meta;
     entries.push({
-      visibility: visibility as "public" | "private",
+      visibility,
       folder,
-      meta,
+      meta: entryMeta,
     });
   }
   // Sort by date descending (newest first); fall back to slug for stable order.
@@ -141,8 +155,8 @@ export function buildLoaderMap(
   for (const [path, loader] of Object.entries(modules)) {
     const match = INDEX_PATH_RE.exec(path);
     if (!match) continue;
-    const [, visibility, folder] = match;
-    if (prod && visibility === "private") continue;
+    const [, kind, folder] = match;
+    if (prod && kind === "private") continue;
     map.set(folder, loader);
   }
   return map;
@@ -179,6 +193,16 @@ const privateMetaModules = import.meta.env.PROD
       eager: true,
     }) as MetaGlobResult);
 
+// Issue #243 — archive globs. Archived source decks live under
+// `src/decks/archive/<slug>/`. Unlike `private/*`, archive decks DO
+// ship in the production bundle (admin needs to render them in the
+// Archived section), but the registry filters them out of public
+// consumers (`getPublicDeckMetas`, `mergeDeckLists`).
+const archiveMetaModules = import.meta.glob<MetaModule>(
+  "@/decks/archive/*/meta.ts",
+  { eager: true },
+);
+
 const publicDeckLoaders = import.meta.glob<{ default: Deck }>(
   "@/decks/public/*/index.tsx",
 );
@@ -189,14 +213,20 @@ const privateDeckLoaders = import.meta.env.PROD
       "@/decks/private/*/index.tsx",
     ) as LoaderGlobResult);
 
+const archiveDeckLoaders = import.meta.glob<{ default: Deck }>(
+  "@/decks/archive/*/index.tsx",
+);
+
 const metaModules: MetaGlobResult = {
   ...publicMetaModules,
   ...privateMetaModules,
+  ...archiveMetaModules,
 };
 
 const deckLoaders: LoaderGlobResult = {
   ...publicDeckLoaders,
   ...privateDeckLoaders,
+  ...archiveDeckLoaders,
 };
 
 const registry = buildRegistry(metaModules, import.meta.env.PROD);
@@ -223,17 +253,28 @@ export function getAllDeckEntries(): RegistryEntry[] {
 /**
  * Public deck metas only. Use for the public index page.
  *
- * Filters on two dimensions:
+ * Filters on three dimensions:
  *   1. `visibility === "public"` — never leak private decks to the
  *      public surface.
  *   2. `meta.draft !== true` — hide work-in-progress decks (issue
  *      #191). `undefined` / `false` both pass; only the explicit
- *      `true` is dropped. Admin consumers use `getAllDeckMetas()` /
- *      `getAllDeckEntries()` to see the full set including drafts.
+ *      `true` is dropped.
+ *   3. `meta.archived !== true` — hide retired decks (issue #243).
+ *      Archived decks live in `src/decks/archive/<slug>/` (folder
+ *      location injects the flag); the public index never lists
+ *      them and the deck route returns 404.
+ *
+ * Admin consumers use `getAllDeckMetas()` / `getAllDeckEntries()`
+ * to see the full set including drafts and archived decks.
  */
 export function getPublicDeckMetas(): DeckMeta[] {
   return registry
-    .filter((e) => e.visibility === "public" && e.meta.draft !== true)
+    .filter(
+      (e) =>
+        e.visibility === "public" &&
+        e.meta.draft !== true &&
+        e.meta.archived !== true,
+    )
     .map((e) => e.meta);
 }
 
@@ -413,6 +454,13 @@ export interface DataDeckSummary {
    * so `mergeDeckLists` can defensively re-filter on the client side.
    */
   draft?: boolean;
+  /**
+   * Retired flag (issue #243). The Worker filters archived decks out
+   * of the public list. Admin consumers (`useAdminDataDeckList`)
+   * keep the field so the Archived section can render them; the
+   * public `mergeDeckLists` defensively re-filters on the client.
+   */
+  archived?: boolean;
 }
 
 interface DecksListResponse {
@@ -441,6 +489,10 @@ function summaryToDeckMeta(summary: DataDeckSummary): DeckMeta {
   // `mergeDeckLists` drops drafts BEFORE calling this helper, so a draft
   // entry never reaches the public index even if it's preserved here.
   if (summary.draft === true) meta.draft = true;
+  // Issue #243 — propagate `archived` so the admin Archived section
+  // can group these rows. Public `mergeDeckLists` drops archived
+  // entries before this helper is called, so it never reaches `/`.
+  if (summary.archived === true) meta.archived = true;
   return meta;
 }
 
@@ -489,10 +541,21 @@ export function mergeDeckLists(
   buildTime: DeckMeta[],
   kv: DataDeckSummary[],
 ): DeckMeta[] {
-  const filteredBuildTime = buildTime.filter((m) => m.draft !== true);
+  // Issue #243 — archived wins over draft. Decks with `archived ===
+  // true` are dropped from BOTH halves regardless of the draft flag,
+  // so a record that is both archived AND draft is always invisible
+  // on the public surface.
+  const filteredBuildTime = buildTime.filter(
+    (m) => m.draft !== true && m.archived !== true,
+  );
   const buildTimeSlugs = new Set(filteredBuildTime.map((d) => d.slug));
   const kvAsMeta = kv
-    .filter((s) => s.visibility === "public" && s.draft !== true)
+    .filter(
+      (s) =>
+        s.visibility === "public" &&
+        s.draft !== true &&
+        s.archived !== true,
+    )
     .filter((s) => !buildTimeSlugs.has(s.slug))
     .map(summaryToDeckMeta);
 

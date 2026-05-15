@@ -56,6 +56,30 @@ export interface DataDeckMeta {
    * `src/framework/viewer/types.ts` for the full semantics.
    */
   draft?: boolean;
+  /**
+   * When `true`, this deck is retired (issue #243 / PRD #242).
+   *
+   * Orthogonal to `visibility` AND `draft`. UI semantics:
+   *   - Public homepage `/` does NOT list archived decks.
+   *   - Public deck route `/decks/<slug>` returns 404 for archived
+   *     decks (no leak).
+   *   - Admin `/admin` renders archived decks in a separate
+   *     "Archived" section below the Active grid; the
+   *     `showDrafts` toggle does NOT apply (Archived always renders).
+   *   - "Archived wins over draft": when both flags are true the
+   *     deck belongs in the Archived section, not the Active /
+   *     draft-filter behavior.
+   *
+   * Pre-#243 records that omit this field validate cleanly and are
+   * treated as not-archived. Source-backed archived decks live under
+   * `src/decks/archive/<slug>/` and have `meta.archived = true`
+   * injected by the registry; KV-backed archived decks set the field
+   * explicitly.
+   *
+   * This slice (#243) only adds the READ MODEL. Archive / Restore /
+   * Delete action wiring lands in later slices of PRD #242.
+   */
+  archived?: boolean;
 }
 
 export interface DataDeck {
@@ -196,6 +220,13 @@ function validateMeta(
     errors.push("meta.draft must be a boolean when present");
   }
 
+  // Issue #243 — `archived` is optional. Boolean only; reject anything
+  // else. Pre-#243 records that omit the field validate cleanly and
+  // are treated as not-archived downstream.
+  if (meta.archived !== undefined && typeof meta.archived !== "boolean") {
+    errors.push("meta.archived must be a boolean when present");
+  }
+
   if (errors.length > startCount) return null;
 
   // Construct the typed object only when all checks passed.
@@ -213,6 +244,7 @@ function validateMeta(
     out.runtimeMinutes = meta.runtimeMinutes;
   }
   if (typeof meta.draft === "boolean") out.draft = meta.draft;
+  if (typeof meta.archived === "boolean") out.archived = meta.archived;
   return out;
 }
 

@@ -139,6 +139,63 @@ describe("GET /api/decks", () => {
   // admin list (`/api/admin/decks`) so authors can find and finish them.
   // ──────────────────────────────────────────────────────────────────────
 
+  // Issue #243 — archived decks must not appear on the public list,
+  // mirroring the private + draft filters. Defence in depth: the
+  // front-end mergeDeckLists also drops archived entries.
+
+  it("filters out decks with archived === true (archived must not leak)", async () => {
+    const { env, kv } = makeEnv();
+    await kv.put(
+      "decks-list",
+      JSON.stringify([
+        {
+          slug: "active",
+          title: "Active",
+          date: "2026-05-07",
+          visibility: "public",
+        },
+        {
+          slug: "retired",
+          title: "Retired",
+          date: "2026-05-07",
+          visibility: "public",
+          archived: true,
+        },
+      ]),
+    );
+    const res = await call(new Request("https://example.com/api/decks"), env);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { decks: Array<{ slug: string }> };
+    expect(body.decks.map((d) => d.slug)).toEqual(["active"]);
+    expect(JSON.stringify(body)).not.toContain("retired");
+  });
+
+  it("archived wins over draft: a deck flagged both is filtered (drafts already filter, but be explicit)", async () => {
+    const { env, kv } = makeEnv();
+    await kv.put(
+      "decks-list",
+      JSON.stringify([
+        {
+          slug: "both",
+          title: "Both",
+          date: "2026-05-07",
+          visibility: "public",
+          draft: true,
+          archived: true,
+        },
+        {
+          slug: "active",
+          title: "Active",
+          date: "2026-05-07",
+          visibility: "public",
+        },
+      ]),
+    );
+    const res = await call(new Request("https://example.com/api/decks"), env);
+    const body = (await res.json()) as { decks: Array<{ slug: string }> };
+    expect(body.decks.map((d) => d.slug)).toEqual(["active"]);
+  });
+
   it("filters out decks with draft === true (drafts must not leak)", async () => {
     const { env, kv } = makeEnv();
     await kv.put(
@@ -202,6 +259,24 @@ describe("GET /api/decks/<slug>", () => {
     // Body must not echo any meta from the private deck.
     const text = await res.text();
     expect(text).not.toContain("Deck secret");
+  });
+
+  // Issue #243 — archived decks 404 on the public read endpoint. Same
+  // rationale as private: returning the record (even partially) would
+  // leak that a slug once existed. 404 = "no such deck".
+  it("returns 404 when the deck is archived (no leak)", async () => {
+    const { env, kv } = makeEnv();
+    await kv.put(
+      "deck:retired",
+      JSON.stringify(makeDeck("retired", "public", { archived: true })),
+    );
+    const res = await call(
+      new Request("https://example.com/api/decks/retired"),
+      env,
+    );
+    expect(res.status).toBe(404);
+    const text = await res.text();
+    expect(text).not.toContain("Deck retired");
   });
 
   it("returns the full DataDeck for a public deck", async () => {
@@ -284,6 +359,42 @@ describe("GET /api/admin/decks", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { decks: unknown[] };
     expect(body.decks).toEqual([]);
+  });
+
+  // Issue #243 / PRD #242 — admin list MUST include archived decks so
+  // the admin Archived section can render them. The public list filters
+  // them out.
+  it("includes archived decks (admin sees archived)", async () => {
+    const { env, kv } = makeEnv();
+    await kv.put(
+      "decks-list",
+      JSON.stringify([
+        {
+          slug: "active",
+          title: "Active",
+          date: "2026-05-07",
+          visibility: "public",
+        },
+        {
+          slug: "retired",
+          title: "Retired",
+          date: "2026-05-07",
+          visibility: "public",
+          archived: true,
+        },
+      ]),
+    );
+    const res = await call(
+      adminRequest("https://example.com/api/admin/decks"),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      decks: Array<{ slug: string; archived?: boolean }>;
+    };
+    expect(body.decks.map((d) => d.slug).sort()).toEqual(["active", "retired"]);
+    const retired = body.decks.find((d) => d.slug === "retired");
+    expect(retired?.archived).toBe(true);
   });
 
   // Issue #191 / slice 2 — admin list MUST include drafts so authors can
@@ -415,6 +526,46 @@ describe("POST /api/admin/decks/<slug>", () => {
     expect(list).toHaveLength(1);
     expect(list[0].slug).toBe("wip");
     expect(list[0].draft).toBe(true);
+  });
+
+  // Issue #243 — propagate `meta.archived` into the index summary so
+  // the public list handler can filter on it. Without this, archived
+  // decks saved via POST would not be filterable downstream.
+  it("propagates meta.archived into the decks-list index summary", async () => {
+    const { env, kv } = makeEnv();
+    await call(
+      adminRequest("https://example.com/api/admin/decks/retired", {
+        method: "POST",
+        body: JSON.stringify(
+          makeDeck("retired", "public", { archived: true }),
+        ),
+        headers: { "content-type": "application/json" },
+      }),
+      env,
+    );
+    const list = JSON.parse(kv.store.get("decks-list")!) as Array<
+      Record<string, unknown>
+    >;
+    expect(list).toHaveLength(1);
+    expect(list[0].slug).toBe("retired");
+    expect(list[0].archived).toBe(true);
+  });
+
+  it("omits archived from the index summary when not set", async () => {
+    const { env, kv } = makeEnv();
+    await call(
+      adminRequest("https://example.com/api/admin/decks/active", {
+        method: "POST",
+        body: JSON.stringify(makeDeck("active", "public")),
+        headers: { "content-type": "application/json" },
+      }),
+      env,
+    );
+    const list = JSON.parse(kv.store.get("decks-list")!) as Array<
+      Record<string, unknown>
+    >;
+    expect(list).toHaveLength(1);
+    expect("archived" in list[0]).toBe(false);
   });
 
   it("omits draft from the index summary when not set", async () => {

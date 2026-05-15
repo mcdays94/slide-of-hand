@@ -284,4 +284,58 @@ describe("/ — public deck index", () => {
       ]);
     });
   });
+
+  // ── Slice 1 (#243) — archived filtering ────────────────────────────────
+
+  it("hides build-time decks with meta.archived === true", async () => {
+    await renderRoot([
+      makeDeck("active", "2026-02-01"),
+      makeDeck("retired", "2026-03-01", { archived: true }),
+    ]);
+    await waitFor(() => {
+      const cards = screen.getAllByTestId("deck-card");
+      expect(cards.map((c) => c.getAttribute("href"))).toEqual([
+        "/decks/active",
+      ]);
+    });
+  });
+
+  it("hides KV-backed decks with archived === true", async () => {
+    await renderRoot(
+      [],
+      [
+        summary("kv-active", "2026-02-01"),
+        {
+          ...summary("kv-retired", "2026-03-01"),
+          archived: true,
+        },
+      ],
+    );
+    await waitFor(() => {
+      const cards = screen.getAllByTestId("deck-card");
+      expect(cards.map((c) => c.getAttribute("href"))).toEqual([
+        "/decks/kv-active",
+      ]);
+    });
+  });
+
+  it("hides decks that are both draft AND archived (archived wins)", async () => {
+    await renderRoot(
+      [makeDeck("both", "2026-03-01", { draft: true, archived: true })],
+      [
+        {
+          ...summary("kv-both", "2026-03-01"),
+          draft: true,
+          archived: true,
+        },
+        summary("kv-active", "2026-02-01"),
+      ],
+    );
+    await waitFor(() => {
+      const cards = screen.getAllByTestId("deck-card");
+      expect(cards.map((c) => c.getAttribute("href"))).toEqual([
+        "/decks/kv-active",
+      ]);
+    });
+  });
 });

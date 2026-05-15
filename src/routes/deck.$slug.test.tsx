@@ -174,6 +174,17 @@ function makeRegistryMock(buildTimeDecks: Record<string, Deck>) {
   };
 }
 
+const archivedSourceDeck: Deck = {
+  meta: {
+    slug: "retired-talk",
+    title: "Retired Talk",
+    description: "from build-time, archived",
+    date: "2024-04-01",
+    archived: true,
+  },
+  slides: [stubSlide],
+};
+
 describe("/decks/<slug> — KV fallback (Slice 5)", () => {
   it("renders source <Deck> when slug hits the build-time registry", async () => {
     vi.doMock(
@@ -254,6 +265,37 @@ describe("/decks/<slug> — KV fallback (Slice 5)", () => {
     // The viewer stubs must NOT have rendered.
     expect(screen.queryByTestId("data-deck-stub")).toBeNull();
     expect(screen.queryByTestId("source-deck-stub")).toBeNull();
+  });
+
+  // Issue #243 — archived source decks 404 on the public route. The
+  // build-time registry tags them with `meta.archived = true`; the
+  // route checks the meta synchronously and renders <NotFound>
+  // without loading the deck's chunk.
+  it("returns 404 for an archived build-time source deck", async () => {
+    vi.doMock(
+      "@/lib/decks-registry",
+      makeRegistryMock({ "retired-talk": archivedSourceDeck }),
+    );
+    await renderRouteAt("retired-talk");
+    expect(screen.getByText(/no deck called/i)).toBeTruthy();
+    // The source-deck stub MUST NOT render — the archived gate fires
+    // before the lazy load.
+    expect(screen.queryByTestId("source-deck-stub")).toBeNull();
+  });
+
+  // Issue #243 — archived KV-backed decks come back from
+  // `/api/decks/<slug>` as 404 (the worker filters them on the public
+  // read endpoint). The route surfaces this as the normal 404 page.
+  it("returns 404 for an archived KV-backed deck (worker responds 404)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      mockFetchSequence([{ ok: false, body: { error: "not found" } }]),
+    );
+    vi.doMock("@/lib/decks-registry", makeRegistryMock({}));
+    await renderRouteAt("retired-kv-deck");
+    await waitFor(() =>
+      expect(screen.getByText(/no deck called/i)).toBeTruthy(),
+    );
   });
 
   it("does not fire a KV fetch when the build-time registry has the slug", async () => {

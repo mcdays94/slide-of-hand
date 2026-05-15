@@ -156,6 +156,48 @@ describe("validateDataDeck — happy paths", () => {
     if (!out.ok) return;
     expect("draft" in out.value.meta).toBe(false);
   });
+
+  // Issue #243 — `archived` is optional and orthogonal to `visibility`
+  // and `draft`. Pre-#243 records that omit the field validate cleanly
+  // and are treated as not-archived downstream.
+
+  it("accepts archived = true", () => {
+    const out = validateDataDeck({
+      ...validDeck,
+      meta: { ...validDeck.meta, archived: true },
+    });
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    expect(out.value.meta.archived).toBe(true);
+  });
+
+  it("accepts archived = false", () => {
+    const out = validateDataDeck({
+      ...validDeck,
+      meta: { ...validDeck.meta, archived: false },
+    });
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    expect(out.value.meta.archived).toBe(false);
+  });
+
+  it("omits archived from validated output when undefined (back-compat)", () => {
+    const out = validateDataDeck(validDeck);
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    expect("archived" in out.value.meta).toBe(false);
+  });
+
+  it("accepts both draft and archived together (orthogonal flags)", () => {
+    const out = validateDataDeck({
+      ...validDeck,
+      meta: { ...validDeck.meta, draft: true, archived: true },
+    });
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    expect(out.value.meta.draft).toBe(true);
+    expect(out.value.meta.archived).toBe(true);
+  });
 });
 
 describe("validateDataDeck — meta validation", () => {
@@ -208,6 +250,10 @@ describe("validateDataDeck — meta validation", () => {
     ["non-boolean draft (string)", { ...validDeck.meta, draft: "true" }],
     ["non-boolean draft (number)", { ...validDeck.meta, draft: 1 }],
     ["non-boolean draft (object)", { ...validDeck.meta, draft: {} }],
+    // Issue #243 — archived must be boolean when present.
+    ["non-boolean archived (string)", { ...validDeck.meta, archived: "true" }],
+    ["non-boolean archived (number)", { ...validDeck.meta, archived: 1 }],
+    ["non-boolean archived (object)", { ...validDeck.meta, archived: {} }],
   ])("rejects meta with %s", (_, badMeta) => {
     const out = validateDataDeck({ meta: badMeta, slides: [] });
     expect(out.ok).toBe(false);

@@ -55,6 +55,9 @@ export default function AdminIndex() {
   // unit-test path the hook is mocked, so `useAdminDataDeckList` won't
   // re-fetch in response to a state change — `deletedSlugs` makes the
   // delete UX correct in both worlds.
+  // Issue #243: delete actions exist only on Active KV decks today.
+  // Archived rows do not expose a trashcan in this slice (full
+  // Restore / Delete-for-archive comes in PRD #242 slice 2+).
   const [deletedSlugs, setDeletedSlugs] = useState<Set<string>>(
     () => new Set(),
   );
@@ -110,25 +113,41 @@ export default function AdminIndex() {
     }
   }, []);
 
-  // Issue #191: admin can hide drafts (decks with `meta.draft === true`)
-  // from the grid via the in-chrome toggle below. Default is to show
-  // everything — admin sees every deck on first paint, and the toggle
-  // is a one-click affordance for previewing what the public homepage
-  // will list. Decks without `draft` set (or with `draft === false`)
-  // are always visible regardless of the toggle.
-  const visibleEntries = useMemo(
-    () =>
-      entries
-        .filter((e) => !deletedSlugs.has(e.meta.slug))
-        .filter((e) => settings.showDrafts || e.meta.draft !== true),
-    [entries, deletedSlugs, settings.showDrafts],
-  );
+  // Issue #243: split the merged admin list into Active vs Archived.
+  // Archived wins over Draft on placement — a deck with both flags
+  // lives in the Archived section, not the Active draft-filter path.
+  // The Active section is subject to the `showDrafts` toggle (issue
+  // #191); the Archived section is always visible (no toggle).
+  const { activeEntries, archivedEntries } = useMemo(() => {
+    const alive = entries.filter((e) => !deletedSlugs.has(e.meta.slug));
+    const archived = alive.filter((e) => e.meta.archived === true);
+    const active = alive
+      .filter((e) => e.meta.archived !== true)
+      .filter((e) => settings.showDrafts || e.meta.draft !== true);
+    return { activeEntries: active, archivedEntries: archived };
+  }, [entries, deletedSlugs, settings.showDrafts]);
 
-  // Translate each registry entry into a grid item. KV-backed decks
-  // are deletable; source decks are not (they live in code).
-  const items: DeckCardGridItem[] = visibleEntries.map((entry) =>
+  // Translate active registry entries into grid items. KV-backed
+  // decks are deletable; source decks are not (they live in code).
+  const activeItems: DeckCardGridItem[] = activeEntries.map((entry) =>
     toGridItem(entry, { showIdeButton, projectRoot }),
   );
+
+  // Archived entries get the same card chrome but with all action
+  // affordances stripped: no trashcan (Restore / Delete-for-archive
+  // ships in later slices of PRD #242), no IDE link (the deck is
+  // retired — opening it for editing is not the intended flow).
+  const archivedItems: DeckCardGridItem[] = archivedEntries.map((entry) => ({
+    meta: entry.meta,
+    to: `/admin/decks/${entry.meta.slug}`,
+    visibility: entry.visibility,
+    canDelete: false,
+  }));
+
+  // Headline copy: prefer talking about the active set since the
+  // Archived section is its own heading + helper line.
+  const activeCount = activeItems.length;
+  const totalCount = activeCount + archivedItems.length;
 
   return (
     <main className="mx-auto flex w-full max-w-5xl flex-1 flex-col gap-8 px-6 py-12">
@@ -139,9 +158,9 @@ export default function AdminIndex() {
             All decks
           </h1>
           <p className="text-sm text-cf-text-muted">
-            {visibleEntries.length === 0
+            {totalCount === 0
               ? "No decks discovered yet."
-              : `${visibleEntries.length} deck${visibleEntries.length === 1 ? "" : "s"} available · presenter mode active inside.`}
+              : `${totalCount} deck${totalCount === 1 ? "" : "s"} available · presenter mode active inside.`}
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -164,11 +183,33 @@ export default function AdminIndex() {
         </div>
       </div>
 
-      <DeckCardGrid
-        surface="admin"
-        items={items}
-        onDelete={handleDelete}
-      />
+      <section
+        data-testid="admin-active-section"
+        className="flex flex-col gap-4"
+      >
+        <DeckCardGrid
+          surface="admin"
+          items={activeItems}
+          onDelete={handleDelete}
+        />
+      </section>
+
+      {archivedItems.length > 0 && (
+        <section
+          data-testid="admin-archived-section"
+          className="flex flex-col gap-4 border-t border-cf-border pt-8"
+        >
+          <div className="flex flex-col gap-1">
+            <h2 className="text-xl font-medium tracking-[-0.025em] text-cf-text">
+              Archived decks
+            </h2>
+            <p className="text-sm text-cf-text-muted">
+              Retired decks. Public links return not found.
+            </p>
+          </div>
+          <DeckCardGrid surface="admin" items={archivedItems} />
+        </section>
+      )}
     </main>
   );
 }
