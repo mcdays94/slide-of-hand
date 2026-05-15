@@ -237,6 +237,71 @@ function buildPromptNote(prompt: string, modelId?: string): string {
 }
 
 /**
+ * Post-process the generated `meta.ts` content to guarantee
+ * `draft: true` is present (issue #191 — creation-as-draft slice).
+ *
+ * Belt-and-braces companion to the system-prompt instruction in
+ * `worker/ai-deck-gen.ts`: even if the model forgets, gets it wrong,
+ * or outputs `draft: false`, the orchestrator enforces the invariant
+ * at apply time so the deck lands as a draft on disk.
+ *
+ * Three branches, in order:
+ *
+ *   1. An existing `draft: <literal>` assignment is normalised to
+ *      `draft: true`. Covers `false`, `undefined`, `null`, and the
+ *      already-correct `true` case (no-op).
+ *   2. No `draft` assignment found — inject `draft: true,` right
+ *      after the opening `{` of the meta object literal.
+ *   3. The meta object literal can't be located by regex — return
+ *      content unchanged. The downstream commit still proceeds; the
+ *      deck just won't carry the flag. Better than refusing the
+ *      whole turn over a parse miss.
+ *
+ * Only applies to the FIRST creation. Iteration MUST NOT call this —
+ * preserve whatever's on disk (see `runIterateOnDeckDraft`).
+ *
+ * Exported for unit-test introspection.
+ */
+export function ensureDraftTrueInMetaContent(content: string): string {
+  // 1. Existing assignment → normalise to true. Allowed RHS literals
+  //    cover the realistic accidental outputs (`false` if the model
+  //    misreads "draft" as opt-in, `undefined`/`null` if it's hedging).
+  const draftAssignmentRe = /\bdraft\s*:\s*(?:true|false|undefined|null)\b/;
+  if (draftAssignmentRe.test(content)) {
+    return content.replace(draftAssignmentRe, "draft: true");
+  }
+  // 2. Inject after the meta object's opening brace. Handles both
+  //    `export const meta: DeckMeta = {` and `export const meta = {`.
+  const metaOpenRe = /(export\s+const\s+meta\s*(?::\s*\w+)?\s*=\s*\{)/;
+  if (metaOpenRe.test(content)) {
+    return content.replace(metaOpenRe, "$1\n  draft: true,");
+  }
+  // 3. Parse miss — return unchanged. The prompt-side instruction is
+  //    the only line of defence left in this branch.
+  return content;
+}
+
+/**
+ * Apply `ensureDraftTrueInMetaContent` to the `meta.ts` entry in a
+ * generated files array. Returns a new array with the transformed
+ * meta.ts content; other files pass through verbatim.
+ *
+ * If no `meta.ts` file is present (model violation — the schema's
+ * own constraint enforces this can't happen in production), the
+ * array is returned unchanged. The downstream path-allowlist +
+ * commit gate will fail it appropriately.
+ */
+function applyDraftTrueToMetaFile(
+  files: Array<{ path: string; content: string }>,
+): Array<{ path: string; content: string }> {
+  return files.map((f) =>
+    f.path.endsWith("/meta.ts")
+      ? { path: f.path, content: ensureDraftTrueInMetaContent(f.content) }
+      : f,
+  );
+}
+
+/**
  * Flip a stream-derived files array (last entry "writing") into the
  * "all done" shape used by snapshots from `apply` onwards. Saves
  * the orchestrator from rebuilding the same map at every phase
@@ -431,9 +496,16 @@ export async function* runCreateDeckDraft(
     };
   }
 
+  // Creation-as-draft (#191): post-process the generated `meta.ts`
+  // so the new deck lands with `draft: true` on disk regardless of
+  // model output quality. The system prompt also instructs the
+  // model — this is the belt-and-braces enforcement step. Iteration
+  // does NOT do this; see `runIterateOnDeckDraft`.
+  const filesWithDraftTrue = applyDraftTrueToMetaFile(aiResult.files);
+
   // Files are now committed (in the model's output sense, not git
   // sense yet) — flip them all to "done" for the post-AI-gen phases.
-  const doneFiles = asAllDone(aiResult.files);
+  const doneFiles = asAllDone(filesWithDraftTrue);
 
   // Phase 4: apply files into the Sandbox working tree.
   yield {
@@ -445,7 +517,7 @@ export async function* runCreateDeckDraft(
 
   const apply = await applyFilesIntoSandbox(
     sandbox,
-    aiResult.files,
+    filesWithDraftTrue,
     clone.workdir,
   );
   if (!apply.ok) {

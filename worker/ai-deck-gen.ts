@@ -201,6 +201,7 @@ export const meta: DeckMeta = {
   date: "2026-06-01",               // ISO YYYY-MM-DD
   author: "...",                    // optional
   runtimeMinutes: 15,               // optional, drives pacing
+  draft: true,                      // fresh AI-generated decks are drafts (#191)
 };
 \`\`\`
 
@@ -555,6 +556,23 @@ function buildUserMessage(input: AiDeckGenInput): string {
       `Set \`visibility: "${visibility}"\` on the generated \`meta.ts\`'s ` +
       `\`DeckMeta\` object so the deck is born with this value baked in.`,
   );
+
+  // Creation-time instruction (issue #191): AI-generated decks are
+  // born as drafts so they don't immediately appear on the public
+  // homepage. `existingFiles` absence is the creation marker —
+  // iteration receives `existingFiles` and must NOT inject the flag
+  // (preserve whatever's on disk). The orchestrator's post-process
+  // in `runCreateDeckDraft` enforces this regardless of the model's
+  // output (`ensureDraftTrueInMetaContent`); the prompt-side line
+  // is the belt to the post-process's braces.
+  if (!input.existingFiles || input.existingFiles.length === 0) {
+    parts.push(
+      `\nThis is a fresh deck creation. Set \`draft: true\` on the ` +
+        `generated \`meta.ts\`'s \`DeckMeta\` object so the deck is born ` +
+        `as a draft (does not appear on the public homepage; visible in ` +
+        `admin with a Draft pill).`,
+    );
+  }
 
   if (input.existingFiles && input.existingFiles.length > 0) {
     parts.push("\n## Current deck files\n");

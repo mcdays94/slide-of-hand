@@ -289,6 +289,65 @@ describe("streamDeckFiles — failure modes", () => {
   });
 });
 
+describe("streamDeckFiles — creation-as-draft prompt (#191)", () => {
+  // The post-process in `runCreateDeckDraft` is the load-bearing
+  // guarantee (see `worker/sandbox-deck-creation.test.ts`). These two
+  // tests pin the *belt* side: the system / user prompt steers the
+  // model toward `draft: true` on creation and DOES NOT mention it
+  // on iteration (so the iterator doesn't accidentally regress
+  // `draft: false` decks back to `true`).
+  it("instructs the model to set draft: true on fresh creation (no existingFiles)", async () => {
+    generateObjectMock.mockReturnValueOnce(
+      fakeGenerateObject({
+        files: [{ path: "src/decks/public/x/meta.ts", content: "..." }],
+        commitMessage: "x",
+      }),
+    );
+    const stream = streamDeckFiles(fakeAiBinding, {
+      slug: "x",
+      userPrompt: "build a deck",
+    });
+    await collect(stream);
+    const callArgs = generateObjectMock.mock.calls[0]?.[0] as {
+      system: string;
+      prompt: string;
+    };
+    // User-message side: the per-turn instruction. Asserting on the
+    // user message rather than the system prompt because the system
+    // prompt is shared across creation and iteration; the per-turn
+    // user message is where the creation/iteration branch lives.
+    expect(callArgs.prompt).toMatch(/draft:\s*true/i);
+  });
+
+  it("does NOT include the draft: true instruction on iteration (existingFiles present)", async () => {
+    generateObjectMock.mockReturnValueOnce(
+      fakeGenerateObject({
+        files: [{ path: "src/decks/public/x/01-title.tsx", content: "..." }],
+        commitMessage: "iter",
+      }),
+    );
+    const stream = streamDeckFiles(fakeAiBinding, {
+      slug: "x",
+      userPrompt: "tweak the title",
+      existingFiles: [
+        { path: "src/decks/public/x/meta.ts", content: "meta" },
+        { path: "src/decks/public/x/01-title.tsx", content: "slide" },
+      ],
+    });
+    await collect(stream);
+    const callArgs = generateObjectMock.mock.calls[0]?.[0] as {
+      prompt: string;
+    };
+    // Iteration must NOT carry the "set draft: true" steer — the
+    // user may have intentionally flipped the existing meta.ts to
+    // `draft: false` (published it) and an iteration prompt that
+    // tweaks an unrelated slide should preserve that.
+    expect(callArgs.prompt).not.toMatch(
+      /Set\s+`?draft:\s*true`?\s+on\s+the\s+generated/i,
+    );
+  });
+});
+
 describe("streamDeckFiles — auth + wiring", () => {
   // Pins the AI Gateway auth header attachment so the issue-#177
   // production fix can't silently regress. The token flows from the
