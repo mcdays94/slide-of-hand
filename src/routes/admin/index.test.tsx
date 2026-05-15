@@ -1635,3 +1635,206 @@ describe("AdminIndex — GitHub connect gate for source actions (#251)", () => {
     expect(screen.getByTestId("lifecycle-menu-delete-hello")).toBeDefined();
   });
 });
+
+// ─── Source delete wired end-to-end (#249) ───────────────────────────
+// When GitHub is connected, the source-delete flow no longer surfaces
+// the "not yet wired" stub error. It calls
+// POST /api/admin/source-decks/<slug>/delete after typed-slug confirm
+// and refetches pending records on success.
+describe("AdminIndex — source-backed Delete (#249)", () => {
+  async function renderAdmin() {
+    const AdminIndex = await loadAdminIndex();
+    return render(
+      <SettingsProvider>
+        <MemoryRouter>
+          <AdminIndex />
+        </MemoryRouter>
+      </SettingsProvider>,
+    );
+  }
+
+  it("connected source-backed active Delete calls the source-delete endpoint after typed-slug confirmation", async () => {
+    mockGitHubState = "connected";
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        ok: true,
+        prUrl: "https://github.com/mcdays94/slide-of-hand/pull/249",
+        prNumber: 249,
+        branch: "delete/hello-1700000000000",
+        action: "delete",
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    mockEntries = [entry("hello", "Hello", "source")];
+    await renderAdmin();
+
+    fireEvent.click(screen.getByTestId("lifecycle-menu-trigger-hello"));
+    fireEvent.click(screen.getByTestId("lifecycle-menu-delete-hello"));
+    fireEvent.change(screen.getByTestId("typed-slug-input"), {
+      target: { value: "hello" },
+    });
+    fireEvent.click(screen.getByTestId("confirm-dialog-confirm"));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/admin/source-decks/hello/delete");
+    expect((init as { method: string }).method).toBe("POST");
+    // Gate must NOT open — user is already connected.
+    expect(screen.queryByTestId("github-connect-gate")).toBeNull();
+  });
+
+  it("connected source-backed archived Delete calls the source-delete endpoint after typed-slug confirmation", async () => {
+    mockGitHubState = "connected";
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        ok: true,
+        prUrl: "https://github.com/mcdays94/slide-of-hand/pull/249",
+        prNumber: 249,
+        branch: "delete/retired-source-1700000000000",
+        action: "delete",
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    mockEntries = [
+      entry("retired-source", "Retired Source", "source", "public", {
+        archived: true,
+      }),
+    ];
+    await renderAdmin();
+
+    fireEvent.click(
+      screen.getByTestId("lifecycle-menu-trigger-retired-source"),
+    );
+    fireEvent.click(
+      screen.getByTestId("lifecycle-menu-delete-retired-source"),
+    );
+    fireEvent.change(screen.getByTestId("typed-slug-input"), {
+      target: { value: "retired-source" },
+    });
+    fireEvent.click(screen.getByTestId("confirm-dialog-confirm"));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const [url] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/admin/source-decks/retired-source/delete");
+    expect(screen.queryByTestId("github-connect-gate")).toBeNull();
+  });
+
+  it("on success, refetches the pending-action list so the projection moves the card to Archived with a Pending delete pill", async () => {
+    mockGitHubState = "connected";
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        ok: true,
+        prUrl: "https://github.com/mcdays94/slide-of-hand/pull/249",
+        prNumber: 249,
+        branch: "delete/hello-1700000000000",
+        action: "delete",
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    mockEntries = [entry("hello", "Hello", "source")];
+    await renderAdmin();
+
+    fireEvent.click(screen.getByTestId("lifecycle-menu-trigger-hello"));
+    fireEvent.click(screen.getByTestId("lifecycle-menu-delete-hello"));
+    fireEvent.change(screen.getByTestId("typed-slug-input"), {
+      target: { value: "hello" },
+    });
+    fireEvent.click(screen.getByTestId("confirm-dialog-confirm"));
+
+    await waitFor(() => expect(mockRefetchPending).toHaveBeenCalled());
+  });
+
+  it("failure surfaces the server's inline error inside the typed-slug dialog", async () => {
+    mockGitHubState = "connected";
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 400,
+      json: async () => ({
+        error:
+          "Neither src/decks/public/hello/ nor src/decks/archive/hello/ exists on `main`.",
+        phase: "source_missing",
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    mockEntries = [entry("hello", "Hello", "source")];
+    await renderAdmin();
+
+    fireEvent.click(screen.getByTestId("lifecycle-menu-trigger-hello"));
+    fireEvent.click(screen.getByTestId("lifecycle-menu-delete-hello"));
+    fireEvent.change(screen.getByTestId("typed-slug-input"), {
+      target: { value: "hello" },
+    });
+    fireEvent.click(screen.getByTestId("confirm-dialog-confirm"));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("delete-error").textContent).toMatch(
+        /Neither.*public.*archive.*exists/i,
+      ),
+    );
+  });
+
+  it("Retry path for Delete via the gate: after status flips to connected, Retry invokes the source-delete endpoint and closes the gate on success", async () => {
+    mockGitHubState = "disconnected";
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        ok: true,
+        prUrl: "https://github.com/mcdays94/slide-of-hand/pull/249",
+        prNumber: 249,
+        branch: "delete/hello-1700000000000",
+        action: "delete",
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    mockEntries = [entry("hello", "Hello", "source")];
+    const { rerender } = await renderAdmin();
+
+    fireEvent.click(screen.getByTestId("lifecycle-menu-trigger-hello"));
+    fireEvent.click(screen.getByTestId("lifecycle-menu-delete-hello"));
+    fireEvent.change(screen.getByTestId("typed-slug-input"), {
+      target: { value: "hello" },
+    });
+    fireEvent.click(screen.getByTestId("confirm-dialog-confirm"));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("github-connect-gate")).toBeDefined(),
+    );
+
+    // Simulate the user completing OAuth in another tab.
+    mockGitHubState = "connected";
+    const AdminIndex = await loadAdminIndex();
+    rerender(
+      <SettingsProvider>
+        <MemoryRouter>
+          <AdminIndex />
+        </MemoryRouter>
+      </SettingsProvider>,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("github-connect-gate-retry")).toBeDefined(),
+    );
+
+    fireEvent.click(screen.getByTestId("github-connect-gate-retry"));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const [url] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/admin/source-decks/hello/delete");
+    await waitFor(() =>
+      expect(screen.queryByTestId("github-connect-gate")).toBeNull(),
+    );
+    expect(mockRefetchPending).toHaveBeenCalled();
+  });
+});

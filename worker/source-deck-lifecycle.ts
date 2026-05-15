@@ -1,26 +1,27 @@
 /**
  * Source-backed deck lifecycle actions via gated GitHub draft PR
- * (PRD #242, issues #247 archive / #248 restore).
+ * (PRD #242, issues #247 archive / #248 restore / #249 delete).
  *
- * Provides the Worker-side surface for source-deck Archive + Restore.
- * Delete (#249) ships in a follow-up slice. The flow for each:
+ * Provides the Worker-side surface for source-deck Archive, Restore,
+ * and Delete. The flow for each:
  *
- *   1. Admin clicks Archive / Restore on a source deck card.
+ *   1. Admin clicks Archive / Restore / Delete on a source deck card.
  *   2. Admin UI confirms GitHub is connected (#251 gate). If not,
  *      the gate intercepts here.
- *   3. Admin UI calls `POST /api/admin/source-decks/<slug>/archive`
- *      or `POST /api/admin/source-decks/<slug>/restore`.
+ *   3. Admin UI calls `POST /api/admin/source-decks/<slug>/<action>`.
  *   4. This Worker module:
  *      a. Verifies Access auth + user email.
  *      b. Resolves the user's GitHub OAuth token from KV.
  *      c. Spawns a Cloudflare Sandbox, clones slide-of-hand from
- *         GitHub on `main`, verifies the SOURCE folder exists AND
- *         the DESTINATION folder does NOT exist (where source/dest
- *         depend on the action — archive moves public → archive,
- *         restore moves archive → public).
- *      d. `mkdir -p <dest-parent>` + `git mv` the deck folder.
+ *         GitHub on `main`, verifies the relevant source folder(s)
+ *         exist. For Archive/Restore the destination folder must NOT
+ *         yet exist; for Delete the folder is resolved as
+ *         `src/decks/public/<slug>/` if present else
+ *         `src/decks/archive/<slug>/`.
+ *      d. Either `mkdir -p <dest-parent>` + `git mv` the deck folder
+ *         (archive/restore) or `git rm -r` the deck folder (delete).
  *      e. Runs the standard test gate (`npm ci` → typecheck → test
- *         → build) against the post-move tree.
+ *         → build) against the post-edit tree.
  *      f. Commits + pushes `<action>/<slug>-<timestamp>`.
  *      g. Opens a draft PR against `main`.
  *      h. Persists a `PendingSourceAction` record in KV so the
@@ -46,9 +47,12 @@
  * and delegate. This keeps the two public entry points (and their
  * tests) explicit while avoiding orchestration drift.
  *
- * Delete (#249) will likely fit this same shape (one move = remove,
- * with an empty destination) but until that slice lands we don't
- * over-fit the parameter surface.
+ * Delete (#249) shares the same orchestration shell. Where archive
+ * and restore are mirror moves, delete is a single-direction REMOVE
+ * with a "source folder lives in either of two places" probe (public
+ * for active decks, archive for archived decks). We model that with
+ * a `mode` discriminator on `SourceLifecycleConfig`: `"move"` for
+ * archive/restore, `"remove"` for delete.
  *
  * ## Slug validation
  *
@@ -96,6 +100,9 @@ export interface ArchiveSourceDeckInput {
 
 /** Alias for symmetry with archive. Restore takes the same input shape. */
 export type RestoreSourceDeckInput = ArchiveSourceDeckInput;
+
+/** Alias for symmetry with archive. Delete takes the same input shape. */
+export type DeleteSourceDeckInput = ArchiveSourceDeckInput;
 
 /**
  * Phases shared by both archive and restore. The destination-collision
@@ -146,6 +153,9 @@ export type ArchiveSourceDeckError = SourceLifecycleFailure;
 export type RestoreSourceDeckResult = SourceLifecycleSuccess<"restore">;
 export type RestoreSourceDeckError = SourceLifecycleFailure;
 
+export type DeleteSourceDeckResult = SourceLifecycleSuccess<"delete">;
+export type DeleteSourceDeckError = SourceLifecycleFailure;
+
 export type GetSandboxFn = (
   namespace: DurableObjectNamespace<Sandbox>,
   id: string,
@@ -158,11 +168,31 @@ const KV_PENDING_INDEX = "pending-source-actions-list";
 
 // ── Per-action configuration ────────────────────────────────────────
 
-interface SourceLifecycleConfig<A extends PendingSourceActionType> {
+/**
+ * Shared configuration fields for every lifecycle action.
+ */
+interface BaseSourceLifecycleConfig<A extends PendingSourceActionType> {
   /** The lifecycle action type. */
   action: A;
-  /** Sandbox keying prefix (`source-archive:`, `source-restore:`). */
+  /** Sandbox keying prefix (`source-archive:`, `source-restore:`, `source-delete:`). */
   sandboxKeyPrefix: string;
+  /** Branch prefix (e.g. `archive/`, `restore/`, `delete/`). */
+  branchPrefix: string;
+  /** Conventional-commit subject line (without slug or issue ref). */
+  commitMessage: (slug: string) => string;
+  /** PR title. Mirrors the commit message by convention. */
+  prTitle: (slug: string) => string;
+  /** PR body (terse — the rename / removal is the message). */
+  prBody: (slug: string, branch: string) => string;
+}
+
+/**
+ * `mode: "move"` — archive/restore. Probe `sourceDir` exists AND
+ * `destDir` does NOT, then `mkdir -p <destParent> && git mv`.
+ */
+interface MoveSourceLifecycleConfig<A extends PendingSourceActionType>
+  extends BaseSourceLifecycleConfig<A> {
+  mode: "move";
   /** Relative path of the folder that MUST exist before the move. */
   sourceDir: (slug: string) => string;
   /** Relative path of the folder that must NOT yet exist. */
@@ -177,18 +207,32 @@ interface SourceLifecycleConfig<A extends PendingSourceActionType> {
   sourceMissingError: (slug: string) => string;
   /** Human-friendly error when `destDir` already exists. */
   destExistsError: (slug: string) => string;
-  /** Branch prefix (e.g. `archive/`, `restore/`). */
-  branchPrefix: string;
-  /** Conventional-commit subject line (without slug or issue ref). */
-  commitMessage: (slug: string) => string;
-  /** PR title. Mirrors the commit message by convention. */
-  prTitle: (slug: string) => string;
-  /** PR body (terse — the rename is the message). */
-  prBody: (slug: string, branch: string) => string;
 }
+
+/**
+ * `mode: "remove"` — delete. The deck folder may live in either of
+ * two locations (active = `public`, archived = `archive`). We probe
+ * each and pick whichever exists. If neither exists, short-circuit
+ * with `source_missing`. The removal is `git rm -r <resolved>`.
+ */
+interface RemoveSourceLifecycleConfig<A extends PendingSourceActionType>
+  extends BaseSourceLifecycleConfig<A> {
+  mode: "remove";
+  /** Candidate folders to probe in order. First hit wins. */
+  candidateDirs: (slug: string) => string[];
+  /** Phase emitted when none of the candidates exist. */
+  sourceMissingPhase: SourceLifecyclePhase;
+  /** Human-friendly error when none of the candidates exist. */
+  sourceMissingError: (slug: string) => string;
+}
+
+type SourceLifecycleConfig<A extends PendingSourceActionType> =
+  | MoveSourceLifecycleConfig<A>
+  | RemoveSourceLifecycleConfig<A>;
 
 /** Archive config: public → archive. */
 const ARCHIVE_CONFIG: SourceLifecycleConfig<"archive"> = {
+  mode: "move",
   action: "archive",
   sandboxKeyPrefix: "source-archive:",
   sourceDir: (slug) => `src/decks/public/${slug}`,
@@ -222,6 +266,7 @@ const ARCHIVE_CONFIG: SourceLifecycleConfig<"archive"> = {
 
 /** Restore config: archive → public. */
 const RESTORE_CONFIG: SourceLifecycleConfig<"restore"> = {
+  mode: "move",
   action: "restore",
   sandboxKeyPrefix: "source-restore:",
   sourceDir: (slug) => `src/decks/archive/${slug}`,
@@ -250,6 +295,52 @@ const RESTORE_CONFIG: SourceLifecycleConfig<"restore"> = {
       `| Lifecycle action | restore |`,
       "",
       "Closes part of #248 (PRD #242).",
+    ].join("\n"),
+};
+
+/**
+ * Delete config: remove `src/decks/public/<slug>/` if present, else
+ * `src/decks/archive/<slug>/`. The deck folder is fully removed from
+ * source. Pending projection (#246) keeps the card visible in the
+ * Archived section with a "Pending delete" pill until the PR merges
+ * + deploys, at which point reconciliation (#250) clears any
+ * remaining side data (KV, R2). This module does NOT clean side data
+ * — see the PRD #242 / #249 acceptance criteria for why side-data
+ * cleanup is deferred to reconciliation.
+ */
+const DELETE_CONFIG: SourceLifecycleConfig<"delete"> = {
+  mode: "remove",
+  action: "delete",
+  sandboxKeyPrefix: "source-delete:",
+  candidateDirs: (slug) => [
+    `src/decks/public/${slug}`,
+    `src/decks/archive/${slug}`,
+  ],
+  sourceMissingPhase: "source_missing",
+  sourceMissingError: (slug) =>
+    `Neither src/decks/public/${slug}/ nor src/decks/archive/${slug}/ exists on \`main\`. Nothing to delete.`,
+  branchPrefix: "delete/",
+  commitMessage: (slug) => `chore(deck/${slug}): delete deck (#249)`,
+  prTitle: (slug) => `chore(deck/${slug}): delete deck (#249)`,
+  prBody: (slug, branch) =>
+    [
+      `Delete source deck \`${slug}\` by removing its folder from`,
+      "`main`. The deck is gone from the deployed app once this PR",
+      "merges and the next deploy lands.",
+      "",
+      "Generated by the slide-of-hand admin Delete action.",
+      "",
+      "| Field | Value |",
+      "| --- | --- |",
+      `| Deck slug | \`${slug}\` |`,
+      `| Branch | \`${branch}\` |`,
+      `| Lifecycle action | delete |`,
+      "",
+      "Side data (KV, R2 thumbnails, analytics) is left in place",
+      "until reconciliation (#250) confirms the merged + deployed",
+      "source no longer contains the deck.",
+      "",
+      "Closes part of #249 (PRD #242).",
     ].join("\n"),
 };
 
@@ -331,11 +422,16 @@ async function runSourceLifecycle<A extends PendingSourceActionType>(
   // 1. Auth.
   const email = (input.userEmail ?? "").trim();
   if (!email) {
+    const actionVerb =
+      config.action === "archive"
+        ? "Archiving"
+        : config.action === "restore"
+          ? "Restoring"
+          : "Deleting";
     return {
       ok: false,
       phase: "auth",
-      error:
-        `${config.action === "archive" ? "Archiving" : "Restoring"} a source deck requires an authenticated user. Service-token contexts have no user identity to commit on behalf of.`,
+      error: `${actionVerb} a source deck requires an authenticated user. Service-token contexts have no user identity to commit on behalf of.`,
     };
   }
 
@@ -378,38 +474,71 @@ async function runSourceLifecycle<A extends PendingSourceActionType>(
 
   const workdir = ghClone.workdir;
 
-  // 6a. Source folder must exist (otherwise the move is a no-op /
-  // the resulting PR has an empty diff).
-  const sourceExists = await dirExists(sandbox, workdir, config.sourceDir(slug));
-  if (!sourceExists) {
-    return {
-      ok: false,
-      phase: config.sourceMissingPhase,
-      error: config.sourceMissingError(slug),
-    };
+  // 6. Existence probe + tree mutation.
+  //
+  // `move` mode (archive/restore): source MUST exist, dest MUST NOT.
+  // `remove` mode (delete): pick the first candidate that exists;
+  //   if none exist, short-circuit. There's no destination to check.
+  let mutateCommand: string;
+  if (config.mode === "move") {
+    // 6a. Source folder must exist (otherwise the move is a no-op /
+    // the resulting PR has an empty diff).
+    const sourceExists = await dirExists(
+      sandbox,
+      workdir,
+      config.sourceDir(slug),
+    );
+    if (!sourceExists) {
+      return {
+        ok: false,
+        phase: config.sourceMissingPhase,
+        error: config.sourceMissingError(slug),
+      };
+    }
+
+    // 6b. Destination folder must NOT exist — otherwise the move
+    // would collide. Recovery is manual.
+    const destExists = await dirExists(sandbox, workdir, config.destDir(slug));
+    if (destExists) {
+      return {
+        ok: false,
+        phase: config.destExistsPhase,
+        error: config.destExistsError(slug),
+      };
+    }
+    // `mkdir -p` + `git mv` so git tracks the rename and the
+    // resulting PR diff is a clean rename (which keeps history
+    // intact and `git log --follow` working from the new location).
+    mutateCommand = `mkdir -p ${config.destParent} && git mv ${config.sourceDir(slug)} ${config.destDir(slug)}`;
+  } else {
+    // 6c. Resolve which of the candidate folders is on disk. First
+    // hit wins — for delete this is "prefer public, fall back to
+    // archive" so an active deck and an archived deck both delete
+    // cleanly from their respective homes.
+    let resolved: string | null = null;
+    for (const candidate of config.candidateDirs(slug)) {
+      // eslint-disable-next-line no-await-in-loop
+      if (await dirExists(sandbox, workdir, candidate)) {
+        resolved = candidate;
+        break;
+      }
+    }
+    if (resolved === null) {
+      return {
+        ok: false,
+        phase: config.sourceMissingPhase,
+        error: config.sourceMissingError(slug),
+      };
+    }
+    // `git rm -r` so the removal is tracked by git and the PR diff
+    // is a clean delete.
+    mutateCommand = `git rm -r ${resolved}`;
   }
 
-  // 6b. Destination folder must NOT exist — otherwise the move would
-  // collide. Recovery is manual.
-  const destExists = await dirExists(sandbox, workdir, config.destDir(slug));
-  if (destExists) {
-    return {
-      ok: false,
-      phase: config.destExistsPhase,
-      error: config.destExistsError(slug),
-    };
-  }
-
-  // 7. Move the folder. `mkdir -p` + `git mv` so git tracks the
-  // rename and the resulting PR diff is a clean rename (which keeps
-  // history intact and `git log --follow` working from the new
-  // location).
+  // 7. Apply the tree mutation (move or remove).
   let moveResult;
   try {
-    moveResult = await sandbox.exec(
-      `mkdir -p ${config.destParent} && git mv ${config.sourceDir(slug)} ${config.destDir(slug)}`,
-      { cwd: workdir },
-    );
+    moveResult = await sandbox.exec(mutateCommand, { cwd: workdir });
   } catch (err) {
     return {
       ok: false,
@@ -423,7 +552,7 @@ async function runSourceLifecycle<A extends PendingSourceActionType>(
       phase: "move",
       error:
         (moveResult.stderr && moveResult.stderr.trim()) ||
-        `git mv failed (exit ${moveResult.exitCode ?? "unknown"}).`,
+        `${config.mode === "move" ? "git mv" : "git rm"} failed (exit ${moveResult.exitCode ?? "unknown"}).`,
     };
   }
 
@@ -484,10 +613,16 @@ async function runSourceLifecycle<A extends PendingSourceActionType>(
       makePendingRecord(slug, config.action, pr.result.htmlUrl),
     );
   } catch (err) {
+    const actionLabel =
+      config.action === "archive"
+        ? "Archive"
+        : config.action === "restore"
+          ? "Restore"
+          : "Delete";
     return {
       ok: false,
       phase: "pending_record",
-      error: `${config.action === "archive" ? "Archive" : "Restore"} PR opened (${pr.result.htmlUrl}) but the pending marker write failed: ${err instanceof Error ? err.message : String(err)}`,
+      error: `${actionLabel} PR opened (${pr.result.htmlUrl}) but the pending marker write failed: ${err instanceof Error ? err.message : String(err)}`,
     };
   }
 
@@ -535,10 +670,37 @@ export async function runRestoreSourceDeck(
   return runSourceLifecycle(env, input, RESTORE_CONFIG, getSandboxFn);
 }
 
+// ── runDeleteSourceDeck ─────────────────────────────────────────────
+
+/**
+ * Delete a source-backed deck (active OR archived) by opening a
+ * draft GitHub PR that removes the deck folder from `main`. Resolves
+ * the folder as `src/decks/public/<slug>/` if present, else
+ * `src/decks/archive/<slug>/`.
+ *
+ * **Side data (KV records, R2 thumbnails, analytics) is NOT cleaned
+ * up here.** That cleanup is deferred to reconciliation (issue
+ * #250), which runs after the PR is merged + deployed and confirms
+ * the source no longer contains the deck. Until then, the pending
+ * record (action=delete, expectedState=deleted) drives the admin
+ * projection so the card shows in the Archived section with a
+ * "Pending delete" pill linking to the PR.
+ *
+ * Built on `runSourceLifecycle` in `mode: "remove"`.
+ */
+export async function runDeleteSourceDeck(
+  env: SourceDeckLifecycleEnv,
+  input: DeleteSourceDeckInput,
+  getSandboxFn: GetSandboxFn = getSandbox,
+): Promise<DeleteSourceDeckResult | DeleteSourceDeckError> {
+  return runSourceLifecycle(env, input, DELETE_CONFIG, getSandboxFn);
+}
+
 // ── HTTP router ─────────────────────────────────────────────────────
 
 const ARCHIVE_PATH = /^\/api\/admin\/source-decks\/([^/]+)\/archive\/?$/;
 const RESTORE_PATH = /^\/api\/admin\/source-decks\/([^/]+)\/restore\/?$/;
+const DELETE_PATH = /^\/api\/admin\/source-decks\/([^/]+)\/delete\/?$/;
 
 const NO_STORE_HEADERS = {
   "content-type": "application/json",
@@ -642,6 +804,25 @@ async function handleRestore(
   return result.ok ? buildSuccessResponse(result) : buildFailureResponse(result);
 }
 
+async function handleDelete(
+  request: Request,
+  env: SourceDeckLifecycleEnv,
+  slug: string,
+): Promise<Response> {
+  if (!isValidSlug(slug)) {
+    return jsonError(400, `invalid slug: "${slug}"`);
+  }
+  const email = getAccessUserEmail(request);
+  if (!email) {
+    return jsonError(
+      409,
+      "Source delete requires an interactive Access user — service-token auth has no email to associate with a GitHub account.",
+    );
+  }
+  const result = await runDeleteSourceDeck(env, { userEmail: email, slug });
+  return result.ok ? buildSuccessResponse(result) : buildFailureResponse(result);
+}
+
 /**
  * Route a request against the source-deck lifecycle API. Returns a
  * `Response` for paths this handler owns, or `null` for the caller
@@ -650,8 +831,7 @@ async function handleRestore(
  * Owns:
  *   - `POST /api/admin/source-decks/<slug>/archive` — issue #247
  *   - `POST /api/admin/source-decks/<slug>/restore` — issue #248
- *
- * Delete (#249) ships in a follow-up slice.
+ *   - `POST /api/admin/source-decks/<slug>/delete`  — issue #249
  */
 export async function handleSourceDeckLifecycle(
   request: Request,
@@ -689,6 +869,22 @@ export async function handleSourceDeckLifecycle(
     }
     const slug = decodeURIComponent(restoreMatch[1]);
     return handleRestore(request, env, slug);
+  }
+  const deleteMatch = url.pathname.match(DELETE_PATH);
+  if (deleteMatch) {
+    const denied = requireAccessAuth(request);
+    if (denied) return denied;
+    if (request.method !== "POST") {
+      return new Response(
+        JSON.stringify({ error: "method not allowed" }),
+        {
+          status: 405,
+          headers: { ...NO_STORE_HEADERS, allow: "POST" },
+        },
+      );
+    }
+    const slug = decodeURIComponent(deleteMatch[1]);
+    return handleDelete(request, env, slug);
   }
   return null;
 }
