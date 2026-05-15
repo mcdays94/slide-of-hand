@@ -116,6 +116,7 @@ vi.mock("@cloudflare/sandbox", () => ({
 }));
 
 import {
+  ensureDraftTrueInMetaContent,
   runCreateDeckDraft,
   runIterateOnDeckDraft,
   runPublishDraft,
@@ -704,6 +705,209 @@ describe("runCreateDeckDraft — failure modes", () => {
   });
 });
 
+describe("runCreateDeckDraft — creation-as-draft (#191)", () => {
+  // Slice of #191 (Worker B). The orchestrator MUST guarantee that
+  // every newly-created deck lands on disk with `draft: true` in its
+  // `meta.ts`, regardless of what the model emits. This is the
+  // braces to the prompt-side belt (asserted in
+  // `worker/ai-deck-gen.test.ts`).
+  beforeEach(() => setHappyPathMocks());
+
+  // The orchestrator post-processes the generated files BEFORE
+  // calling `applyFilesIntoSandbox`. We inspect the second arg of
+  // that call to verify the meta.ts content that lands on disk.
+  function metaContentApplied(): string | undefined {
+    const call = applyFilesIntoSandboxMock.mock.calls[0];
+    if (!call) return undefined;
+    const files = call[1] as Array<{ path: string; content: string }>;
+    return files.find((f) => f.path.endsWith("/meta.ts"))?.content;
+  }
+
+  it("injects draft: true when the model omits the field entirely", async () => {
+    streamDeckFilesMock.mockReturnValueOnce(
+      fakeStreamDeckFiles([], {
+        ok: true,
+        files: [
+          {
+            path: "src/decks/public/my/meta.ts",
+            content: [
+              `import type { DeckMeta } from "@/framework/viewer/types";`,
+              "",
+              `export const meta: DeckMeta = {`,
+              `  slug: "my",`,
+              `  title: "Title",`,
+              `  date: "2026-06-01",`,
+              `};`,
+            ].join("\n"),
+          },
+          {
+            path: "src/decks/public/my/index.tsx",
+            content: "deck file",
+          },
+          {
+            path: "src/decks/public/my/01-title.tsx",
+            content: "slide",
+          },
+        ],
+        commitMessage: "Initial deck",
+      }),
+    );
+    const { result } = await runGen(
+      runCreateDeckDraft(makeEnv(), {
+        userEmail: "alice@example.com",
+        slug: "my",
+        prompt: "x",
+      }),
+    );
+    expect(result.ok).toBe(true);
+    const meta = metaContentApplied();
+    expect(meta).toBeDefined();
+    expect(meta).toMatch(/\bdraft:\s*true\b/);
+  });
+
+  it("overrides draft: false to draft: true (fresh creation is a draft by definition)", async () => {
+    streamDeckFilesMock.mockReturnValueOnce(
+      fakeStreamDeckFiles([], {
+        ok: true,
+        files: [
+          {
+            path: "src/decks/public/my/meta.ts",
+            content: [
+              `export const meta: DeckMeta = {`,
+              `  slug: "my",`,
+              `  title: "T",`,
+              `  date: "2026-06-01",`,
+              `  draft: false,`,
+              `};`,
+            ].join("\n"),
+          },
+          { path: "src/decks/public/my/index.tsx", content: "deck" },
+          { path: "src/decks/public/my/01-title.tsx", content: "slide" },
+        ],
+        commitMessage: "Init",
+      }),
+    );
+    await runGen(
+      runCreateDeckDraft(makeEnv(), {
+        userEmail: "alice@example.com",
+        slug: "my",
+        prompt: "x",
+      }),
+    );
+    const meta = metaContentApplied();
+    expect(meta).toMatch(/\bdraft:\s*true\b/);
+    expect(meta).not.toMatch(/\bdraft:\s*false\b/);
+  });
+
+  it("does not double-inject when the model already wrote draft: true", async () => {
+    const original = [
+      `export const meta: DeckMeta = {`,
+      `  slug: "my",`,
+      `  title: "T",`,
+      `  date: "2026-06-01",`,
+      `  draft: true,`,
+      `};`,
+    ].join("\n");
+    streamDeckFilesMock.mockReturnValueOnce(
+      fakeStreamDeckFiles([], {
+        ok: true,
+        files: [
+          { path: "src/decks/public/my/meta.ts", content: original },
+          { path: "src/decks/public/my/index.tsx", content: "deck" },
+          { path: "src/decks/public/my/01-title.tsx", content: "slide" },
+        ],
+        commitMessage: "Init",
+      }),
+    );
+    await runGen(
+      runCreateDeckDraft(makeEnv(), {
+        userEmail: "alice@example.com",
+        slug: "my",
+        prompt: "x",
+      }),
+    );
+    const meta = metaContentApplied();
+    // Exactly one `draft: true` assignment, not two.
+    const occurrences = (meta ?? "").match(/\bdraft:\s*true\b/g) ?? [];
+    expect(occurrences).toHaveLength(1);
+  });
+
+  it("propagates the draft-injected meta into the apply phase snapshot", async () => {
+    streamDeckFilesMock.mockReturnValueOnce(
+      fakeStreamDeckFiles([], {
+        ok: true,
+        files: [
+          {
+            path: "src/decks/public/my/meta.ts",
+            content: `export const meta: DeckMeta = { slug: "my", title: "T", date: "2026-06-01" };`,
+          },
+          { path: "src/decks/public/my/index.tsx", content: "deck" },
+          { path: "src/decks/public/my/01-title.tsx", content: "slide" },
+        ],
+        commitMessage: "Init",
+      }),
+    );
+    const { snapshots } = await runGen(
+      runCreateDeckDraft(makeEnv(), {
+        userEmail: "alice@example.com",
+        slug: "my",
+        prompt: "x",
+      }),
+    );
+    // The apply snapshot is the first one consumers see the file
+    // tree from — assert the canvas-facing snapshot also reflects
+    // the injection so the in-flight UI matches what's committed.
+    const applySnap = snapshots.find((s) => s.phase === "apply");
+    const metaFile = applySnap?.files.find((f) =>
+      f.path.endsWith("/meta.ts"),
+    );
+    expect(metaFile?.content).toMatch(/\bdraft:\s*true\b/);
+  });
+});
+
+describe("ensureDraftTrueInMetaContent (unit)", () => {
+  // Exhaustive table of input shapes the helper is expected to
+  // handle. Pinned via the exported symbol so the regex can evolve
+  // without breaking the orchestrator tests above.
+  it("normalises an existing draft: false to draft: true", () => {
+    const input = `export const meta: DeckMeta = {\n  draft: false,\n};`;
+    expect(ensureDraftTrueInMetaContent(input)).toMatch(/draft:\s*true/);
+    expect(ensureDraftTrueInMetaContent(input)).not.toMatch(/draft:\s*false/);
+  });
+
+  it("leaves an existing draft: true untouched (no double-injection)", () => {
+    const input = `export const meta: DeckMeta = {\n  draft: true,\n};`;
+    const out = ensureDraftTrueInMetaContent(input);
+    const occurrences = out.match(/draft:\s*true/g) ?? [];
+    expect(occurrences).toHaveLength(1);
+  });
+
+  it("normalises draft: undefined to draft: true", () => {
+    const input = `export const meta: DeckMeta = {\n  draft: undefined,\n};`;
+    expect(ensureDraftTrueInMetaContent(input)).toMatch(/draft:\s*true/);
+  });
+
+  it("normalises draft: null to draft: true", () => {
+    const input = `export const meta: DeckMeta = {\n  draft: null,\n};`;
+    expect(ensureDraftTrueInMetaContent(input)).toMatch(/draft:\s*true/);
+  });
+
+  it("injects draft: true when no draft field exists (typed meta)", () => {
+    const input = `export const meta: DeckMeta = {\n  slug: "x",\n};`;
+    expect(ensureDraftTrueInMetaContent(input)).toMatch(/draft:\s*true/);
+  });
+
+  it("injects draft: true when no draft field exists (untyped meta)", () => {
+    const input = `export const meta = {\n  slug: "x",\n};`;
+    expect(ensureDraftTrueInMetaContent(input)).toMatch(/draft:\s*true/);
+  });
+
+  it("returns content unchanged when no meta object is present (parse miss)", () => {
+    const input = `export const NOT_meta = {\n  slug: "x",\n};`;
+    expect(ensureDraftTrueInMetaContent(input)).toBe(input);
+  });
+});
+
 // ── runIterateOnDeckDraft ────────────────────────────────────────────
 
 function setIterateHappyPathMocks() {
@@ -846,6 +1050,74 @@ describe("runIterateOnDeckDraft — happy path", () => {
       "push",
       "done",
     ]);
+  });
+});
+
+describe("runIterateOnDeckDraft — preserves meta.draft (#191)", () => {
+  // Iteration MUST NOT inject `draft: true` — the user may have
+  // intentionally published the deck (flipped to `draft: false` or
+  // dropped the field). An iteration prompt that tweaks a slide
+  // should not silently re-draft a published deck.
+  beforeEach(() => setIterateHappyPathMocks());
+
+  it("does not transform meta.ts when the model emits draft: false", async () => {
+    const published = [
+      `export const meta: DeckMeta = {`,
+      `  slug: "my",`,
+      `  title: "T",`,
+      `  date: "2026-06-01",`,
+      `  draft: false,`,
+      `};`,
+    ].join("\n");
+    streamDeckFilesMock.mockReturnValueOnce(
+      fakeStreamDeckFiles([], {
+        ok: true,
+        files: [{ path: "src/decks/public/my/meta.ts", content: published }],
+        commitMessage: "Iterate",
+      }),
+    );
+    await runGen(
+      runIterateOnDeckDraft(makeEnv(), {
+        userEmail: "alice@example.com",
+        slug: "my",
+        prompt: "tweak",
+      }),
+    );
+    // The exact content the orchestrator wrote to the working tree
+    // is whatever streamDeckFiles produced — no draft mutation.
+    const applyCall = applyFilesIntoSandboxMock.mock.calls[0];
+    const files = applyCall?.[1] as Array<{ path: string; content: string }>;
+    const meta = files.find((f) => f.path.endsWith("/meta.ts"));
+    expect(meta?.content).toBe(published);
+  });
+
+  it("does not inject draft: true when the model emits a meta without a draft field", async () => {
+    const noDraft = [
+      `export const meta: DeckMeta = {`,
+      `  slug: "my",`,
+      `  title: "Updated",`,
+      `  date: "2026-06-01",`,
+      `};`,
+    ].join("\n");
+    streamDeckFilesMock.mockReturnValueOnce(
+      fakeStreamDeckFiles([], {
+        ok: true,
+        files: [{ path: "src/decks/public/my/meta.ts", content: noDraft }],
+        commitMessage: "Iterate",
+      }),
+    );
+    await runGen(
+      runIterateOnDeckDraft(makeEnv(), {
+        userEmail: "alice@example.com",
+        slug: "my",
+        prompt: "tweak",
+      }),
+    );
+    const applyCall = applyFilesIntoSandboxMock.mock.calls[0];
+    const files = applyCall?.[1] as Array<{ path: string; content: string }>;
+    const meta = files.find((f) => f.path.endsWith("/meta.ts"));
+    expect(meta?.content).toBe(noDraft);
+    expect(meta?.content).not.toMatch(/draft:\s*true/);
   });
 });
 
