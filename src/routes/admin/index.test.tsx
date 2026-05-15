@@ -58,12 +58,14 @@ let mockPendingActions: Record<
   import("@/lib/pending-source-actions").PendingSourceAction
 > = {};
 const mockClearPending = vi.fn(async () => {});
+const mockRefetchPending = vi.fn(async () => {});
 
 vi.mock("@/lib/use-pending-source-actions", () => ({
   usePendingSourceActions: () => ({
     actions: mockPendingActions,
     isLoading: false,
     clearPending: mockClearPending,
+    refetch: mockRefetchPending,
   }),
 }));
 
@@ -130,6 +132,7 @@ beforeEach(() => {
   mockEntries = [];
   mockPendingActions = {};
   mockClearPending.mockClear();
+  mockRefetchPending.mockClear();
   // Default GitHub OAuth state is "disconnected" so the new source
   // lifecycle gate (#251) intercepts by default. Tests covering the
   // legacy "not yet wired" stub error explicitly flip to "connected".
@@ -823,12 +826,57 @@ describe("AdminIndex — Archived section (#243)", () => {
     expect(screen.queryByTestId("admin-archived-section")).toBeNull();
   });
 
-  it("source-backed Archive (GitHub connected): does NOT hit the KV endpoint and surfaces a 'not yet wired' inline error", async () => {
-    // Issue #251 — when GitHub is connected, the source-backed
-    // archive path falls through to the existing stub error. The
-    // connect gate only intercepts when state !== "connected".
+  it("source-backed Archive (GitHub connected): calls POST /api/admin/source-decks/<slug>/archive and does NOT hit the KV archive endpoint (#247)", async () => {
+    // Issue #247 — when GitHub is connected, source-backed Archive
+    // now invokes the dedicated source-deck-lifecycle endpoint.
+    // The endpoint runs the gated GitHub-PR flow server-side and
+    // persists a pending source-action record; the admin UI then
+    // refetches the pending list to project the expected state.
     mockGitHubState = "connected";
-    const fetchMock = vi.fn();
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        ok: true,
+        prUrl: "https://github.com/mcdays94/slide-of-hand/pull/247",
+        prNumber: 247,
+        branch: "archive/hello-1700000000000",
+        action: "archive",
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    mockEntries = [entry("hello", "Hello", "source")];
+    await renderAdmin();
+
+    fireEvent.click(screen.getByTestId("lifecycle-menu-trigger-hello"));
+    fireEvent.click(screen.getByTestId("lifecycle-menu-archive-hello"));
+    fireEvent.click(screen.getByTestId("confirm-dialog-confirm"));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/admin/source-decks/hello/archive");
+    expect((init as RequestInit).method).toBe("POST");
+    const headers = (init as RequestInit).headers as Record<string, string>;
+    expect(headers["cf-access-authenticated-user-email"]).toBe("dev@local");
+    // Crucially the KV archive endpoint was NOT hit.
+    expect(fetchMock.mock.calls.some(([u]) =>
+      String(u).startsWith("/api/admin/decks/"),
+    )).toBe(false);
+    // And the GitHub gate did NOT open — the user is already connected.
+    expect(screen.queryByTestId("github-connect-gate")).toBeNull();
+    // The hook's refetch was invoked so the pending pill appears
+    // without a full reload.
+    await waitFor(() => expect(mockRefetchPending).toHaveBeenCalled());
+  });
+
+  it("source-backed Archive (GitHub connected): surfaces a server error inline without closing the dialog (#247)", async () => {
+    mockGitHubState = "connected";
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 409,
+      json: async () => ({ error: "GitHub not connected — reconnect and retry." }),
+    });
     vi.stubGlobal("fetch", fetchMock);
 
     mockEntries = [entry("hello", "Hello", "source")];
@@ -840,13 +888,14 @@ describe("AdminIndex — Archived section (#243)", () => {
 
     await waitFor(() =>
       expect(screen.getByTestId("archive-error").textContent).toMatch(
-        /not wired|follow-up/i,
+        /GitHub not connected/i,
       ),
     );
-    // Crucial: no KV endpoint call leaks for a source-backed deck.
-    expect(fetchMock).not.toHaveBeenCalled();
-    // And the GitHub gate did NOT open — the user is already connected.
-    expect(screen.queryByTestId("github-connect-gate")).toBeNull();
+    // The dialog stays open so the user can retry / cancel.
+    expect(screen.getByTestId("confirm-dialog")).toBeDefined();
+    // refetch was NOT called on failure — there's no new pending
+    // record to project.
+    expect(mockRefetchPending).not.toHaveBeenCalled();
   });
 
   it("source-backed Restore (GitHub connected): does NOT hit the KV endpoint and surfaces a 'not yet wired' inline error", async () => {
@@ -1284,9 +1333,19 @@ describe("AdminIndex — GitHub connect gate for source actions (#251)", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("Retry path: after status flips to connected, Retry re-invokes the source action (which surfaces the 'not wired' error inline)", async () => {
+  it("Retry path for Archive: after status flips to connected, Retry invokes the source-archive endpoint and closes the gate on success (#247)", async () => {
     mockGitHubState = "disconnected";
-    const fetchMock = vi.fn();
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        ok: true,
+        prUrl: "https://github.com/mcdays94/slide-of-hand/pull/247",
+        prNumber: 247,
+        branch: "archive/hello-1700000000000",
+        action: "archive",
+      }),
+    });
     vi.stubGlobal("fetch", fetchMock);
 
     mockEntries = [entry("hello", "Hello", "source")];
@@ -1300,11 +1359,9 @@ describe("AdminIndex — GitHub connect gate for source actions (#251)", () => {
       expect(screen.getByTestId("github-connect-gate")).toBeDefined(),
     );
 
-    // Simulate the user completing OAuth in another tab: the hook's
-    // internal state flips to "connected" and React re-renders the
-    // AdminIndex on the next commit. In a unit test, we flip the
-    // mocked state and force a re-render via the testing-library
-    // `rerender` API.
+    // Simulate the user completing OAuth in another tab: flip the
+    // mocked state and force a re-render so the gate's Retry button
+    // surfaces.
     mockGitHubState = "connected";
     const AdminIndex = await loadAdminIndex();
     rerender(
@@ -1320,15 +1377,57 @@ describe("AdminIndex — GitHub connect gate for source actions (#251)", () => {
     );
 
     fireEvent.click(screen.getByTestId("github-connect-gate-retry"));
-    // The retry surfaces the "not wired" error inside the gate
-    // because the source-backed archive backend has not landed yet.
+
+    // Retry hits the dedicated source-archive endpoint.
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const [url] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/admin/source-decks/hello/archive");
+    // On success the gate closes — the pending projection takes over
+    // the card's visual state via the refetched pending list.
+    await waitFor(() =>
+      expect(screen.queryByTestId("github-connect-gate")).toBeNull(),
+    );
+    expect(mockRefetchPending).toHaveBeenCalled();
+  });
+
+  it("Retry path for Archive: surfaces server error inside the gate on failure (#247)", async () => {
+    mockGitHubState = "disconnected";
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 400,
+      json: async () => ({ error: "Source folder src/decks/public/hello/ does not exist on `main`." }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    mockEntries = [entry("hello", "Hello", "source")];
+    const { rerender } = await renderAdmin();
+
+    fireEvent.click(screen.getByTestId("lifecycle-menu-trigger-hello"));
+    fireEvent.click(screen.getByTestId("lifecycle-menu-archive-hello"));
+    fireEvent.click(screen.getByTestId("confirm-dialog-confirm"));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("github-connect-gate")).toBeDefined(),
+    );
+
+    mockGitHubState = "connected";
+    const AdminIndex = await loadAdminIndex();
+    rerender(
+      <SettingsProvider>
+        <MemoryRouter>
+          <AdminIndex />
+        </MemoryRouter>
+      </SettingsProvider>,
+    );
+
+    fireEvent.click(screen.getByTestId("github-connect-gate-retry"));
     await waitFor(() =>
       expect(
         screen.getByTestId("github-connect-gate-error").textContent,
-      ).toMatch(/not wired|follow-up/i),
+      ).toMatch(/does not exist/i),
     );
-    // No KV endpoint call leaked — source actions never touch KV.
-    expect(fetchMock).not.toHaveBeenCalled();
+    // Gate stays open on failure.
+    expect(screen.getByTestId("github-connect-gate")).toBeDefined();
   });
 
   it("does NOT call window.confirm anywhere in the source-gate flow", async () => {
