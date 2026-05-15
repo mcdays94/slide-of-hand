@@ -263,6 +263,44 @@ describe("DeckCard", () => {
     });
   });
 
+  describe("draft pill (issue #191)", () => {
+    it("renders a DRAFT pill when meta.draft === true", () => {
+      renderCard({ ...baseMeta, draft: true });
+      const pill = document.querySelector(
+        "[data-testid='deck-draft-pill']",
+      ) as HTMLElement | null;
+      expect(pill).not.toBeNull();
+      expect(pill?.textContent).toMatch(/draft/i);
+    });
+
+    it("does NOT render the DRAFT pill when meta.draft === false", () => {
+      renderCard({ ...baseMeta, draft: false });
+      expect(
+        document.querySelector("[data-testid='deck-draft-pill']"),
+      ).toBeNull();
+    });
+
+    it("does NOT render the DRAFT pill when meta.draft is undefined", () => {
+      renderCard(baseMeta);
+      expect(
+        document.querySelector("[data-testid='deck-draft-pill']"),
+      ).toBeNull();
+    });
+
+    it("renders DRAFT pill alongside the visibility pill when both apply", () => {
+      renderCard(
+        { ...baseMeta, draft: true },
+        { visibility: "private" },
+      );
+      expect(
+        document.querySelector("[data-testid='deck-draft-pill']"),
+      ).not.toBeNull();
+      expect(
+        document.querySelector("[data-visibility='private']"),
+      ).not.toBeNull();
+    });
+  });
+
   describe("IDE link (admin slot)", () => {
     it("does NOT render the IDE link when ideHref is omitted", () => {
       renderCard(baseMeta);

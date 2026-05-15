@@ -336,14 +336,24 @@ export function DeckCard({
           >
             <div className="flex items-start justify-between gap-3">
               <p className="cf-tag">{kickerPieces.join(" · ")}</p>
-              {visibility === "private" && (
-                <span
-                  data-visibility="private"
-                  className="rounded border border-cf-orange/40 bg-cf-orange/10 px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.25em] text-cf-orange"
-                >
-                  private
-                </span>
-              )}
+              <div className="flex shrink-0 items-center gap-1.5">
+                {meta.draft && (
+                  <span
+                    data-testid="deck-draft-pill"
+                    className="rounded border border-cf-warning/40 bg-cf-warning/10 px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.25em] text-cf-warning"
+                  >
+                    draft
+                  </span>
+                )}
+                {visibility === "private" && (
+                  <span
+                    data-visibility="private"
+                    className="rounded border border-cf-orange/40 bg-cf-orange/10 px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.25em] text-cf-orange"
+                  >
+                    private
+                  </span>
+                )}
+              </div>
             </div>
 
             <h2
