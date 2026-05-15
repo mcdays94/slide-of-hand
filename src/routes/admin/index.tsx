@@ -74,9 +74,9 @@ import type { PendingSourceAction } from "@/lib/pending-source-actions";
 
 /**
  * Friendly inline error string for source-backed lifecycle actions
- * whose real backend has not landed yet. Archive (#247) is wired;
- * Restore (#248) and Delete (#249) ship in follow-up slices and
- * still surface this copy on confirm.
+ * whose real backend has not landed yet. Archive (#247) and Restore
+ * (#248) are wired; Delete (#249) ships in a follow-up slice and
+ * still surfaces this copy on confirm.
  */
 const SOURCE_NOT_WIRED_MESSAGE: Record<SourceLifecycleAction, string> = {
   archive:
@@ -88,24 +88,33 @@ const SOURCE_NOT_WIRED_MESSAGE: Record<SourceLifecycleAction, string> = {
 };
 
 /**
- * Call the source-backed Archive endpoint (#247). Returns the parsed
- * success payload, or throws an Error with the server's `error`
- * message attached for inline surfacing.
+ * Call a source-backed lifecycle endpoint (`#247` archive / `#248`
+ * restore). Returns on success, or throws an Error with the server's
+ * `error` message attached for inline surfacing.
  *
  * The endpoint is slow (clones the repo + runs the full test gate
  * inside a Cloudflare Sandbox; expect 60–120 s wall time in
  * production) but the UI is "fire-and-forget from the user's
  * perspective": on resolution we refetch the pending list and let
- * the projection in `usePendingSourceActions` move the card to
- * Archived with a Pending pill + PR link.
+ * the projection in `usePendingSourceActions` re-place the card with
+ * a Pending pill + PR link.
+ *
+ * Archive and Restore share an identical request shape (POST, no
+ * body, same auth headers) and an identical response/error shape,
+ * so a single helper covers both. Delete (#249) is intentionally not
+ * routed through here — its destructive nature warrants a separate
+ * helper when it lands.
  */
-async function archiveSourceDeckViaEndpoint(slug: string): Promise<void> {
+async function callSourceLifecycleEndpoint(
+  slug: string,
+  action: "archive" | "restore",
+): Promise<void> {
   const res = await fetch(
-    `/api/admin/source-decks/${encodeURIComponent(slug)}/archive`,
+    `/api/admin/source-decks/${encodeURIComponent(slug)}/${action}`,
     { method: "POST", headers: adminWriteHeaders() },
   );
   if (!res.ok) {
-    let message = `Failed to archive source deck (${res.status})`;
+    let message = `Failed to ${action} source deck (${res.status})`;
     try {
       const body = (await res.json()) as { error?: string };
       if (body?.error) message = body.error;
@@ -253,7 +262,7 @@ export default function AdminIndex() {
         // `usePendingSourceActions` moves the card into the
         // Archived section with a Pending pill + PR link without
         // a full reload.
-        await archiveSourceDeckViaEndpoint(slug);
+        await callSourceLifecycleEndpoint(slug, "archive");
         await refetchPending();
         return;
       }
@@ -279,8 +288,16 @@ export default function AdminIndex() {
   const handleRestore = useCallback(
     async (slug: string) => {
       if (findSource(slug) !== "kv") {
+        // Source-backed restore (issue #248): gate on GitHub, then
+        // hit the dedicated source-restore endpoint. On success the
+        // Worker has opened a draft PR and persisted a pending
+        // restore record; refetching the pending list lets the
+        // projection in `usePendingSourceActions` move the card
+        // back into Active with a Pending pill + PR link.
         if (tryOpenSourceGate("restore", slug)) return;
-        throw new Error(SOURCE_NOT_WIRED_MESSAGE.restore);
+        await callSourceLifecycleEndpoint(slug, "restore");
+        await refetchPending();
+        return;
       }
       const res = await fetch(
         `/api/admin/decks/${encodeURIComponent(slug)}/restore`,
@@ -298,7 +315,7 @@ export default function AdminIndex() {
       }
       setArchivedOverrides((prev) => ({ ...prev, [slug]: false }));
     },
-    [findSource, tryOpenSourceGate],
+    [findSource, tryOpenSourceGate, refetchPending],
   );
 
   /**
@@ -360,16 +377,20 @@ export default function AdminIndex() {
    * user has connected (the hook's status flips to `"connected"`),
    * Retry replays the stored source intent.
    *
-   * Archive (#247) now invokes the real source-archive endpoint and
-   * closes the gate on success. Restore (#248) and Delete (#249)
-   * still surface the friendly "not yet wired" inline error until
-   * their backends land.
+   * Archive (#247) and Restore (#248) invoke their real source
+   * endpoints and close the gate on success. Delete (#249) still
+   * surfaces the friendly "not yet wired" inline error until its
+   * backend lands.
    */
   const handleSourceLifecycleRetry = useCallback(async () => {
     if (!sourceLifecycleIntent) return;
-    if (sourceLifecycleIntent.action === "archive") {
+    if (
+      sourceLifecycleIntent.action === "archive" ||
+      sourceLifecycleIntent.action === "restore"
+    ) {
+      const action = sourceLifecycleIntent.action;
       try {
-        await archiveSourceDeckViaEndpoint(sourceLifecycleIntent.slug);
+        await callSourceLifecycleEndpoint(sourceLifecycleIntent.slug, action);
         await refetchPending();
         // Success — close the gate. The pending projection takes
         // over the card's visual state.
@@ -379,7 +400,7 @@ export default function AdminIndex() {
         setSourceLifecycleRetryError(
           err instanceof Error
             ? err.message
-            : `Failed to archive source deck.`,
+            : `Failed to ${action} source deck.`,
         );
       }
       return;
