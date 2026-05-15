@@ -33,6 +33,49 @@ A slide that declares `sectionLabel` / `sectionNumber` — visually serves as
 a chapter divider in the deck. Not architecturally distinct from a regular
 slide; the markers just drive presentation.
 
+### Deck lifecycle
+
+**Draft deck**:
+A deck-level work-in-progress state represented by `meta.draft?: true`. Draft
+decks are visible to **admin** on `/admin` and hidden from the public homepage.
+When published through the GitHub flow, `runPublishDraft` flips the deck back
+to `draft: false` so it can appear publicly once merged and deployed.
+_Avoid_: "hidden deck" (Hidden is slide-level), "archived deck" (Archived is
+a retired deck lifecycle state).
+
+**Archived deck**:
+A retired deck that should not appear on the public homepage and should return
+404 on the **public route**. Source-backed archived decks live under
+`src/decks/archive/<slug>/`; active source-backed decks live under
+`src/decks/public/<slug>/`. KV-backed archived decks use
+`meta.archived: true` on the deck record and index summary. Archived decks
+appear in a separate archived section on `/admin`, can be previewed read-only,
+and can be restored or deleted from the app. Restoring a source-backed archived
+deck opens a draft PR that moves it back to `src/decks/public/<slug>/`;
+restoring a KV-backed archived deck flips `meta.archived` back off.
+Archived wins over Draft for placement: a deck that is both `draft: true` and
+archived belongs in the Archived section and is public-404.
+Archive preserves runtime side data such as manifest overrides, notes, and
+analytics so Restore can bring the deck back intact. Delete is destructive and
+clears deck side data such as manifest overrides and deck KV records; analytics
+may remain only where it is already stored as aggregate history. For
+source-backed Delete, side data is cleared only after the delete PR is merged
+and deployed, not while the source action is merely pending.
+_Avoid_: "draft" (a draft is still being built), "hidden" (Hidden is
+slide-level), "deleted" (Archived is reversible).
+
+**Pending source action**:
+A source-backed Archive / Restore / Delete action that has opened a GitHub
+draft PR but has not yet been merged and redeployed. The admin UI may
+optimistically move or remove the deck, but must show a **Pending merge/deploy**
+pill until the deployed source registry matches the requested action. Pending
+source actions are persisted in KV so the state survives reloads. A pending
+source Delete appears in the Archived section with a **Pending delete** pill so
+the action remains visible until the GitHub PR is merged and production catches
+up. Clearing a pending source action in v1 removes only the KV pending marker;
+it does not close the GitHub PR.
+_Avoid_: "synced" unless the deployed source tree has actually caught up.
+
 ### Navigation
 
 **Sequential nav**:
