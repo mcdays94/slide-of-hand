@@ -70,6 +70,27 @@ export interface DeckMeta {
    * published). Pre-existing decks need no migration.
    */
   draft?: boolean;
+  /**
+   * When `true`, this deck is retired (issue #243 / PRD #242).
+   *
+   * Source-backed archived decks live under `src/decks/archive/<slug>/`
+   * and have this flag injected by the registry. KV-backed archived
+   * decks set it explicitly on the record.
+   *
+   * UI semantics:
+   *   - Public homepage `/` does NOT list archived decks.
+   *   - Public deck route `/decks/<slug>` returns 404 for archived
+   *     decks (no link leak).
+   *   - Admin `/admin` shows archived decks in a separate "Archived"
+   *     section, always visible (the draft filter does not apply).
+   *   - "Archived wins over draft": if both `draft === true` and
+   *     `archived === true`, the deck belongs in the Archived
+   *     section, not the Active draft-filter behavior.
+   *
+   * Default: undefined / false (treated as "active"). Pre-existing
+   * decks need no migration.
+   */
+  archived?: boolean;
 }
 
 export interface Deck {

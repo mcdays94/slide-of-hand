@@ -105,6 +105,18 @@ interface DeckSummary {
    * Default: undefined (treated as "not a draft").
    */
   draft?: boolean;
+  /**
+   * Retired flag (issue #243). When `true`:
+   *   - the public list (`GET /api/decks`) filters the entry out;
+   *   - the public read (`GET /api/decks/<slug>`) returns 404;
+   *   - the admin list (`GET /api/admin/decks`) keeps the entry so the
+   *     admin Archived section can render it.
+   *
+   * Default: undefined (treated as "active"). Archived wins over draft
+   * on the public surface: an archived deck is hidden regardless of
+   * the draft flag.
+   */
+  archived?: boolean;
 }
 
 // ---------------------------------------------------------------- //
@@ -249,6 +261,13 @@ function summaryFromDeck(deck: DataDeck): DeckSummary {
   if (deck.meta.draft === true) {
     summary.draft = true;
   }
+  // Issue #243 — propagate `archived` only when explicitly set. The
+  // public list filters archived entries at the wire; the public read
+  // 404s for archived slugs. Default behaviour for any pre-#243 deck
+  // (no `archived` field on the record) is unchanged.
+  if (deck.meta.archived === true) {
+    summary.archived = true;
+  }
   return summary;
 }
 
@@ -276,18 +295,22 @@ async function removeFromIndex(env: DecksEnv, slug: string): Promise<void> {
 
 async function handlePublicList(env: DecksEnv): Promise<Response> {
   const list = await readIndex(env);
-  // Two-pass filter:
+  // Three-pass filter:
   //   1. visibility must be "public" — private decks never leak.
   //   2. draft must NOT be true — work-in-progress decks (issue #191)
-  //      stay invisible on the public index. They remain reachable via
-  //      `/api/admin/decks` (Access-gated) so authors can still find
-  //      and finish them.
+  //      stay invisible on the public index.
+  //   3. archived must NOT be true — retired decks (issue #243) stay
+  //      invisible on the public index regardless of the draft flag
+  //      (archived wins over draft).
   //
-  // `draft === undefined` and `draft === false` both pass — only the
-  // explicit `true` is filtered out. This matches the front-end
+  // Both `draft` and `archived` allow `undefined` / `false` through;
+  // only the explicit `true` is filtered. Mirrors the front-end
   // `mergeDeckLists` semantics (defence in depth).
   const publicOnly = list.filter(
-    (entry) => entry.visibility === "public" && entry.draft !== true,
+    (entry) =>
+      entry.visibility === "public" &&
+      entry.draft !== true &&
+      entry.archived !== true,
   );
   return new Response(JSON.stringify({ decks: publicOnly }), {
     status: 200,
@@ -307,6 +330,13 @@ async function handlePublicRead(
   // defeats the purpose of "private". 404 is indistinguishable from
   // "no such deck".
   if (!stored || stored.meta?.visibility !== "public") {
+    return notFound();
+  }
+  // Issue #243 — archived decks are treated as 404 on the public
+  // endpoint. Same reasoning as private: returning the record would
+  // leak that the deck once existed but has been retired. 404 is the
+  // cleanest "deck no longer exists" signal.
+  if (stored.meta?.archived === true) {
     return notFound();
   }
   return new Response(JSON.stringify(stored), {

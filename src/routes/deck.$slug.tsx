@@ -23,6 +23,7 @@ import { Link, useParams, useSearchParams } from "react-router-dom";
 import { Deck } from "@/framework/viewer/Deck";
 import { DataDeck, dataDeckToDeck } from "@/framework/viewer/DataDeck";
 import {
+  getDeckMetaBySlug,
   getDeckResource,
   hasBuildTimeDeck,
   useDataDeck,
@@ -101,6 +102,17 @@ export default function DeckRoute() {
   const [search] = useSearchParams();
   const isBuildTime = slug ? hasBuildTimeDeck(slug) : false;
 
+  // Issue #243 — archived build-time decks (those under
+  // `src/decks/archive/<slug>/`) MUST 404 on the public route. The
+  // registry tags them with `meta.archived = true`; we read that
+  // synchronously here so the public viewer never resolves the
+  // archived deck's chunk + slides. KV-backed archived decks come
+  // back as `notFound` from the Worker's public read endpoint, which
+  // returns 404 for `meta.archived === true` (defence in depth).
+  const buildTimeMeta = slug ? getDeckMetaBySlug(slug) : undefined;
+  const isBuildTimeArchived =
+    isBuildTime && buildTimeMeta?.archived === true;
+
   // Only fetch from KV when the build-time registry didn't have this slug.
   // Empty string short-circuits the hook (it skips the network call).
   const kvSlug = !isBuildTime && slug ? slug : "";
@@ -120,6 +132,12 @@ export default function DeckRoute() {
 
   // ── 1. Build-time hit ─────────────────────────────────────────────────
   if (isBuildTime && slug) {
+    // Archived source decks 404 on the public route. The admin route
+    // (`/admin/decks/<slug>`) keeps them previewable read-only — this
+    // gate only fires for the public surface.
+    if (isBuildTimeArchived) {
+      return <NotFound slug={slug} />;
+    }
     return (
       <Suspense fallback={<DeckLoadingFallback />}>
         <BuildTimeDeck slug={slug} presenter={presenter} isAdmin={isAdmin} />

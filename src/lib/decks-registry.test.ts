@@ -46,6 +46,49 @@ describe("buildRegistry", () => {
     ).toBe("private");
   });
 
+  // Issue #243 — archive folder discovery. Decks under
+  // `src/decks/archive/<slug>/` are discovered for admin consumers
+  // and marked with `meta.archived = true` regardless of what their
+  // meta.ts says (the folder location IS the source of truth).
+  it("discovers decks from src/decks/archive and marks them archived", () => {
+    const result = buildRegistry({
+      "/src/decks/archive/legacy-talk/meta.ts": makeMetaModule(
+        "legacy-talk",
+        "2024-01-01",
+      ),
+    });
+    expect(result).toHaveLength(1);
+    expect(result[0].meta.slug).toBe("legacy-talk");
+    expect(result[0].meta.archived).toBe(true);
+  });
+
+  it("treats archived source decks as public visibility (admin renders them)", () => {
+    const result = buildRegistry({
+      "/src/decks/archive/legacy-talk/meta.ts": makeMetaModule(
+        "legacy-talk",
+        "2024-01-01",
+      ),
+    });
+    expect(result[0].visibility).toBe("public");
+  });
+
+  it("co-discovers public + private + archive in a single pass", () => {
+    const result = buildRegistry({
+      "/src/decks/public/alpha/meta.ts": makeMetaModule("alpha", "2026-01-01"),
+      "/src/decks/private/secret/meta.ts": makeMetaModule("secret", "2026-02-01"),
+      "/src/decks/archive/legacy/meta.ts": makeMetaModule("legacy", "2024-01-01"),
+    });
+    expect(result.map((e) => e.meta.slug).sort()).toEqual([
+      "alpha",
+      "legacy",
+      "secret",
+    ]);
+    const legacy = result.find((e) => e.meta.slug === "legacy");
+    expect(legacy?.meta.archived).toBe(true);
+    const alpha = result.find((e) => e.meta.slug === "alpha");
+    expect(alpha?.meta.archived).toBeUndefined();
+  });
+
   it("sorts by date descending", () => {
     const result = buildRegistry({
       "/src/decks/public/older/meta.ts": makeMetaModule("older", "2025-06-01"),
@@ -96,6 +139,17 @@ describe("loadDeckBySlug — lazy build-time decks (issue #105)", () => {
   it("resolves to undefined for unknown slugs", async () => {
     const deck = await loadDeckBySlug("definitely-not-a-deck");
     expect(deck).toBeUndefined();
+  });
+
+  // Issue #243 — archive-folder discovery resolves through the same
+  // loader path. The `legacy-demo` fixture under
+  // `src/decks/archive/legacy-demo/` exists for visual TDD + so the
+  // admin Archived section has something to show in production.
+  it("resolves a real archived deck (the `legacy-demo` fixture)", async () => {
+    const deck = await loadDeckBySlug("legacy-demo");
+    expect(deck).toBeDefined();
+    expect(deck?.meta.slug).toBe("legacy-demo");
+    expect(deck?.meta.archived).toBe(true);
   });
 });
 
@@ -759,6 +813,140 @@ describe("mergeAdminDeckLists — drafts visible to admins (issue #191)", () => 
   });
 });
 
+// ──────────────────────────────────────────────────────────────────────────
+// Archived filtering (issue #243)
+//
+// Public consumers MUST drop archived decks (source + KV) from `/`.
+// `mergeDeckLists` is the workhorse: it filters BOTH halves so any caller
+// (including legitimate callers in tests) sees the same view.
+//
+// Admin consumers (`mergeAdminDeckLists`) MUST keep archived decks AND
+// preserve the `archived` flag so the index can render them in the
+// separate Archived section.
+//
+// "Archived wins over draft": if both flags are true, the deck must be
+// dropped from public lists (the archived filter wins; we don't fall
+// through to a draft path that might keep it). Admin keeps the deck
+// with both flags preserved.
+// ──────────────────────────────────────────────────────────────────────────
+
+const archivedSummary = (
+  slug: string,
+  date: string,
+  rest: Partial<{
+    title: string;
+    visibility: "public" | "private";
+    draft: boolean;
+    archived: boolean;
+  }> = {},
+) => ({
+  slug,
+  title: rest.title ?? `KV ${slug}`,
+  description: undefined as string | undefined,
+  date,
+  cover: undefined as string | undefined,
+  runtimeMinutes: undefined as number | undefined,
+  visibility: rest.visibility ?? ("public" as const),
+  draft: rest.draft,
+  archived: rest.archived,
+});
+
+describe("mergeDeckLists — archived filtering (issue #243)", () => {
+  it("drops KV summaries with archived === true from the public list", () => {
+    const merged = mergeDeckLists(
+      [],
+      [
+        archivedSummary("kv-active", "2026-01-01"),
+        archivedSummary("kv-archived", "2026-01-01", { archived: true }),
+      ],
+    );
+    expect(merged.map((m) => m.slug)).toEqual(["kv-active"]);
+  });
+
+  it("drops build-time DeckMetas with archived === true from the public list", () => {
+    const merged = mergeDeckLists(
+      [
+        meta("source-active", "2026-01-01"),
+        meta("source-archived", "2026-01-01", { archived: true }),
+      ],
+      [],
+    );
+    expect(merged.map((m) => m.slug)).toEqual(["source-active"]);
+  });
+
+  it("keeps decks with archived === false or undefined", () => {
+    const merged = mergeDeckLists(
+      [
+        meta("active-undef", "2026-02-01"),
+        meta("active-false", "2026-01-01", { archived: false }),
+      ],
+      [],
+    );
+    expect(merged.map((m) => m.slug).sort()).toEqual([
+      "active-false",
+      "active-undef",
+    ]);
+  });
+
+  it("archived wins over draft: a deck that is both archived AND draft is dropped", () => {
+    const merged = mergeDeckLists(
+      [meta("both-flags", "2026-01-01", { draft: true, archived: true })],
+      [archivedSummary("kv-both", "2026-01-01", { draft: true, archived: true })],
+    );
+    expect(merged).toHaveLength(0);
+  });
+});
+
+describe("mergeAdminDeckLists — archived visible to admins (issue #243)", () => {
+  it("keeps KV summaries with archived === true", () => {
+    const merged = mergeAdminDeckLists(
+      [],
+      [
+        archivedSummary("kv-active", "2026-01-01"),
+        archivedSummary("kv-archived", "2026-01-01", { archived: true }),
+      ],
+    );
+    const slugs = merged.map((e) => e.meta.slug).sort();
+    expect(slugs).toEqual(["kv-active", "kv-archived"]);
+  });
+
+  it("keeps build-time entries with archived === true", () => {
+    const merged = mergeAdminDeckLists(
+      [
+        sourceEntry("source-active", "2026-01-02"),
+        sourceEntry("source-archived", "2026-01-01", "public", {
+          archived: true,
+        }),
+      ],
+      [],
+    );
+    const slugs = merged.map((e) => e.meta.slug).sort();
+    expect(slugs).toEqual(["source-active", "source-archived"]);
+  });
+
+  it("preserves the archived flag on KV entries so admin UI can render the Archived section", () => {
+    const merged = mergeAdminDeckLists(
+      [],
+      [archivedSummary("kv-archived", "2026-01-01", { archived: true })],
+    );
+    expect(merged[0]?.meta.archived).toBe(true);
+  });
+
+  it("preserves both archived AND draft flags on KV entries", () => {
+    const merged = mergeAdminDeckLists(
+      [],
+      [
+        archivedSummary("kv-both", "2026-01-01", {
+          archived: true,
+          draft: true,
+        }),
+      ],
+    );
+    expect(merged[0]?.meta.archived).toBe(true);
+    expect(merged[0]?.meta.draft).toBe(true);
+  });
+});
+
 // `useDataDeckList` is the hook the public route consumes. Confirm it
 // applies the draft filter when KV returns a mix of drafts + published
 // AND when the build-time half is dirty (the test re-mocks
@@ -779,5 +967,24 @@ describe("useDataDeckList — draft filtering (issue #191)", () => {
     const slugs = result.current.decks.map((d) => d.slug);
     expect(slugs).toContain("kv-published");
     expect(slugs).not.toContain("kv-draft");
+  });
+});
+
+describe("useDataDeckList — archived filtering (issue #243)", () => {
+  it("hides KV decks with archived === true from the public list", async () => {
+    vi.stubGlobal(
+      "fetch",
+      mockFetch({
+        decks: [
+          archivedSummary("kv-active", "2026-12-01"),
+          archivedSummary("kv-archived", "2026-12-01", { archived: true }),
+        ],
+      }),
+    );
+    const { result } = renderHook(() => useDataDeckList());
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    const slugs = result.current.decks.map((d) => d.slug);
+    expect(slugs).toContain("kv-active");
+    expect(slugs).not.toContain("kv-archived");
   });
 });

@@ -38,6 +38,7 @@ import { DataDeck, dataDeckToDeck } from "@/framework/viewer/DataDeck";
 import { PresenterModeProvider } from "@/framework/presenter/mode";
 import { PresenterWindow } from "@/framework/presenter/PresenterWindow";
 import {
+  getDeckMetaBySlug,
   getDeckResource,
   hasBuildTimeDeck,
   useAdminDataDeck,
@@ -57,9 +58,17 @@ function DeckLoadingFallback() {
 interface BuildTimeDeckProps {
   slug: string;
   presenter: boolean;
+  /**
+   * Issue #243: archived source decks render in a read-only preview.
+   * The full presenter / admin chrome (Theme / Inspect / AI / Settings)
+   * is suppressed by passing `enabled={false}` to the provider, and a
+   * banner is shown above the viewer so the author knows they're
+   * looking at a retired deck.
+   */
+  archived?: boolean;
 }
 
-function BuildTimeDeck({ slug, presenter }: BuildTimeDeckProps) {
+function BuildTimeDeck({ slug, presenter, archived }: BuildTimeDeckProps) {
   const resource = useMemo(() => getDeckResource(slug), [slug]);
   const deck = resource.read();
   if (!deck) {
@@ -67,6 +76,22 @@ function BuildTimeDeck({ slug, presenter }: BuildTimeDeckProps) {
   }
   if (presenter) {
     return <PresenterWindow deck={deck} />;
+  }
+  // Archived decks: drop the presenter affordances (this is a
+  // read-only preview, not an authoring surface) and overlay a clear
+  // banner. The banner is a fixed-position chrome strip; it never
+  // intercepts the deck's own key events.
+  if (archived) {
+    return (
+      <PresenterModeProvider enabled={false}>
+        <ArchivedReadOnlyBanner />
+        <Deck
+          slug={deck.meta.slug}
+          title={deck.meta.title}
+          slides={deck.slides}
+        />
+      </PresenterModeProvider>
+    );
   }
   return (
     <PresenterModeProvider enabled={true}>
@@ -76,6 +101,37 @@ function BuildTimeDeck({ slug, presenter }: BuildTimeDeckProps) {
         slides={deck.slides}
       />
     </PresenterModeProvider>
+  );
+}
+
+/**
+ * Top-of-viewport read-only banner for archived decks (#243).
+ *
+ * Uses the same design tokens as the existing admin chrome (orange
+ * accent on warm cream) so it reads as informational, not alarming.
+ * Fixed positioning keeps it visible while the viewer is rendered
+ * underneath; pointer-events on inner buttons re-enable so the back
+ * link works. We intentionally avoid action buttons (Restore /
+ * Delete) — those land in later slices of PRD #242.
+ */
+function ArchivedReadOnlyBanner() {
+  return (
+    <div
+      data-testid="admin-archived-banner"
+      className="pointer-events-none fixed left-0 right-0 top-0 z-50 flex justify-center px-4 py-3"
+    >
+      <div className="pointer-events-auto flex items-center gap-3 rounded-md border border-cf-orange/40 bg-cf-bg-100 px-4 py-2 shadow-sm">
+        <span className="font-mono text-[10px] uppercase tracking-[0.25em] text-cf-orange">
+          Archived
+        </span>
+        <span className="text-sm text-cf-text">
+          Read-only preview. Public links return not found.
+        </span>
+        <Link to="/admin" className="cf-btn-ghost text-xs">
+          Back to admin
+        </Link>
+      </div>
+    </div>
   );
 }
 
@@ -121,16 +177,28 @@ function AdminDeckRouteInner() {
   const presenterMode = search.get("presenter") === "1";
 
   const isBuildTime = slug ? hasBuildTimeDeck(slug) : false;
+  // Issue #243 — synchronously detect archived source decks via the
+  // registry meta. Archived decks render in a read-only preview;
+  // EditMode never mounts.
+  const buildTimeMeta = slug ? getDeckMetaBySlug(slug) : undefined;
+  const isBuildTimeArchived =
+    isBuildTime && buildTimeMeta?.archived === true;
   // Only fetch the KV record when the build-time registry missed.
   // We use the ADMIN variant (Slice 6 / #62) so private decks resolve
   // — the public hook would 404 them.
   const kvSlug = !isBuildTime && slug ? slug : "";
   const kvResult = useAdminDataDeck(kvSlug);
+  const isKvArchived = kvResult.deck?.meta.archived === true;
 
   // Edit mode: defer all rendering to <EditMode>, which does its own
   // KV fetch + 404 handling. Build-time decks are NOT editable in
   // Slice 6 (they live in source files); fall through to read-only.
-  if (editMode && slug && !isBuildTime) {
+  //
+  // Issue #243: archived KV decks ALSO fall through to read-only.
+  // We honor the URL (`?edit=1`) on a live deck but never on an
+  // archived one — the read model says "no authoring controls until
+  // restored". A clean restore action ships in a later slice.
+  if (editMode && slug && !isBuildTime && !isKvArchived) {
     return (
       <PresenterModeProvider enabled={true}>
         <EditMode slug={slug} />
@@ -142,7 +210,11 @@ function AdminDeckRouteInner() {
   if (isBuildTime && slug) {
     return (
       <Suspense fallback={<DeckLoadingFallback />}>
-        <BuildTimeDeck slug={slug} presenter={presenterMode} />
+        <BuildTimeDeck
+          slug={slug}
+          presenter={presenterMode}
+          archived={isBuildTimeArchived}
+        />
       </Suspense>
     );
   }
@@ -150,12 +222,23 @@ function AdminDeckRouteInner() {
   // KV deck (read-only on the admin route — entry into edit is via
   // the `R` key or the wizard's redirect).
   if (kvResult.deck) {
-    if (presenterMode) {
+    if (presenterMode && !isKvArchived) {
       // KV-backed decks support presenter mode via the dataDeckToDeck()
       // adapter (#61 follow-up). Same window component as build-time
       // decks; the conversion preserves id/title/notes/phases on every
-      // slide.
+      // slide. Archived decks suppress presenter mode (read-only).
       return <PresenterWindow deck={dataDeckToDeck(kvResult.deck)} />;
+    }
+    // Issue #243: archived KV deck → read-only preview with a banner
+    // and presenter mode disabled. Active KV decks still mount with
+    // `enabled={true}` so authors retain their tooling.
+    if (isKvArchived) {
+      return (
+        <PresenterModeProvider enabled={false}>
+          <ArchivedReadOnlyBanner />
+          <DataDeck deck={kvResult.deck} />
+        </PresenterModeProvider>
+      );
     }
     return (
       <PresenterModeProvider enabled={true}>

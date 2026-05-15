@@ -67,7 +67,7 @@ function entry(
   title: string,
   source: "source" | "kv",
   visibility: "public" | "private" = "public",
-  extraMeta: { draft?: boolean } = {},
+  extraMeta: { draft?: boolean; archived?: boolean } = {},
 ): RegistryEntry {
   return {
     visibility,
@@ -390,5 +390,149 @@ describe("AdminIndex — draft filter toggle (#191)", () => {
     });
     // 2 decks visible after hiding the draft.
     expect(screen.getByText(/2 decks available/)).toBeDefined();
+  });
+});
+
+// ─── Archived section (issue #243 / PRD #242) ────────────────────────
+// The admin index splits decks into two sections:
+//   - Active: non-archived decks (subject to the showDrafts toggle).
+//   - Archived: decks with meta.archived === true (always visible).
+// Active renders first, Archived second.
+describe("AdminIndex — Archived section (#243)", () => {
+  async function renderAdmin() {
+    const AdminIndex = await loadAdminIndex();
+    return render(
+      <SettingsProvider>
+        <MemoryRouter>
+          <AdminIndex />
+        </MemoryRouter>
+      </SettingsProvider>,
+    );
+  }
+
+  it("renders an Archived section when at least one entry is archived", async () => {
+    mockEntries = [
+      entry("active-one", "Active One", "source"),
+      entry("retired-one", "Retired One", "source", "public", {
+        archived: true,
+      }),
+    ];
+    await renderAdmin();
+    expect(screen.getByTestId("admin-archived-section")).toBeDefined();
+    // The active section is also rendered.
+    expect(screen.getByTestId("admin-active-section")).toBeDefined();
+  });
+
+  it("does NOT render the Archived section when no entries are archived", async () => {
+    mockEntries = [
+      entry("active-one", "Active One", "source"),
+      entry("active-two", "Active Two", "kv"),
+    ];
+    await renderAdmin();
+    expect(screen.queryByTestId("admin-archived-section")).toBeNull();
+  });
+
+  it("places archived source decks in the Archived section", async () => {
+    mockEntries = [
+      entry("active-one", "Active One", "source"),
+      entry("retired-source", "Retired Source", "source", "public", {
+        archived: true,
+      }),
+    ];
+    await renderAdmin();
+    const archived = screen.getByTestId("admin-archived-section");
+    expect(archived.textContent).toMatch(/Retired Source/);
+    // Active deck must NOT appear inside the Archived section.
+    expect(archived.textContent).not.toMatch(/Active One/);
+  });
+
+  it("places KV-backed archived decks in the Archived section", async () => {
+    mockEntries = [
+      entry("active-one", "Active One", "source"),
+      entry("retired-kv", "Retired KV", "kv", "public", {
+        archived: true,
+      }),
+    ];
+    await renderAdmin();
+    const archived = screen.getByTestId("admin-archived-section");
+    expect(archived.textContent).toMatch(/Retired KV/);
+  });
+
+  it("Active first, Archived below", async () => {
+    mockEntries = [
+      entry("retired-one", "Retired One", "source", "public", {
+        archived: true,
+      }),
+      entry("active-one", "Active One", "source"),
+    ];
+    await renderAdmin();
+    const active = screen.getByTestId("admin-active-section");
+    const archived = screen.getByTestId("admin-archived-section");
+    // Active must appear before Archived in document order.
+    expect(active.compareDocumentPosition(archived) &
+      Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("archived wins over draft: a deck with both flags lives in Archived only", async () => {
+    mockEntries = [
+      entry("active-one", "Active One", "source"),
+      entry("both-flags", "Both Flags", "source", "public", {
+        draft: true,
+        archived: true,
+      }),
+    ];
+    await renderAdmin();
+    const active = screen.getByTestId("admin-active-section");
+    const archived = screen.getByTestId("admin-archived-section");
+    expect(archived.textContent).toMatch(/Both Flags/);
+    expect(active.textContent).not.toMatch(/Both Flags/);
+  });
+
+  it("showDrafts toggle does NOT hide archived decks", async () => {
+    mockEntries = [
+      entry("active-published", "Active Published", "source"),
+      entry("active-draft", "Active Draft", "source", "public", {
+        draft: true,
+      }),
+      entry("retired-and-draft", "Retired And Draft", "source", "public", {
+        draft: true,
+        archived: true,
+      }),
+    ];
+    await renderAdmin();
+    // Toggle to "Hide drafts".
+    act(() => {
+      fireEvent.click(screen.getByTestId("admin-draft-filter-hide"));
+    });
+    // Active draft should be hidden. Archived-and-draft must STILL be
+    // visible because the showDrafts filter only applies to Active.
+    expect(screen.queryByText("Active Draft")).toBeNull();
+    expect(screen.getByText("Retired And Draft")).toBeDefined();
+  });
+
+  it("renders helper copy that explains archived behavior", async () => {
+    mockEntries = [
+      entry("retired-one", "Retired One", "source", "public", {
+        archived: true,
+      }),
+    ];
+    await renderAdmin();
+    const archived = screen.getByTestId("admin-archived-section");
+    // The heading + helper copy live inside the section.
+    expect(archived.textContent).toMatch(/Archived/);
+    // Cue users that the public surface 404s these decks.
+    expect(archived.textContent).toMatch(/not found|404|return/i);
+  });
+
+  it("does NOT render a trashcan on archived KV decks in this slice", async () => {
+    // PRD #242 ships Archive / Restore / Delete actions in later
+    // slices. This slice is the read model only — no action UI.
+    mockEntries = [
+      entry("retired-kv", "Retired KV", "kv", "public", {
+        archived: true,
+      }),
+    ];
+    await renderAdmin();
+    expect(screen.queryByTestId("delete-deck-retired-kv")).toBeNull();
   });
 });
