@@ -74,9 +74,10 @@ import type { PendingSourceAction } from "@/lib/pending-source-actions";
 
 /**
  * Friendly inline error string for source-backed lifecycle actions
- * whose real backend has not landed yet. Archive (#247) and Restore
- * (#248) are wired; Delete (#249) ships in a follow-up slice and
- * still surfaces this copy on confirm.
+ * whose real backend has not landed yet. Archive (#247), Restore
+ * (#248), and Delete (#249) are now wired. The map is preserved as a
+ * type-safe placeholder for any future source lifecycle action that
+ * temporarily ships behind a stub.
  */
 const SOURCE_NOT_WIRED_MESSAGE: Record<SourceLifecycleAction, string> = {
   archive:
@@ -99,15 +100,17 @@ const SOURCE_NOT_WIRED_MESSAGE: Record<SourceLifecycleAction, string> = {
  * the projection in `usePendingSourceActions` re-place the card with
  * a Pending pill + PR link.
  *
- * Archive and Restore share an identical request shape (POST, no
- * body, same auth headers) and an identical response/error shape,
- * so a single helper covers both. Delete (#249) is intentionally not
- * routed through here — its destructive nature warrants a separate
- * helper when it lands.
+ * Archive, Restore, and Delete share an identical request shape
+ * (POST, no body, same auth headers) and an identical response/error
+ * shape, so a single helper covers all three. The destructive
+ * nature of Delete is enforced UPSTREAM by the typed-slug confirm
+ * dialog — by the time this helper is invoked, the user has typed
+ * the deck's slug, GitHub is connected, and the only remaining gate
+ * is the Worker's own existence probe.
  */
 async function callSourceLifecycleEndpoint(
   slug: string,
-  action: "archive" | "restore",
+  action: "archive" | "restore" | "delete",
 ): Promise<void> {
   const res = await fetch(
     `/api/admin/source-decks/${encodeURIComponent(slug)}/${action}`,
@@ -324,10 +327,17 @@ export default function AdminIndex() {
    * KV decks (issue #130): DELETE /api/admin/decks/<slug>, optimistically
    * hide the row, schedule a reload.
    *
-   * Source decks (issue #251): gate on GitHub. If disconnected, the
-   * gate intercepts and the parent dialog closes cleanly. If
-   * connected, fall through to the stub error — the real source-delete
-   * backend ships in a later slice (#247-#249 PR flow).
+   * Source decks (issue #249): if GitHub is not connected, the gate
+   * intercepts and the parent dialog closes cleanly. If connected,
+   * hit the dedicated source-delete endpoint
+   * (`POST /api/admin/source-decks/<slug>/delete`). On success the
+   * Worker has opened a draft PR and persisted a
+   * `PendingSourceAction` record (action=delete, expectedState=deleted).
+   * We refetch the pending list so the projection in
+   * `usePendingSourceActions` moves the card into the Archived
+   * section with a "Pending delete" pill + PR link without a full
+   * reload. Side data (KV, R2 thumbnails, analytics) is intentionally
+   * NOT cleaned up here — that's deferred to reconciliation (#250).
    *
    * The reload for KV decks is a follow-up — see issue #130's
    * acknowledged TODO: a cleaner refactor would expose `refetch` from
@@ -338,7 +348,9 @@ export default function AdminIndex() {
     async (slug: string) => {
       if (findSource(slug) !== "kv") {
         if (tryOpenSourceGate("delete", slug)) return;
-        throw new Error(SOURCE_NOT_WIRED_MESSAGE.delete);
+        await callSourceLifecycleEndpoint(slug, "delete");
+        await refetchPending();
+        return;
       }
       const res = await fetch(
         `/api/admin/decks/${encodeURIComponent(slug)}`,
@@ -369,7 +381,7 @@ export default function AdminIndex() {
         setTimeout(() => window.location.reload(), 0);
       }
     },
-    [findSource, tryOpenSourceGate],
+    [findSource, tryOpenSourceGate, refetchPending],
   );
 
   /**
@@ -377,18 +389,16 @@ export default function AdminIndex() {
    * user has connected (the hook's status flips to `"connected"`),
    * Retry replays the stored source intent.
    *
-   * Archive (#247) and Restore (#248) invoke their real source
-   * endpoints and close the gate on success. Delete (#249) still
-   * surfaces the friendly "not yet wired" inline error until its
-   * backend lands.
+   * All three lifecycle actions (Archive #247, Restore #248, Delete
+   * #249) now invoke their real source endpoints and close the gate
+   * on success. The `SOURCE_NOT_WIRED_MESSAGE` map is preserved so
+   * any future source lifecycle action can temporarily fall through
+   * to a stub without forcing a wider refactor.
    */
   const handleSourceLifecycleRetry = useCallback(async () => {
     if (!sourceLifecycleIntent) return;
-    if (
-      sourceLifecycleIntent.action === "archive" ||
-      sourceLifecycleIntent.action === "restore"
-    ) {
-      const action = sourceLifecycleIntent.action;
+    const action = sourceLifecycleIntent.action;
+    if (action === "archive" || action === "restore" || action === "delete") {
       try {
         await callSourceLifecycleEndpoint(sourceLifecycleIntent.slug, action);
         await refetchPending();

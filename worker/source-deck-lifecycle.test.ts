@@ -64,6 +64,7 @@ vi.mock("@cloudflare/sandbox", () => ({
 import {
   handleSourceDeckLifecycle,
   runArchiveSourceDeck,
+  runDeleteSourceDeck,
   runRestoreSourceDeck,
   type SourceDeckLifecycleEnv,
 } from "./source-deck-lifecycle";
@@ -1230,6 +1231,581 @@ describe("handleSourceDeckLifecycle — POST /api/admin/source-decks/<slug>/rest
     runSandboxTestGateMock.mockResolvedValue({
       ok: false,
       failedPhase: "test",
+      phases: [],
+    });
+    const res = await handleSourceDeckLifecycle(
+      buildRequest("hello"),
+      makeEnv(),
+    );
+    expect(res!.status).toBe(400);
+    const body = (await res!.json()) as { error: string; phase: string };
+    expect(body.phase).toBe("test_gate");
+  });
+
+  it("returns 405 on non-POST methods", async () => {
+    const res = await handleSourceDeckLifecycle(
+      buildRequest("hello", { method: "GET" }),
+      makeEnv(),
+    );
+    expect(res!.status).toBe(405);
+  });
+
+  it("returns 400 on a malformed slug", async () => {
+    const res = await handleSourceDeckLifecycle(
+      buildRequest("BAD_SLUG"),
+      makeEnv(),
+    );
+    expect(res!.status).toBe(400);
+    const body = (await res!.json()) as { error: string };
+    expect(body.error).toMatch(/slug/i);
+  });
+});
+
+// ── Delete (#249) ────────────────────────────────────────────────────
+// Delete is the destructive sibling of Archive/Restore. It REMOVES the
+// deck folder from `main` rather than moving it. The folder can live
+// in either `src/decks/public/<slug>/` (active) or
+// `src/decks/archive/<slug>/` (archived) — the executor probes for
+// each and picks whichever exists. If neither does, it short-circuits.
+//
+// The mocks are reset to "public exists, archive does not" and the
+// expected behaviour is `git rm -r src/decks/public/<slug>`.
+
+/**
+ * Default `exec` behaviour for delete-from-active:
+ *   1. test -d src/decks/public/<slug>            → exit 0 (exists)
+ *   2. (archive probe never runs — short-circuit on first match)
+ *   3. git rm -r src/decks/public/<slug>          → exit 0
+ */
+function setHappyPathExecForDeletePublic(
+  sandbox: ReturnType<typeof makeSandboxStub>,
+) {
+  sandbox.exec.mockImplementation(async (cmd: string) => {
+    if (cmd.startsWith("test -d src/decks/public/")) {
+      return { success: true, exitCode: 0, stdout: "", stderr: "" };
+    }
+    if (cmd.startsWith("test -d src/decks/archive/")) {
+      return { success: false, exitCode: 1, stdout: "", stderr: "" };
+    }
+    return { success: true, exitCode: 0, stdout: "", stderr: "" };
+  });
+}
+
+/**
+ * Default `exec` behaviour for delete-from-archive:
+ *   1. test -d src/decks/public/<slug>            → exit 1 (does not)
+ *   2. test -d src/decks/archive/<slug>           → exit 0 (exists)
+ *   3. git rm -r src/decks/archive/<slug>         → exit 0
+ */
+function setHappyPathExecForDeleteArchive(
+  sandbox: ReturnType<typeof makeSandboxStub>,
+) {
+  sandbox.exec.mockImplementation(async (cmd: string) => {
+    if (cmd.startsWith("test -d src/decks/public/")) {
+      return { success: false, exitCode: 1, stdout: "", stderr: "" };
+    }
+    if (cmd.startsWith("test -d src/decks/archive/")) {
+      return { success: true, exitCode: 0, stdout: "", stderr: "" };
+    }
+    return { success: true, exitCode: 0, stdout: "", stderr: "" };
+  });
+}
+
+function setHappyPathDeleteMocks(
+  variant: "public" | "archive" = "public",
+): {
+  sandbox: ReturnType<typeof makeSandboxStub>;
+} {
+  getStoredGitHubTokenMock.mockResolvedValue({
+    token: "ghu_xxx",
+    username: "alice-gh",
+    userId: 1,
+    scopes: ["public_repo"],
+    connectedAt: 0,
+  });
+  cloneRepoIntoSandboxMock.mockResolvedValue({
+    ok: true,
+    workdir: "/workspace/slide-of-hand",
+    ref: "main",
+  });
+  runSandboxTestGateMock.mockResolvedValue({
+    ok: true,
+    phases: [
+      { phase: "install", ok: true, command: "npm ci", stdout: "", stderr: "", exitCode: 0 },
+      { phase: "typecheck", ok: true, command: "npm run typecheck", stdout: "", stderr: "", exitCode: 0 },
+      { phase: "test", ok: true, command: "npm test", stdout: "", stderr: "", exitCode: 0 },
+      { phase: "build", ok: true, command: "npm run build", stdout: "", stderr: "", exitCode: 0 },
+    ],
+  });
+  commitAndPushInSandboxMock.mockResolvedValue({
+    ok: true,
+    sha: "c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0",
+    branch: "delete/hello-1700000000000",
+  });
+  openPullRequestMock.mockResolvedValue({
+    ok: true,
+    result: {
+      number: 249,
+      htmlUrl: "https://github.com/mcdays94/slide-of-hand/pull/249",
+      nodeId: "PR_kw",
+      head: "delete/hello-1700000000000",
+      base: "main",
+    },
+  });
+  const sandbox = makeSandboxStub();
+  if (variant === "archive") {
+    setHappyPathExecForDeleteArchive(sandbox);
+  } else {
+    setHappyPathExecForDeletePublic(sandbox);
+  }
+  getSandboxMock.mockReturnValue(
+    sandbox as unknown as ReturnType<typeof getSandboxMock>,
+  );
+  return { sandbox };
+}
+
+describe("runDeleteSourceDeck — happy path (active source deck)", () => {
+  it("walks the full sequence and returns PR URL + branch", async () => {
+    setHappyPathDeleteMocks("public");
+    const env = makeEnv();
+    const result = await runDeleteSourceDeck(env, {
+      userEmail: "alice@example.com",
+      slug: "hello",
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.prNumber).toBe(249);
+      expect(result.prUrl).toBe(
+        "https://github.com/mcdays94/slide-of-hand/pull/249",
+      );
+      expect(result.branch).toBe("delete/hello-1700000000000");
+      expect(result.action).toBe("delete");
+    }
+    expect(getStoredGitHubTokenMock).toHaveBeenCalledTimes(1);
+    expect(cloneRepoIntoSandboxMock).toHaveBeenCalledTimes(1);
+    expect(runSandboxTestGateMock).toHaveBeenCalledTimes(1);
+    expect(commitAndPushInSandboxMock).toHaveBeenCalledTimes(1);
+    expect(openPullRequestMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("issues `git rm -r src/decks/public/<slug>` when the active folder exists", async () => {
+    const { sandbox } = setHappyPathDeleteMocks("public");
+    await runDeleteSourceDeck(makeEnv(), {
+      userEmail: "alice@example.com",
+      slug: "hello",
+    });
+    const execCalls = sandbox.exec.mock.calls.map((c) => String(c[0]));
+    const rmCall = execCalls.find((c) => c.includes("git rm"));
+    expect(rmCall).toBeDefined();
+    if (rmCall) {
+      expect(rmCall).toContain("src/decks/public/hello");
+      // Must NOT touch the archive path when the active folder exists.
+      expect(rmCall).not.toContain("src/decks/archive/hello");
+    }
+  });
+
+  it("opens the PR as a draft with delete title + body referencing #249/#242", async () => {
+    setHappyPathDeleteMocks("public");
+    await runDeleteSourceDeck(makeEnv(), {
+      userEmail: "alice@example.com",
+      slug: "hello",
+    });
+    expect(openPullRequestMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        draft: true,
+        base: "main",
+        title: expect.stringContaining("delete"),
+      }),
+    );
+    const call = openPullRequestMock.mock.calls[0][0] as {
+      title: string;
+      body: string;
+    };
+    expect(call.title).toMatch(/hello/);
+    expect(call.body).toMatch(/#249|#242/);
+  });
+
+  it("uses a deterministic branch name shape `delete/<slug>-<timestamp>`", async () => {
+    setHappyPathDeleteMocks("public");
+    const now = vi.spyOn(Date, "now").mockReturnValue(1700000000000);
+    try {
+      await runDeleteSourceDeck(makeEnv(), {
+        userEmail: "alice@example.com",
+        slug: "hello",
+      });
+    } finally {
+      now.mockRestore();
+    }
+    const [, opts] = commitAndPushInSandboxMock.mock.calls[0];
+    expect(opts.branchName).toBe("delete/hello-1700000000000");
+    expect(opts.commitMessage).toMatch(/delete/i);
+    expect(opts.commitMessage).toMatch(/hello/);
+  });
+
+  it("persists a pending source-action record with action=delete, expectedState=deleted, prUrl, slug, createdAt", async () => {
+    setHappyPathDeleteMocks("public");
+    const env = makeEnv();
+    await runDeleteSourceDeck(env, {
+      userEmail: "alice@example.com",
+      slug: "hello",
+    });
+    const putCalls = (env.DECKS.put as unknown as ReturnType<typeof vi.fn>).mock
+      .calls;
+    const recordCall = putCalls.find(
+      (c: unknown[]) => String(c[0]) === "pending-source-action:hello",
+    );
+    expect(recordCall).toBeDefined();
+    const payload = JSON.parse(String(recordCall![1])) as {
+      slug: string;
+      action: string;
+      expectedState: string;
+      prUrl: string;
+      createdAt: string;
+    };
+    expect(payload).toMatchObject({
+      slug: "hello",
+      action: "delete",
+      expectedState: "deleted",
+      prUrl: "https://github.com/mcdays94/slide-of-hand/pull/249",
+    });
+    expect(typeof payload.createdAt).toBe("string");
+    expect(Number.isNaN(Date.parse(payload.createdAt))).toBe(false);
+    const indexCall = putCalls.find(
+      (c: unknown[]) => String(c[0]) === "pending-source-actions-list",
+    );
+    expect(indexCall).toBeDefined();
+    expect(JSON.parse(String(indexCall![1]))).toContain("hello");
+  });
+});
+
+describe("runDeleteSourceDeck — happy path (archived source deck)", () => {
+  it("issues `git rm -r src/decks/archive/<slug>` when only the archive folder exists", async () => {
+    const { sandbox } = setHappyPathDeleteMocks("archive");
+    const result = await runDeleteSourceDeck(makeEnv(), {
+      userEmail: "alice@example.com",
+      slug: "hello",
+    });
+    expect(result.ok).toBe(true);
+    const execCalls = sandbox.exec.mock.calls.map((c) => String(c[0]));
+    const rmCall = execCalls.find((c) => c.includes("git rm"));
+    expect(rmCall).toBeDefined();
+    if (rmCall) {
+      expect(rmCall).toContain("src/decks/archive/hello");
+      expect(rmCall).not.toContain("src/decks/public/hello");
+    }
+  });
+
+  it("still persists a pending source-action record with action=delete, expectedState=deleted", async () => {
+    setHappyPathDeleteMocks("archive");
+    const env = makeEnv();
+    await runDeleteSourceDeck(env, {
+      userEmail: "alice@example.com",
+      slug: "hello",
+    });
+    const putCalls = (env.DECKS.put as unknown as ReturnType<typeof vi.fn>).mock
+      .calls;
+    const recordCall = putCalls.find(
+      (c: unknown[]) => String(c[0]) === "pending-source-action:hello",
+    );
+    expect(recordCall).toBeDefined();
+    const payload = JSON.parse(String(recordCall![1])) as {
+      action: string;
+      expectedState: string;
+    };
+    expect(payload.action).toBe("delete");
+    expect(payload.expectedState).toBe("deleted");
+  });
+});
+
+describe("runDeleteSourceDeck — error phases", () => {
+  it("returns phase:auth when there's no authenticated user", async () => {
+    setHappyPathDeleteMocks("public");
+    const result = await runDeleteSourceDeck(makeEnv(), {
+      userEmail: "   ",
+      slug: "hello",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.phase).toBe("auth");
+  });
+
+  it("returns phase:invalid_slug when the slug is malformed", async () => {
+    setHappyPathDeleteMocks("public");
+    const result = await runDeleteSourceDeck(makeEnv(), {
+      userEmail: "alice@example.com",
+      slug: "../etc/passwd",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.phase).toBe("invalid_slug");
+  });
+
+  it("returns phase:github_token when the user hasn't connected GitHub", async () => {
+    setHappyPathDeleteMocks("public");
+    getStoredGitHubTokenMock.mockResolvedValue(null);
+    const result = await runDeleteSourceDeck(makeEnv(), {
+      userEmail: "alice@example.com",
+      slug: "hello",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.phase).toBe("github_token");
+      expect(result.error).toMatch(/connect GitHub/i);
+    }
+  });
+
+  it("returns phase:clone_github when the clone fails", async () => {
+    setHappyPathDeleteMocks("public");
+    cloneRepoIntoSandboxMock.mockResolvedValue({
+      ok: false,
+      error: "permission denied",
+    });
+    const result = await runDeleteSourceDeck(makeEnv(), {
+      userEmail: "alice@example.com",
+      slug: "hello",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.phase).toBe("clone_github");
+      expect(result.error).toMatch(/permission denied/);
+    }
+  });
+
+  it("returns phase:source_missing when NEITHER public NOR archive folder exists on main; no PR/pending record", async () => {
+    setHappyPathDeleteMocks("public");
+    const sandbox = makeSandboxStub();
+    sandbox.exec.mockImplementation(async (cmd: string) => {
+      // Both probes fail.
+      if (cmd.startsWith("test -d ")) {
+        return { success: false, exitCode: 1, stdout: "", stderr: "" };
+      }
+      return { success: true, exitCode: 0, stdout: "", stderr: "" };
+    });
+    getSandboxMock.mockReturnValue(
+      sandbox as unknown as ReturnType<typeof getSandboxMock>,
+    );
+    const env = makeEnv();
+    const result = await runDeleteSourceDeck(env, {
+      userEmail: "alice@example.com",
+      slug: "ghost",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.phase).toBe("source_missing");
+      // Helpful error mentions both candidate locations.
+      expect(result.error).toMatch(/src\/decks\/public\/ghost/);
+      expect(result.error).toMatch(/src\/decks\/archive\/ghost/);
+    }
+    expect(openPullRequestMock).not.toHaveBeenCalled();
+    const putCalls = (env.DECKS.put as unknown as ReturnType<typeof vi.fn>).mock
+      .calls;
+    expect(putCalls.find((c: unknown[]) =>
+      String(c[0]).startsWith("pending-source-action:"),
+    )).toBeUndefined();
+  });
+
+  it("returns phase:move when the git rm exits non-zero", async () => {
+    setHappyPathDeleteMocks("public");
+    const sandbox = makeSandboxStub();
+    sandbox.exec.mockImplementation(async (cmd: string) => {
+      if (cmd.startsWith("test -d src/decks/public/")) {
+        return { success: true, exitCode: 0, stdout: "", stderr: "" };
+      }
+      if (cmd.startsWith("test -d src/decks/archive/")) {
+        return { success: false, exitCode: 1, stdout: "", stderr: "" };
+      }
+      if (cmd.includes("git rm")) {
+        return {
+          success: false,
+          exitCode: 128,
+          stdout: "",
+          stderr: "fatal: pathspec did not match",
+        };
+      }
+      return { success: true, exitCode: 0, stdout: "", stderr: "" };
+    });
+    getSandboxMock.mockReturnValue(
+      sandbox as unknown as ReturnType<typeof getSandboxMock>,
+    );
+    const result = await runDeleteSourceDeck(makeEnv(), {
+      userEmail: "alice@example.com",
+      slug: "hello",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.phase).toBe("move");
+      expect(result.error).toMatch(/pathspec/);
+    }
+  });
+
+  it("returns phase:test_gate when the gate fails and does NOT open a PR or write a pending record", async () => {
+    setHappyPathDeleteMocks("public");
+    runSandboxTestGateMock.mockResolvedValue({
+      ok: false,
+      failedPhase: "test",
+      phases: [
+        { phase: "install", ok: true, command: "npm ci", stdout: "", stderr: "", exitCode: 0 },
+        { phase: "typecheck", ok: true, command: "npm run typecheck", stdout: "", stderr: "", exitCode: 0 },
+        { phase: "test", ok: false, command: "npm test", stdout: "", stderr: "failing test", exitCode: 1 },
+      ],
+    });
+    const env = makeEnv();
+    const result = await runDeleteSourceDeck(env, {
+      userEmail: "alice@example.com",
+      slug: "hello",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.phase).toBe("test_gate");
+      expect(result.failedTestGatePhase).toBe("test");
+    }
+    expect(openPullRequestMock).not.toHaveBeenCalled();
+    const putCalls = (env.DECKS.put as unknown as ReturnType<typeof vi.fn>).mock
+      .calls;
+    expect(putCalls.find((c: unknown[]) =>
+      String(c[0]).startsWith("pending-source-action:"),
+    )).toBeUndefined();
+  });
+
+  it("returns phase:github_push when the commit/push fails", async () => {
+    setHappyPathDeleteMocks("public");
+    commitAndPushInSandboxMock.mockResolvedValue({
+      ok: false,
+      error: "remote rejected",
+    });
+    const env = makeEnv();
+    const result = await runDeleteSourceDeck(env, {
+      userEmail: "alice@example.com",
+      slug: "hello",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.phase).toBe("github_push");
+      expect(result.error).toMatch(/remote rejected/);
+    }
+    expect(openPullRequestMock).not.toHaveBeenCalled();
+    const putCalls = (env.DECKS.put as unknown as ReturnType<typeof vi.fn>).mock
+      .calls;
+    expect(putCalls.find((c: unknown[]) =>
+      String(c[0]).startsWith("pending-source-action:"),
+    )).toBeUndefined();
+  });
+
+  it("returns phase:open_pr when the GitHub PR API rejects the request, and does NOT persist a pending record", async () => {
+    setHappyPathDeleteMocks("public");
+    openPullRequestMock.mockResolvedValue({
+      ok: false,
+      kind: "rate_limited",
+      message: "API rate limit exceeded",
+    });
+    const env = makeEnv();
+    const result = await runDeleteSourceDeck(env, {
+      userEmail: "alice@example.com",
+      slug: "hello",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.phase).toBe("open_pr");
+      expect(result.error).toMatch(/rate limit/);
+    }
+    const putCalls = (env.DECKS.put as unknown as ReturnType<typeof vi.fn>).mock
+      .calls;
+    expect(putCalls.find((c: unknown[]) =>
+      String(c[0]).startsWith("pending-source-action:"),
+    )).toBeUndefined();
+  });
+});
+
+describe("handleSourceDeckLifecycle — POST /api/admin/source-decks/<slug>/delete", () => {
+  function buildRequest(
+    slug: string,
+    init: { withAuth?: boolean; method?: string } = {},
+  ): Request {
+    const headers: Record<string, string> = {};
+    if (init.withAuth !== false) {
+      headers["cf-access-authenticated-user-email"] = "alice@example.com";
+    }
+    return new Request(
+      `https://example.com/api/admin/source-decks/${slug}/delete`,
+      {
+        method: init.method ?? "POST",
+        headers,
+      },
+    );
+  }
+
+  it("returns 403 when Access auth is missing", async () => {
+    setHappyPathDeleteMocks("public");
+    const res = await handleSourceDeckLifecycle(
+      buildRequest("hello", { withAuth: false }),
+      makeEnv(),
+    );
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(403);
+  });
+
+  it("returns 200 + { ok, prUrl, branch, prNumber, action } on success", async () => {
+    setHappyPathDeleteMocks("public");
+    const res = await handleSourceDeckLifecycle(
+      buildRequest("hello"),
+      makeEnv(),
+    );
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(200);
+    const body = (await res!.json()) as {
+      ok: boolean;
+      prUrl: string;
+      branch: string;
+      prNumber: number;
+      action: string;
+    };
+    expect(body.ok).toBe(true);
+    expect(body.prUrl).toBe(
+      "https://github.com/mcdays94/slide-of-hand/pull/249",
+    );
+    expect(body.branch).toBe("delete/hello-1700000000000");
+    expect(body.prNumber).toBe(249);
+    expect(body.action).toBe("delete");
+  });
+
+  it("returns 409 with `connect GitHub` copy when the user has no stored GitHub token", async () => {
+    setHappyPathDeleteMocks("public");
+    getStoredGitHubTokenMock.mockResolvedValue(null);
+    const res = await handleSourceDeckLifecycle(
+      buildRequest("hello"),
+      makeEnv(),
+    );
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(409);
+    const body = (await res!.json()) as { error: string };
+    expect(body.error).toMatch(/connect GitHub/i);
+  });
+
+  it("returns 400 with `source_missing` when neither folder exists on main", async () => {
+    setHappyPathDeleteMocks("public");
+    const sandbox = makeSandboxStub();
+    sandbox.exec.mockImplementation(async (cmd: string) => {
+      if (cmd.startsWith("test -d ")) {
+        return { success: false, exitCode: 1, stdout: "", stderr: "" };
+      }
+      return { success: true, exitCode: 0, stdout: "", stderr: "" };
+    });
+    getSandboxMock.mockReturnValue(
+      sandbox as unknown as ReturnType<typeof getSandboxMock>,
+    );
+    const res = await handleSourceDeckLifecycle(
+      buildRequest("ghost"),
+      makeEnv(),
+    );
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(400);
+    const body = (await res!.json()) as { error: string; phase: string };
+    expect(body.phase).toBe("source_missing");
+  });
+
+  it("returns 400 with the gate's failed phase when test_gate fails", async () => {
+    setHappyPathDeleteMocks("public");
+    runSandboxTestGateMock.mockResolvedValue({
+      ok: false,
+      failedPhase: "build",
       phases: [],
     });
     const res = await handleSourceDeckLifecycle(
