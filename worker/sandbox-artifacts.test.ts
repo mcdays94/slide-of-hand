@@ -31,7 +31,7 @@ const FAKE_URL =
   "https://x:art_v1_xxxx@1bcef46c.artifacts.cloudflare.net/git/slide-of-hand-drafts/alice-my.git";
 
 describe("cloneArtifactsRepoIntoSandbox", () => {
-  it("cleans workdir + raw `git clone` + `git checkout -B main` (3-step idempotent flow)", async () => {
+  it("cleans workdir + scoped-ssl Artifacts `git clone` + `git checkout -B main`", async () => {
     // All three exec calls succeed: rm clears any prior state;
     // clone produces an (empty or non-empty) working tree; checkout
     // force-creates/resets main.
@@ -61,7 +61,7 @@ describe("cloneArtifactsRepoIntoSandbox", () => {
     // 2. Clone. Critically, NO `-b <ref>` — that's the post-#182
     //    unborn-branch fix.
     const cloneCall = execMock.mock.calls[1][0] as string;
-    expect(cloneCall).toContain(`git clone "${FAKE_URL}" "/workspace/repo"`);
+    expect(cloneCall).toContain(`git -c http.sslVerify=false clone "${FAKE_URL}" "/workspace/repo"`);
     expect(cloneCall).not.toMatch(/-b\s/);
     // 3. Local-branch ensure — `-B` is force-create-or-reset.
     const checkoutCall = execMock.mock.calls[2][0] as string;
@@ -90,7 +90,9 @@ describe("cloneArtifactsRepoIntoSandbox", () => {
     const cleanCall = execMock.mock.calls[0][0] as string;
     expect(cleanCall).toBe(`rm -rf "/tmp/foo"`);
     const cloneCall = execMock.mock.calls[1][0] as string;
-    expect(cloneCall).toBe(`git clone "${FAKE_URL}" "/tmp/foo"`);
+    expect(cloneCall).toBe(
+      `git -c http.sslVerify=false clone "${FAKE_URL}" "/tmp/foo"`,
+    );
     const checkoutCall = execMock.mock.calls[2][0] as string;
     expect(checkoutCall).toBe(`git -C "/tmp/foo" checkout -B "feature"`);
   });
@@ -217,6 +219,7 @@ describe("cloneArtifactsRepoIntoSandbox", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error).toMatch(/git clone failed/);
+      expect(result.error).toMatch(/fatal: authentication failed/);
     }
     // Cleanup + clone were attempted; we don't proceed to checkout
     // on a failed clone.
@@ -318,7 +321,7 @@ describe("commitAndPushToArtifactsInSandbox", () => {
     }
     expect(writeFileMock).toHaveBeenCalledWith(
       "/tmp/artifacts-commit.sh",
-      expect.stringContaining("git -c protocol.version=1 push -u"),
+      expect.stringContaining("git -c protocol.version=1 -c http.sslVerify=false push -u"),
     );
     const [, opts] = execMock.mock.calls[0];
     expect(opts.cwd).toBe("/workspace/repo");

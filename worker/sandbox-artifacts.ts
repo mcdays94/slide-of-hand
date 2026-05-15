@@ -129,13 +129,22 @@ export async function cloneArtifactsRepoIntoSandbox(
     // `buildAuthenticatedRemoteUrl` already strips the `?expires=`
     // query suffix so there's no `?` / `&` / `=` that bash would
     // care about.
+    // Artifacts git remotes currently present a Cloudflare Corporate
+    // Zero Trust certificate chain that is trusted on the host machine
+    // but not by the lean Sandbox container's CA store. Scope the TLS
+    // verification bypass to this Artifacts git command only. GitHub
+    // source-edit flows keep full TLS verification.
     const cloneResult = await sandbox.exec(
-      `git clone "${options.authenticatedUrl}" "${workdir}"`,
+      `git -c http.sslVerify=false clone "${options.authenticatedUrl}" "${workdir}"`,
     );
     if (!cloneResult.success || cloneResult.exitCode !== 0) {
+      const detail =
+        cloneResult.stderr?.trim() ||
+        cloneResult.stdout?.trim() ||
+        `exit ${cloneResult.exitCode ?? "unknown"}`;
       return {
         ok: false,
-        error: `git clone failed (exit ${cloneResult.exitCode ?? "unknown"})`,
+        error: `git clone failed (${detail})`,
       };
     }
 
@@ -241,14 +250,17 @@ fi
 git commit -m "$COMMIT_MSG"
 
 # Force protocol v1 — Artifacts does not support v2 receive-pack.
+# http.sslVerify=false is scoped to Artifacts pushes only; see the
+# clone helper above for why the Sandbox container cannot verify the
+# Artifacts git endpoint's current certificate chain.
 # Always pass -u so the first push on an empty repo establishes
 # upstream cleanly; harmless on subsequent pushes (just refreshes
 # the tracking config).
-git -c protocol.version=1 push -u "$REMOTE_URL" "$BRANCH_NAME"
+git -c protocol.version=1 -c http.sslVerify=false push -u "$REMOTE_URL" "$BRANCH_NAME"
 
 if [ -n "$PROMPT_NOTE" ]; then
   git notes --ref=refs/notes/prompts add -m "$PROMPT_NOTE" HEAD 2>&1 || true
-  if git -c protocol.version=1 push "$REMOTE_URL" refs/notes/prompts:refs/notes/prompts 2>&1; then
+  if git -c protocol.version=1 -c http.sslVerify=false push "$REMOTE_URL" refs/notes/prompts:refs/notes/prompts 2>&1; then
     echo "NOTES_PUSHED" >&2
   else
     echo "NOTES_PUSH_FAILED" >&2
