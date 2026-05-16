@@ -519,6 +519,39 @@ canonical page. Hallucinated URLs are worse than no citation.
 Slides without factual claims do not need a \`<SourceFooter>\`. Title,
 cover, section, recap, and thanks slides almost never carry one.
 
+## Uploaded binary assets (speaker photos, logos, screenshots)
+
+The user may upload images for THIS draft via the asset shelf on
+the new-deck creator. Uploaded files land in Cloudflare R2 and are
+served from stable, immutable URLs of the form:
+
+\`\`\`
+/images/decks/${slug}/<contentHash>.<ext>
+\`\`\`
+
+If the user's prompt references one of those URLs (pasted from the
+shelf's Copy URL button), USE IT DIRECTLY in your JSX:
+
+\`\`\`tsx
+<img
+  src="/images/decks/${slug}/abc123.png"
+  alt="<concise alt the user described, or empty if decorative>"
+  className="rounded-lg"
+/>
+\`\`\`
+
+Do NOT invent asset URLs. If the user wants an image you do not
+have a URL for, either (a) leave a clearly-labelled placeholder
+that asks the user to upload + paste a URL, or (b) skip the image
+entirely. Never guess at a path like \`/images/decks/${slug}/photo.png\`
+that the user has not explicitly given you — those will 404 at
+runtime.
+
+You MUST NOT emit binary file content. The output schema only
+carries text files (\`{ path, content }\`). For any image needed in
+a slide, the source of truth is either a user-uploaded URL (above)
+or no image. Base64-inlined images are forbidden.
+
 ## Click-to-advance discipline
 
 The deck advances on left-click of the slide surface. Two opt-outs:
