@@ -72,6 +72,7 @@ export { CodemodeFetcher } from "./cf-code-mode/lib/dynamic-code-runner";
 import { handleSkills, type SkillsEnv } from "./skill-composer";
 import { handleMcpServers, type McpServersEnv } from "./mcp-servers";
 import { handlePreview, type PreviewEnv } from "./preview-route";
+import type { PreviewBundlesEnv } from "./preview-bundles";
 import {
   handleDeckStarterSetup,
   type DeckStarterSetupEnv,
@@ -106,6 +107,7 @@ export interface Env
     SkillsEnv,
     McpServersEnv,
     PreviewEnv,
+    PreviewBundlesEnv,
     DeckStarterSetupEnv,
     DiagArtifactsEnv,
     DiagWorkerLoaderEnv,

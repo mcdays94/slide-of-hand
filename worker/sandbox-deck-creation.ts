@@ -85,6 +85,15 @@ import {
 import { getStoredGitHubToken } from "./github-oauth";
 import { streamDeckFiles, type DeckGenPartial } from "./ai-deck-gen";
 import type { DeckCreationSnapshot } from "../src/lib/deck-creation-snapshot";
+import {
+  runBuildDraftPreview as runBuildDraftPreviewImpl,
+  type BuildDraftPreviewEnv,
+  type BuildDraftPreviewResult,
+} from "./sandbox-preview-build";
+import {
+  upsertDraftPreviewMapping,
+  type DraftPreviewStoreEnv,
+} from "./draft-previews-store";
 
 export interface SandboxDeckCreationEnv {
   Sandbox: DurableObjectNamespace<Sandbox>;
@@ -112,6 +121,29 @@ export interface SandboxDeckCreationEnv {
    * gateway is unauthenticated.
    */
   CF_AI_GATEWAY_TOKEN?: string;
+  /**
+   * Preview-bundle R2 bucket (issue #269 / PRD #178). When present
+   * along with `DECKS` + `GITHUB_TOKENS`, `runCreateDeckDraft` /
+   * `runIterateOnDeckDraft` build a rendered preview bundle after
+   * the Artifacts commit lands (#271). When ANY of the three is
+   * missing, the preview wiring is skipped silently — the draft
+   * still commits + the lean tool result returns without preview
+   * fields. This keeps the orchestrator usable in test contexts
+   * + skill-composer flows that don't need preview output.
+   */
+  PREVIEW_BUNDLES?: R2Bucket;
+  /**
+   * KV namespace backing the preview mapping store (#268). Same
+   * binding used elsewhere for deck records. Optional for the same
+   * reason as `PREVIEW_BUNDLES`.
+   */
+  DECKS?: KVNamespace;
+  /**
+   * Per-user GitHub OAuth-token KV (used by the preview builder to
+   * clone the slide-of-hand source repo). Optional for the same
+   * reason as `PREVIEW_BUNDLES`.
+   */
+  GITHUB_TOKENS?: KVNamespace;
 }
 
 export interface CreateDeckDraftInput {
@@ -172,6 +204,27 @@ export interface DeckDraftResult {
    * commit is still good).
    */
   promptNotePushed?: boolean;
+  /**
+   * Preview-build status for the commit just landed (issue #271).
+   * Populated when the orchestrator's env carries the preview
+   * bindings AND the preview build was attempted. Possible values:
+   *
+   *   - `"ready"` → `previewUrl` is populated; iframe-ready.
+   *   - `"error"` → `previewError` carries a redacted message; the
+   *                 draft itself is still ok (preview failure is
+   *                 non-destructive — see issue #271).
+   *
+   * The intermediate `"building"` state appears only on streaming
+   * snapshots; by the time the lean result is returned, the build
+   * attempt has terminated.
+   */
+  previewStatus?: "ready" | "error";
+  /** Preview entry-point URL, set when `previewStatus === "ready"`. */
+  previewUrl?: string;
+  /** Redacted error message, set when `previewStatus === "error"`. */
+  previewError?: string;
+  /** Count of files uploaded to R2, when known. */
+  previewUploadedFiles?: number;
 }
 
 export interface DeckDraftError {
@@ -208,6 +261,26 @@ export type GetSandboxFn = (
   namespace: DurableObjectNamespace<Sandbox>,
   id: string,
 ) => Sandbox;
+
+/**
+ * Test seam for the preview-bundle builder (#271). The orchestrator
+ * calls this after a successful Artifacts commit/push when the env
+ * carries the preview bindings. Defaults to the real implementation
+ * in `sandbox-preview-build.ts`; tests inject a mock that returns
+ * either a success or a failure shape so we can verify the
+ * non-destructive failure semantics without spinning up a real
+ * Sandbox build.
+ */
+export type RunBuildDraftPreviewFn = (
+  env: BuildDraftPreviewEnv,
+  input: {
+    userEmail: string;
+    slug: string;
+    draftRepoName: string;
+    commitSha: string;
+    previewId: string;
+  },
+) => Promise<BuildDraftPreviewResult>;
 
 /**
  * Sandbox key for a given draft. One sandbox per draft so iteration
@@ -370,6 +443,151 @@ function aiGenSnapshotFromPartial(
 }
 
 /**
+ * Determine whether the env carries the full set of bindings needed
+ * for preview wiring (#271). Returns the narrowed env on success or
+ * `null` on absence — the orchestrator skips preview wiring entirely
+ * in the null case so test contexts + minimal callers continue to
+ * work without surfacing partial preview state.
+ */
+function tryNarrowPreviewEnv(
+  env: SandboxDeckCreationEnv,
+): (BuildDraftPreviewEnv & DraftPreviewStoreEnv) | null {
+  if (!env.PREVIEW_BUNDLES || !env.DECKS || !env.GITHUB_TOKENS) return null;
+  return {
+    Sandbox: env.Sandbox,
+    ARTIFACTS: env.ARTIFACTS,
+    PREVIEW_BUNDLES: env.PREVIEW_BUNDLES,
+    DECKS: env.DECKS,
+    GITHUB_TOKENS: env.GITHUB_TOKENS,
+    ...(env.CF_ACCOUNT_ID ? { CF_ACCOUNT_ID: env.CF_ACCOUNT_ID } : {}),
+  };
+}
+
+/**
+ * Run preview wiring after a successful create/iterate commit (#271).
+ *
+ * Yields a `done` snapshot with `previewStatus: "building"` BEFORE
+ * the builder runs, then returns the terminal preview state which
+ * the orchestrator stamps onto the final `done` snapshot + lean
+ * tool result.
+ *
+ * Failure is non-destructive: a builder error returns a terminal
+ * state with `previewStatus: "error"` + a redacted message. The
+ * draft itself stays successful.
+ *
+ * Returns `null` when the env doesn't carry the preview bindings
+ * (test contexts, skill-composer dispatchers). In that case the
+ * orchestrator yields nothing extra and falls through to the
+ * legacy `done` snapshot + bare lean tool result.
+ */
+async function* runPreviewWiring(
+  env: SandboxDeckCreationEnv,
+  input: { userEmail: string; slug: string; commitSha: string },
+  doneFiles: DeckCreationSnapshot["files"],
+  commitMessage: string,
+  draftId: string,
+  runBuildDraftPreviewFn: RunBuildDraftPreviewFn,
+): AsyncGenerator<
+  DeckCreationSnapshot,
+  | { kind: "skipped" }
+  | {
+      kind: "terminal";
+      previewStatus: "ready" | "error";
+      previewUrl?: string;
+      previewError?: string;
+      previewUploadedFiles?: number;
+    }
+> {
+  const previewEnv = tryNarrowPreviewEnv(env);
+  if (!previewEnv) return { kind: "skipped" };
+
+  // Reuse the existing previewId for this (owner, slug) pair so
+  // iteration refreshes the mapping instead of leaving orphaned ids
+  // — `upsertDraftPreviewMapping` (#268) preserves the previewId
+  // across calls with the same (owner, slug) by design.
+  let previewId: string;
+  try {
+    const mapping = await upsertDraftPreviewMapping(previewEnv, {
+      ownerEmail: input.userEmail,
+      slug: input.slug,
+      draftRepoName: draftId,
+      latestCommitSha: input.commitSha,
+    });
+    previewId = mapping.previewId;
+  } catch (err) {
+    // Mapping failure is non-destructive — the draft itself is fine.
+    // Surface as a preview-side error and exit.
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      kind: "terminal",
+      previewStatus: "error",
+      previewError: redactPreviewError(message),
+    };
+  }
+
+  // Yield a `done` snapshot carrying `previewStatus: "building"` so
+  // the canvas can render a "preview building..." chip alongside
+  // the otherwise-complete file tree.
+  yield {
+    phase: "done",
+    files: doneFiles,
+    commitMessage,
+    commitSha: input.commitSha,
+    draftId,
+    previewStatus: "building",
+  };
+
+  let build: BuildDraftPreviewResult;
+  try {
+    build = await runBuildDraftPreviewFn(previewEnv, {
+      userEmail: input.userEmail,
+      slug: input.slug,
+      draftRepoName: draftId,
+      commitSha: input.commitSha,
+      previewId,
+    });
+  } catch (err) {
+    // Defensive: the builder is supposed to return typed failures,
+    // but a thrown error mustn't tank deck creation. Catch + map
+    // to an error terminal.
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      kind: "terminal",
+      previewStatus: "error",
+      previewError: redactPreviewError(message),
+    };
+  }
+
+  if (build.ok) {
+    return {
+      kind: "terminal",
+      previewStatus: "ready",
+      previewUrl: build.previewUrl,
+      previewUploadedFiles: build.uploadedFiles,
+    };
+  }
+  return {
+    kind: "terminal",
+    previewStatus: "error",
+    previewError: redactPreviewError(build.error),
+  };
+}
+
+/**
+ * Redact obvious secrets from a preview-side error before it lands
+ * in a snapshot / tool result. The preview builder already redacts
+ * tokens at its boundary, but the message may still include sandbox
+ * paths or other shell-flavoured noise — we trim known patterns
+ * defensively. Mirrors the redaction in `sandbox-preview-build.ts`.
+ */
+function redactPreviewError(message: string): string {
+  let out = message;
+  out = out.replace(/art_v1_[0-9a-f]+(\?expires=[0-9]+)?/gi, "[REDACTED]");
+  out = out.replace(/gh[uosr]_[A-Za-z0-9]{20,}/g, "[REDACTED]");
+  return out;
+}
+
+/**
  * First-turn deck creation. Creates the draft Artifacts repo
  * (idempotent), clones it into a fresh Sandbox, asks Workers AI for
  * the deck files (streaming), applies + commits + pushes them.
@@ -392,6 +610,8 @@ export async function* runCreateDeckDraft(
   input: CreateDeckDraftInput,
   /** Test hook. Defaults to the real `getSandbox`. */
   getSandboxFn: GetSandboxFn = getSandbox,
+  /** Test hook for the preview builder (#271). */
+  runBuildDraftPreviewFn: RunBuildDraftPreviewFn = runBuildDraftPreviewImpl,
 ): AsyncGenerator<DeckCreationSnapshot, DeckDraftResult | DeckDraftError> {
   if (!input.userEmail.trim()) {
     return {
@@ -614,15 +834,59 @@ export async function* runCreateDeckDraft(
   token = stripExpiresSuffix("redacted");
   void token;
 
+  // Preview wiring (#271): build a rendered bundle for the commit
+  // we just pushed. Yields an intermediate `done` snapshot with
+  // `previewStatus: "building"` then runs the builder. Skipped
+  // silently when the env lacks the preview bindings (test
+  // contexts, skill-composer dispatchers).
+  //
+  // Failure is non-destructive — a preview-build error leaves the
+  // deck draft itself successful and surfaces a redacted error on
+  // the terminal snapshot + lean tool result so the UI can warn.
+  const previewGen = runPreviewWiring(
+    env,
+    {
+      userEmail: input.userEmail,
+      slug: input.slug,
+      commitSha: commitResult.sha,
+    },
+    doneFiles,
+    aiResult.commitMessage,
+    draftId,
+    runBuildDraftPreviewFn,
+  );
+  let previewOutcome: Awaited<ReturnType<typeof previewGen.next>>;
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    previewOutcome = await previewGen.next();
+    if (previewOutcome.done) break;
+    yield previewOutcome.value;
+  }
+  const preview = previewOutcome.value;
+
   // Terminal: yield the success snapshot (commitSha now populated),
-  // then return the lean `DeckDraftResult` for the model.
-  yield {
+  // stamping any preview fields we have, then return the lean
+  // `DeckDraftResult` for the model.
+  const doneSnap: DeckCreationSnapshot = {
     phase: "done",
     files: doneFiles,
     commitMessage: aiResult.commitMessage,
     commitSha: commitResult.sha,
     draftId,
   };
+  if (preview.kind === "terminal") {
+    doneSnap.previewStatus = preview.previewStatus;
+    if (preview.previewUrl !== undefined) {
+      doneSnap.previewUrl = preview.previewUrl;
+    }
+    if (preview.previewError !== undefined) {
+      doneSnap.previewError = preview.previewError;
+    }
+    if (preview.previewUploadedFiles !== undefined) {
+      doneSnap.previewUploadedFiles = preview.previewUploadedFiles;
+    }
+  }
+  yield doneSnap;
 
   const result: DeckDraftResult = {
     ok: true,
@@ -634,6 +898,18 @@ export async function* runCreateDeckDraft(
   };
   if (typeof commitResult.promptNotePushed === "boolean") {
     result.promptNotePushed = commitResult.promptNotePushed;
+  }
+  if (preview.kind === "terminal") {
+    result.previewStatus = preview.previewStatus;
+    if (preview.previewUrl !== undefined) {
+      result.previewUrl = preview.previewUrl;
+    }
+    if (preview.previewError !== undefined) {
+      result.previewError = preview.previewError;
+    }
+    if (preview.previewUploadedFiles !== undefined) {
+      result.previewUploadedFiles = preview.previewUploadedFiles;
+    }
   }
   return result;
 }
@@ -658,6 +934,8 @@ export async function* runIterateOnDeckDraft(
   input: IterateOnDeckDraftInput,
   /** Test hook. Defaults to the real `getSandbox`. */
   getSandboxFn: GetSandboxFn = getSandbox,
+  /** Test hook for the preview builder (#271). */
+  runBuildDraftPreviewFn: RunBuildDraftPreviewFn = runBuildDraftPreviewImpl,
 ): AsyncGenerator<DeckCreationSnapshot, DeckDraftResult | DeckDraftError> {
   if (!input.userEmail.trim()) {
     return {
@@ -842,13 +1120,51 @@ export async function* runIterateOnDeckDraft(
   token = stripExpiresSuffix("redacted");
   void token;
 
-  yield {
+  // Preview wiring (#271) — same shape as `runCreateDeckDraft`. The
+  // mapping helper preserves the previewId for this (owner, slug)
+  // pair, so iteration refreshes the existing mapping rather than
+  // creating an orphan id.
+  const previewGen = runPreviewWiring(
+    env,
+    {
+      userEmail: input.userEmail,
+      slug: input.slug,
+      commitSha: commitResult.sha,
+    },
+    doneFiles,
+    aiResult.commitMessage,
+    draftId,
+    runBuildDraftPreviewFn,
+  );
+  let previewOutcome: Awaited<ReturnType<typeof previewGen.next>>;
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    previewOutcome = await previewGen.next();
+    if (previewOutcome.done) break;
+    yield previewOutcome.value;
+  }
+  const preview = previewOutcome.value;
+
+  const doneSnap: DeckCreationSnapshot = {
     phase: "done",
     files: doneFiles,
     commitMessage: aiResult.commitMessage,
     commitSha: commitResult.sha,
     draftId,
   };
+  if (preview.kind === "terminal") {
+    doneSnap.previewStatus = preview.previewStatus;
+    if (preview.previewUrl !== undefined) {
+      doneSnap.previewUrl = preview.previewUrl;
+    }
+    if (preview.previewError !== undefined) {
+      doneSnap.previewError = preview.previewError;
+    }
+    if (preview.previewUploadedFiles !== undefined) {
+      doneSnap.previewUploadedFiles = preview.previewUploadedFiles;
+    }
+  }
+  yield doneSnap;
 
   const result: DeckDraftResult = {
     ok: true,
@@ -860,6 +1176,18 @@ export async function* runIterateOnDeckDraft(
   };
   if (typeof commitResult.promptNotePushed === "boolean") {
     result.promptNotePushed = commitResult.promptNotePushed;
+  }
+  if (preview.kind === "terminal") {
+    result.previewStatus = preview.previewStatus;
+    if (preview.previewUrl !== undefined) {
+      result.previewUrl = preview.previewUrl;
+    }
+    if (preview.previewError !== undefined) {
+      result.previewError = preview.previewError;
+    }
+    if (preview.previewUploadedFiles !== undefined) {
+      result.previewUploadedFiles = preview.previewUploadedFiles;
+    }
   }
   return result;
 }
