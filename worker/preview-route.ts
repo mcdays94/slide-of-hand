@@ -41,6 +41,8 @@
  * `/api/` prefix is reserved for JSON / binary APIs.
  */
 
+import { requireAccessAuth } from "./access-auth";
+
 /**
  * Env subset the preview route needs. `ARTIFACTS` is REQUIRED — the
  * binding exists in `wrangler.jsonc` since 2026-05-12. The route
@@ -70,6 +72,9 @@ export async function handlePreview(
 ): Promise<Response | null> {
   const url = new URL(request.url);
   if (!url.pathname.startsWith(ROUTE_PREFIX)) return null;
+
+  const denied = requireAccessAuth(request);
+  if (denied) return denied;
 
   // Matching path but unimplemented body — return 501 so the client
   // gets a deterministic "feature not wired" signal rather than a
