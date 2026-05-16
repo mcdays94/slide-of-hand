@@ -16,7 +16,7 @@
  * orchestrator's value here is the SEQUENCE — clone → verify → move →
  * gate → commit → PR → KV write — and each failure-mode short-circuit.
  */
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { afterEach, describe, it, expect, vi, beforeEach } from "vitest";
 
 // ── Mocks ────────────────────────────────────────────────────────────
 
@@ -209,6 +209,10 @@ beforeEach(() => {
   openPullRequestMock.mockReset();
   getStoredGitHubTokenMock.mockReset();
   getSandboxMock.mockReset();
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 // ── runArchiveSourceDeck — happy path ────────────────────────────────
@@ -509,6 +513,29 @@ describe("runArchiveSourceDeck — error phases", () => {
     expect(putCalls.find((c: unknown[]) =>
       String(c[0]).startsWith("pending-source-action:"),
     )).toBeUndefined();
+  });
+
+  it("returns phase:test_gate when the Sandbox gate hangs past the timeout", async () => {
+    vi.useFakeTimers();
+    setHappyPathMocks();
+    runSandboxTestGateMock.mockImplementation(
+      () => new Promise<never>(() => {}),
+    );
+
+    const resultPromise = runArchiveSourceDeck(makeEnv(), {
+      userEmail: "alice@example.com",
+      slug: "hello",
+    });
+
+    await vi.advanceTimersByTimeAsync(180_000);
+    const result = await resultPromise;
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.phase).toBe("test_gate");
+      expect(result.error).toMatch(/timed out/i);
+    }
+    expect(openPullRequestMock).not.toHaveBeenCalled();
   });
 
   it("returns phase:github_push when the commit/push fails", async () => {

@@ -116,10 +116,19 @@ async function callSourceLifecycleEndpoint(
   slug: string,
   action: "archive" | "restore" | "delete",
 ): Promise<void> {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 210_000);
   const res = await fetch(
     `/api/admin/source-decks/${encodeURIComponent(slug)}/${action}`,
-    { method: "POST", headers: adminWriteHeaders() },
-  );
+    { method: "POST", headers: adminWriteHeaders(), signal: controller.signal },
+  ).catch((err: unknown) => {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      throw new Error(
+        `Source ${action} is taking longer than expected. The Cloudflare Sandbox gate may be stuck; no GitHub PR was confirmed. Please retry in a moment.`,
+      );
+    }
+    throw err;
+  }).finally(() => window.clearTimeout(timeout));
   if (!res.ok) {
     let message = `Failed to ${action} source deck (${res.status})`;
     try {
