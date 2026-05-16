@@ -15,6 +15,7 @@ declare namespace Cloudflare {
 		GITHUB_TOKENS: KVNamespace;
 		MCP_SERVERS: KVNamespace;
 		IMAGES: R2Bucket;
+		PREVIEW_BUNDLES: R2Bucket;
 		ANALYTICS: AnalyticsEngineDataset;
 		ARTIFACTS: Artifacts;
 		LOADER: WorkerLoader;
