@@ -627,4 +627,244 @@ describe("<NewDeckRoute>", () => {
       expect(shelf.getAttribute("data-slug")).toBe("inferred-slug");
     });
   });
+
+  // Issue #272 — once a deck-creation tool-call has landed, the
+  // left pane gains a Source / Preview tab switcher. The Source
+  // tab shows the existing canvas + asset shelf (issue #178 +
+  // #235); the Preview tab shows the rendered iframe once the
+  // preview-bundle build (issue #271) reports `previewStatus: "ready"`.
+  // Pre-tool-call there's nothing to switch between, so the tabs
+  // don't appear.
+  describe("source/preview tabs (#272)", () => {
+    function setupWithToolCall(toolPart: Record<string, unknown>) {
+      useAgentMock.mockReturnValue({
+        agent: "DeckAuthorAgent",
+        name: "new-deck-test-uuid",
+        getHttpUrl: () => "https://example.com/api/admin/agents/...",
+      });
+      useAgentChatMock.mockReturnValue({
+        messages: [
+          {
+            id: "msg-1",
+            role: "assistant",
+            parts: [toolPart],
+          },
+        ],
+        sendMessage: vi.fn(),
+        clearHistory: vi.fn(),
+        stop: vi.fn(),
+        status: "streaming",
+        addToolOutput: vi.fn(),
+        addToolApprovalResponse: vi.fn(),
+        setMessages: vi.fn(),
+        isStreaming: true,
+        isServerStreaming: false,
+        isToolContinuation: false,
+      });
+      useAccessAuthMock.mockReturnValue("authenticated");
+    }
+
+    it("does NOT render the tab switcher in the empty state (no tool call yet)", async () => {
+      setupHooks();
+      await renderRoute();
+      expect(screen.queryByTestId("new-deck-pane-tabs")).toBeNull();
+    });
+
+    it("renders Source + Preview tabs once a deck-creation tool-call lands; Source is active by default", async () => {
+      setupWithToolCall({
+        type: "tool-createDeckDraft",
+        toolCallId: "call-1",
+        state: "output-available",
+        output: {
+          phase: "ai_gen",
+          files: [
+            {
+              path: "src/decks/public/hello/meta.ts",
+              content: "export const meta = {",
+              state: "writing",
+            },
+          ],
+          draftId: "test-com-hello",
+        },
+      });
+
+      await renderRoute();
+
+      // Both tab buttons rendered.
+      const sourceTab = screen.getByTestId("new-deck-pane-tab-source");
+      const previewTab = screen.getByTestId("new-deck-pane-tab-preview");
+      expect(sourceTab.textContent ?? "").toMatch(/source/i);
+      expect(previewTab.textContent ?? "").toMatch(/preview/i);
+      // Source is active by default.
+      expect(sourceTab.getAttribute("aria-selected")).toBe("true");
+      expect(previewTab.getAttribute("aria-selected")).toBe("false");
+      // Source tab content is the canvas + asset shelf (which the
+      // model's input.slug, if any, would feed). The canvas always
+      // renders once a tool-call lands.
+      expect(screen.getByTestId("deck-creation-canvas")).toBeDefined();
+    });
+
+    it("switches to the preview tab when the Preview button is clicked", async () => {
+      setupWithToolCall({
+        type: "tool-createDeckDraft",
+        toolCallId: "call-1",
+        state: "output-available",
+        output: {
+          phase: "ai_gen",
+          files: [],
+          draftId: "test-com-hello",
+        },
+      });
+
+      await renderRoute();
+
+      fireEvent.click(screen.getByTestId("new-deck-pane-tab-preview"));
+
+      // Preview tab now selected.
+      expect(
+        screen.getByTestId("new-deck-pane-tab-preview").getAttribute(
+          "aria-selected",
+        ),
+      ).toBe("true");
+      expect(
+        screen.getByTestId("new-deck-pane-tab-source").getAttribute(
+          "aria-selected",
+        ),
+      ).toBe("false");
+      // The preview pane is mounted.
+      expect(screen.getByTestId("rendered-draft-preview")).toBeDefined();
+      // The canvas (Source tab content) is unmounted while preview is active.
+      expect(screen.queryByTestId("deck-creation-canvas")).toBeNull();
+    });
+
+    it("Preview tab maps previewStatus 'building' from the latest snapshot", async () => {
+      setupWithToolCall({
+        type: "tool-createDeckDraft",
+        toolCallId: "call-1",
+        state: "output-available",
+        output: {
+          phase: "commit",
+          files: [
+            {
+              path: "src/decks/public/hello/meta.ts",
+              content: "...",
+              state: "done",
+            },
+          ],
+          draftId: "test-com-hello",
+          previewStatus: "building",
+        },
+      });
+
+      await renderRoute();
+      fireEvent.click(screen.getByTestId("new-deck-pane-tab-preview"));
+
+      const pane = screen.getByTestId("rendered-draft-preview");
+      expect(pane.getAttribute("data-state")).toBe("building");
+      expect(
+        screen.getByTestId("rendered-draft-preview-building"),
+      ).toBeDefined();
+      expect(
+        screen.queryByTestId("rendered-draft-preview-iframe"),
+      ).toBeNull();
+    });
+
+    it("Preview tab renders an iframe when the latest output is a lean tool-result with previewStatus 'ready'", async () => {
+      setupWithToolCall({
+        type: "tool-createDeckDraft",
+        toolCallId: "call-1",
+        state: "output-available",
+        output: {
+          ok: true,
+          draftId: "test-com-hello",
+          commitSha: "abcd1234",
+          branch: "main",
+          fileCount: 3,
+          commitMessage: "Initial draft",
+          previewStatus: "ready",
+          previewUrl: "/preview/test-com-hello/abcd1234/index.html",
+        },
+      });
+
+      await renderRoute();
+      fireEvent.click(screen.getByTestId("new-deck-pane-tab-preview"));
+
+      const iframe = screen.getByTestId(
+        "rendered-draft-preview-iframe",
+      ) as HTMLIFrameElement;
+      expect(iframe.getAttribute("src")).toBe(
+        "/preview/test-com-hello/abcd1234/index.html",
+      );
+      // Sandbox enforced — allow-scripts only, no allow-same-origin.
+      const sandbox = iframe.getAttribute("sandbox") ?? "";
+      expect(sandbox.split(/\s+/)).toContain("allow-scripts");
+      expect(sandbox.split(/\s+/)).not.toContain("allow-same-origin");
+    });
+
+    it("Preview tab renders the preview error when the latest output reports previewStatus 'error'", async () => {
+      setupWithToolCall({
+        type: "tool-createDeckDraft",
+        toolCallId: "call-1",
+        state: "output-available",
+        output: {
+          ok: true,
+          draftId: "test-com-hello",
+          commitSha: "abcd1234",
+          branch: "main",
+          fileCount: 3,
+          commitMessage: "Initial draft",
+          previewStatus: "error",
+          previewError: "esbuild failed at meta.ts:1",
+        },
+      });
+
+      await renderRoute();
+      fireEvent.click(screen.getByTestId("new-deck-pane-tab-preview"));
+
+      const pane = screen.getByTestId("rendered-draft-preview");
+      expect(pane.getAttribute("data-state")).toBe("error");
+      expect(
+        screen.getByTestId("rendered-draft-preview-error").textContent ?? "",
+      ).toMatch(/esbuild failed/);
+      expect(
+        screen.queryByTestId("rendered-draft-preview-iframe"),
+      ).toBeNull();
+    });
+
+    it("Source tab preserves the existing DeckCreationCanvas + DraftAssetShelf behavior", async () => {
+      // Tool call with input.slug surfaced (so the shelf mounts) AND
+      // emitted files (so the canvas pivots). This is the existing
+      // wave-3 behavior; #272 must not regress it.
+      setupWithToolCall({
+        type: "tool-createDeckDraft",
+        toolCallId: "call-1",
+        state: "output-available",
+        input: { slug: "preserve-me", prompt: "x", visibility: "private" },
+        output: {
+          phase: "ai_gen",
+          files: [
+            {
+              path: "src/decks/public/preserve-me/meta.ts",
+              content: "x",
+              state: "writing",
+            },
+          ],
+          draftId: "test-com-preserve-me",
+        },
+      });
+
+      await renderRoute();
+
+      // Source tab is active by default.
+      expect(
+        screen.getByTestId("new-deck-pane-tab-source").getAttribute(
+          "aria-selected",
+        ),
+      ).toBe("true");
+      // Both legacy pieces still mounted.
+      expect(screen.getByTestId("deck-creation-canvas")).toBeDefined();
+      const shelf = screen.getByTestId("draft-asset-shelf");
+      expect(shelf.getAttribute("data-slug")).toBe("preserve-me");
+    });
+  });
 });
