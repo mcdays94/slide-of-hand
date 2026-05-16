@@ -38,7 +38,9 @@ import {
   type PendingSourceActionsEnv,
 } from "./pending-source-actions";
 import {
+  handleSourceDeckLifecycleQueue,
   handleSourceDeckLifecycle,
+  type SourceDeckLifecycleJob,
   type SourceDeckLifecycleEnv,
 } from "./source-deck-lifecycle";
 import { handleImages, type ImagesEnv } from "./images";
@@ -246,5 +248,16 @@ export default {
     // path fires for every request — including `/` and
     // `/assets/<hash>.<ext>` — not just SPA fallbacks.
     return applyCacheControl(request, await env.ASSETS.fetch(request));
+  },
+  async queue(
+    batch: MessageBatch,
+    env: Env,
+    ctx: ExecutionContext,
+  ): Promise<void> {
+    await handleSourceDeckLifecycleQueue(
+      batch as MessageBatch<SourceDeckLifecycleJob>,
+      env,
+      ctx,
+    );
   },
 } satisfies ExportedHandler<Env>;

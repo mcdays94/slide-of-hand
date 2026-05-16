@@ -54,6 +54,12 @@ export type PendingSourceActionExpectedState =
   | "archived"
   | "deleted";
 
+export type PendingSourceActionStatus =
+  | "queued"
+  | "running"
+  | "pr_open"
+  | "failed";
+
 export interface PendingSourceAction {
   slug: string;
   action: PendingSourceActionType;
@@ -65,10 +71,20 @@ export interface PendingSourceAction {
    * the slice that creates the record (slices #247-249) to pass a
    * well-formed GitHub PR URL.
    */
-  prUrl: string;
+  prUrl?: string;
   expectedState: PendingSourceActionExpectedState;
   /** ISO 8601 timestamp when the record was created. */
   createdAt: string;
+  /** Queue/PR status. Omitted on legacy records, which behave as `pr_open`. */
+  status?: PendingSourceActionStatus;
+  /** Queue job id for queued/running/failed source lifecycle work. */
+  jobId?: string;
+  /** ISO 8601 timestamp when the record last changed. */
+  updatedAt?: string;
+  /** Git branch opened by the lifecycle executor once the PR exists. */
+  branch?: string;
+  /** Redacted failure detail for failed queued jobs. */
+  error?: string;
 }
 
 const ACTIONS: ReadonlySet<PendingSourceActionType> = new Set([
@@ -81,6 +97,13 @@ const EXPECTED_STATES: ReadonlySet<PendingSourceActionExpectedState> = new Set([
   "active",
   "archived",
   "deleted",
+]);
+
+const STATUSES: ReadonlySet<PendingSourceActionStatus> = new Set([
+  "queued",
+  "running",
+  "pr_open",
+  "failed",
 ]);
 
 /**
@@ -124,7 +147,23 @@ export function validatePendingSourceAction(
       error: "action must be one of: archive, restore, delete",
     };
   }
-  if (typeof r.prUrl !== "string" || !isLikelyHttpUrl(r.prUrl)) {
+  let status: PendingSourceActionStatus | undefined;
+  if (r.status !== undefined) {
+    if (typeof r.status !== "string" || !STATUSES.has(r.status as PendingSourceActionStatus)) {
+      return {
+        ok: false,
+        error: "status must be one of: queued, running, pr_open, failed",
+      };
+    }
+    status = r.status as PendingSourceActionStatus;
+  }
+  let prUrl: string | undefined;
+  if (r.prUrl !== undefined) {
+    if (typeof r.prUrl !== "string" || !isLikelyHttpUrl(r.prUrl)) {
+      return { ok: false, error: "prUrl must be a valid http(s) URL" };
+    }
+    prUrl = r.prUrl;
+  } else if (status === undefined || status === "pr_open") {
     return { ok: false, error: "prUrl must be a valid http(s) URL" };
   }
   if (
@@ -150,14 +189,35 @@ export function validatePendingSourceAction(
   } else {
     return { ok: false, error: "createdAt must be a string when present" };
   }
+  let updatedAt: string | undefined;
+  if (r.updatedAt !== undefined) {
+    if (typeof r.updatedAt !== "string" || Number.isNaN(Date.parse(r.updatedAt))) {
+      return { ok: false, error: "updatedAt must be an ISO 8601 timestamp" };
+    }
+    updatedAt = r.updatedAt;
+  }
+  if (r.jobId !== undefined && typeof r.jobId !== "string") {
+    return { ok: false, error: "jobId must be a string when present" };
+  }
+  if (r.branch !== undefined && typeof r.branch !== "string") {
+    return { ok: false, error: "branch must be a string when present" };
+  }
+  if (r.error !== undefined && typeof r.error !== "string") {
+    return { ok: false, error: "error must be a string when present" };
+  }
   return {
     ok: true,
     value: {
       slug: r.slug,
       action: r.action as PendingSourceActionType,
-      prUrl: r.prUrl,
+      ...(prUrl ? { prUrl } : {}),
       expectedState: r.expectedState as PendingSourceActionExpectedState,
       createdAt,
+      ...(status ? { status } : {}),
+      ...(r.jobId ? { jobId: r.jobId } : {}),
+      ...(updatedAt ? { updatedAt } : {}),
+      ...(r.branch ? { branch: r.branch } : {}),
+      ...(r.error ? { error: r.error } : {}),
     },
   };
 }

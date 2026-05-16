@@ -26,6 +26,7 @@ import {
 import { MemoryRouter } from "react-router-dom";
 import { DeckCard } from "./DeckCard";
 import type { DeckMeta } from "@/framework/viewer/types";
+import type { DeckCardPending } from "./DeckCard";
 
 afterEach(() => cleanup());
 
@@ -50,6 +51,7 @@ interface RenderOpts {
   canToggleVisibility?: boolean;
   ideHref?: string;
   hoverPreviewSlideCount?: number;
+  pending?: DeckCardPending;
 }
 
 function renderCard(meta: DeckMeta, opts: RenderOpts = {}) {
@@ -630,6 +632,56 @@ describe("DeckCard", () => {
       renderCard(baseMeta, { ideHref: "vscode://example" });
       const link = screen.getByTestId("open-in-ide");
       expect(link.getAttribute("href")).toBe("vscode://example");
+    });
+  });
+
+  describe("pending source action pill", () => {
+    it("labels queued/running/failed states and hides the PR link until prUrl exists", () => {
+      renderCard(baseMeta, {
+        pending: {
+          action: "archive",
+          status: "queued",
+          onClear: () => {},
+        },
+      });
+      expect(screen.getByTestId("pending-pill-alpha").textContent).toMatch(
+        /Queued archive/i,
+      );
+      expect(screen.queryByTestId("pending-pr-link-alpha")).toBeNull();
+    });
+
+    it("shows failed error text and a Retry action when a failed pending action is retryable", () => {
+      const onRetry = vi.fn();
+      renderCard(baseMeta, {
+        pending: {
+          action: "delete",
+          status: "failed",
+          error: "Sandbox test gate failed.",
+          onRetry,
+          onClear: () => {},
+        },
+      });
+      expect(screen.getByTestId("pending-pill-alpha").textContent).toMatch(
+        /Failed delete/i,
+      );
+      expect(screen.getByTestId("pending-error-alpha").textContent).toMatch(
+        /Sandbox test gate failed/i,
+      );
+      fireEvent.click(screen.getByTestId("pending-retry-alpha"));
+      expect(onRetry).toHaveBeenCalledWith("alpha");
+    });
+
+    it("keeps legacy prUrl-only records as Pending with a View PR link", () => {
+      renderCard(baseMeta, {
+        pending: {
+          action: "restore",
+          prUrl: "https://github.com/mcdays94/slide-of-hand/pull/123",
+        },
+      });
+      expect(screen.getByTestId("pending-pill-alpha").textContent).toMatch(
+        /Pending restore/i,
+      );
+      expect(screen.getByTestId("pending-pr-link-alpha")).toBeDefined();
     });
   });
 

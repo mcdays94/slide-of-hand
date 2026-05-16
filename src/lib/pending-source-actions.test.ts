@@ -29,6 +29,40 @@ describe("validatePendingSourceAction", () => {
     if (r.ok) expect(r.value).toEqual(VALID);
   });
 
+  it("accepts queued, running, and failed records without a prUrl", () => {
+    for (const status of ["queued", "running", "failed"] as const) {
+      const r = validatePendingSourceAction({
+        slug: "hello",
+        action: "archive",
+        status,
+        expectedState: "archived",
+        createdAt: "2026-05-15T11:23:45.000Z",
+        updatedAt: "2026-05-15T11:24:45.000Z",
+        ...(status === "failed" ? { error: "Sandbox failed" } : {}),
+      });
+      expect(r.ok).toBe(true);
+      if (r.ok) {
+        expect(r.value.status).toBe(status);
+        expect(r.value.prUrl).toBeUndefined();
+      }
+    }
+  });
+
+  it("accepts a pr_open record with a prUrl", () => {
+    const r = validatePendingSourceAction({ ...VALID, status: "pr_open" });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.status).toBe("pr_open");
+  });
+
+  it("accepts legacy no-status records with a prUrl", () => {
+    const r = validatePendingSourceAction(VALID);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.status).toBeUndefined();
+      expect(r.value.prUrl).toBe(VALID.prUrl);
+    }
+  });
+
   it("rejects non-objects", () => {
     expect(validatePendingSourceAction(null).ok).toBe(false);
     expect(validatePendingSourceAction("foo").ok).toBe(false);
@@ -62,6 +96,13 @@ describe("validatePendingSourceAction", () => {
         ...VALID,
         prUrl: "ftp://example.com/foo",
       }).ok,
+    ).toBe(false);
+  });
+
+  it("rejects pr_open records without a prUrl", () => {
+    const { prUrl: _drop, ...withoutPrUrl } = VALID;
+    expect(
+      validatePendingSourceAction({ ...withoutPrUrl, status: "pr_open" }).ok,
     ).toBe(false);
   });
 

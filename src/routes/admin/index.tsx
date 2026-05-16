@@ -115,7 +115,7 @@ const SOURCE_NOT_WIRED_MESSAGE: Record<SourceLifecycleAction, string> = {
 async function callSourceLifecycleEndpoint(
   slug: string,
   action: "archive" | "restore" | "delete",
-): Promise<void> {
+): Promise<PendingSourceAction | null> {
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), 210_000);
   const res = await fetch(
@@ -139,6 +139,12 @@ async function callSourceLifecycleEndpoint(
     }
     throw new Error(message);
   }
+  try {
+    const body = (await res.json()) as { pending?: PendingSourceAction };
+    return body.pending ?? null;
+  } catch {
+    return null;
+  }
 }
 
 export default function AdminIndex() {
@@ -151,11 +157,57 @@ export default function AdminIndex() {
   // outcome immediately instead of having to remember which PR they
   // opened. KV-backed decks are NEVER subject to pending projection.
   const {
-    actions: pendingActions,
+    actions: fetchedPendingActions,
     clearPending,
     refetch: refetchPending,
+    upsertPending,
     reconcile: reconcilePending,
   } = usePendingSourceActions();
+  const [localPendingActions, setLocalPendingActions] = useState<
+    Record<string, PendingSourceAction>
+  >({});
+  const pendingActions = useMemo(
+    () => ({ ...fetchedPendingActions, ...localPendingActions }),
+    [fetchedPendingActions, localPendingActions],
+  );
+
+  const rememberPending = useCallback(
+    async (pending: PendingSourceAction | null) => {
+      if (!pending) return;
+      setLocalPendingActions((prev) => ({ ...prev, [pending.slug]: pending }));
+      await upsertPending(pending);
+    },
+    [upsertPending],
+  );
+
+  const clearProjectedPending = useCallback(
+    async (slug: string) => {
+      setLocalPendingActions((prev) => {
+        if (!(slug in prev)) return prev;
+        const next = { ...prev };
+        delete next[slug];
+        return next;
+      });
+      await clearPending(slug);
+    },
+    [clearPending],
+  );
+
+  const reconcileProjectedPending = useCallback(
+    async (slug: string, sourceState: "active" | "archived" | "deleted") => {
+      const result = await reconcilePending(slug, sourceState);
+      if (result.reconciled) {
+        setLocalPendingActions((prev) => {
+          if (!(slug in prev)) return prev;
+          const next = { ...prev };
+          delete next[slug];
+          return next;
+        });
+      }
+      return result;
+    },
+    [reconcilePending],
+  );
   // GitHub OAuth connection (issue #251). Source-backed lifecycle
   // actions require the user's GitHub token (we open draft PRs against
   // the repo). When disconnected, the lifecycle handler routes the
@@ -243,11 +295,11 @@ export default function AdminIndex() {
     }
     for (const target of targets) {
       reconcileInFlight.current.add(target.slug);
-      void reconcilePending(target.slug, target.sourceState).finally(() => {
+      void reconcileProjectedPending(target.slug, target.sourceState).finally(() => {
         reconcileInFlight.current.delete(target.slug);
       });
     }
-  }, [entries, pendingActions, reconcilePending]);
+  }, [entries, pendingActions, reconcileProjectedPending]);
 
   // `__PROJECT_ROOT__` is injected by vite.config.ts: an absolute path in
   // dev (`command === "serve"`), the empty string in production builds.
@@ -429,7 +481,8 @@ export default function AdminIndex() {
         // `usePendingSourceActions` moves the card into the
         // Archived section with a Pending pill + PR link without
         // a full reload.
-        await callSourceLifecycleEndpoint(slug, "archive");
+        const pending = await callSourceLifecycleEndpoint(slug, "archive");
+        await rememberPending(pending);
         await refetchPending();
         return;
       }
@@ -449,7 +502,7 @@ export default function AdminIndex() {
       }
       setArchivedOverrides((prev) => ({ ...prev, [slug]: true }));
     },
-    [findSource, tryOpenSourceGate, refetchPending],
+    [findSource, tryOpenSourceGate, refetchPending, rememberPending],
   );
 
   const handleRestore = useCallback(
@@ -462,7 +515,8 @@ export default function AdminIndex() {
         // projection in `usePendingSourceActions` move the card
         // back into Active with a Pending pill + PR link.
         if (tryOpenSourceGate("restore", slug)) return;
-        await callSourceLifecycleEndpoint(slug, "restore");
+        const pending = await callSourceLifecycleEndpoint(slug, "restore");
+        await rememberPending(pending);
         await refetchPending();
         return;
       }
@@ -482,7 +536,7 @@ export default function AdminIndex() {
       }
       setArchivedOverrides((prev) => ({ ...prev, [slug]: false }));
     },
-    [findSource, tryOpenSourceGate, refetchPending],
+    [findSource, tryOpenSourceGate, refetchPending, rememberPending],
   );
 
   /**
@@ -512,7 +566,8 @@ export default function AdminIndex() {
     async (slug: string) => {
       if (findSource(slug) !== "kv") {
         if (tryOpenSourceGate("delete", slug)) return;
-        await callSourceLifecycleEndpoint(slug, "delete");
+        const pending = await callSourceLifecycleEndpoint(slug, "delete");
+        await rememberPending(pending);
         await refetchPending();
         return;
       }
@@ -545,7 +600,18 @@ export default function AdminIndex() {
         setTimeout(() => window.location.reload(), 0);
       }
     },
-    [findSource, tryOpenSourceGate, refetchPending],
+    [findSource, tryOpenSourceGate, refetchPending, rememberPending],
+  );
+
+  const retryPendingSourceAction = useCallback(
+    async (slug: string) => {
+      const pending = pendingActions[slug];
+      if (!pending) return;
+      const queued = await callSourceLifecycleEndpoint(slug, pending.action);
+      await rememberPending(queued);
+      await refetchPending();
+    },
+    [pendingActions, refetchPending, rememberPending],
   );
 
   /**
@@ -564,7 +630,11 @@ export default function AdminIndex() {
     const action = sourceLifecycleIntent.action;
     if (action === "archive" || action === "restore" || action === "delete") {
       try {
-        await callSourceLifecycleEndpoint(sourceLifecycleIntent.slug, action);
+        const pending = await callSourceLifecycleEndpoint(
+          sourceLifecycleIntent.slug,
+          action,
+        );
+        await rememberPending(pending);
         await refetchPending();
         // Success — close the gate. The pending projection takes
         // over the card's visual state.
@@ -582,7 +652,7 @@ export default function AdminIndex() {
     setSourceLifecycleRetryError(
       SOURCE_NOT_WIRED_MESSAGE[sourceLifecycleIntent.action],
     );
-  }, [sourceLifecycleIntent, refetchPending]);
+  }, [sourceLifecycleIntent, refetchPending, rememberPending]);
 
   /**
    * Issue #251 — Cancel / dismiss the gate. Clears both the intent
@@ -667,7 +737,8 @@ export default function AdminIndex() {
       showIdeButton,
       projectRoot,
       pendingActions,
-      clearPending,
+      clearPending: clearProjectedPending,
+      retryPending: retryPendingSourceAction,
       visibilityOverrides,
     }),
   );
@@ -702,7 +773,10 @@ export default function AdminIndex() {
         ? {
             action: pending.action,
             prUrl: pending.prUrl,
-            onClear: clearPending,
+            status: pending.status,
+            error: pending.error,
+            onClear: clearProjectedPending,
+            onRetry: pending.status === "failed" ? retryPendingSourceAction : undefined,
           }
         : undefined,
     };
@@ -863,6 +937,7 @@ interface ToGridItemContext {
   pendingActions: Record<string, PendingSourceAction>;
   /** Clear-pending handler (issue #246) — passed to source-backed pending cards. */
   clearPending: (slug: string) => Promise<void>;
+  retryPending: (slug: string) => Promise<void>;
   /**
    * Issue #214 — local visibility overrides for the optimistic
    * toggle flow. Keyed by slug → next visibility. Missing entries
@@ -923,7 +998,10 @@ function toGridItem(
       ? {
           action: pending.action,
           prUrl: pending.prUrl,
+          status: pending.status,
+          error: pending.error,
           onClear: ctx.clearPending,
+          onRetry: pending.status === "failed" ? ctx.retryPending : undefined,
         }
       : undefined,
   };
