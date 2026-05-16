@@ -403,6 +403,94 @@ function resolveDefaultVisibility(
 }
 
 /**
+ * Compact shape of a profile asset entry surfaced to the model via
+ * the new-deck creator system prompt (issue #266). The full
+ * `ImageRecord` carries `contentHash`, `size`, `uploadedAt`, and
+ * `mimeType` — none of which the model needs. We pass only the
+ * fields it must reason against: the embeddable URL and the
+ * filename the user uploaded (so it can match e.g. "speaker.jpg"
+ * → the right URL when the user references "the speaker photo").
+ */
+interface ProfileAssetContext {
+  src: string;
+  originalFilename: string;
+}
+
+const PROFILE_URL_PREFIX = "/images/profile/";
+
+/**
+ * Pull profile assets out of `useAgentChat`'s `body` payload, dropping
+ * anything that doesn't look like a legitimate profile-asset URL. The
+ * defence is twofold:
+ *
+ *   - **Shape check.** A tampered client could send arbitrary strings
+ *     here; only entries whose `src` starts with `/images/profile/`
+ *     survive. This stops a malicious client from tricking the model
+ *     into embedding URLs from elsewhere via this channel.
+ *   - **Bound.** Cap at 20 entries so a runaway library can't blow
+ *     the context window.
+ *
+ * Returns an empty array when the field is absent, malformed, or
+ * fully filtered.
+ */
+export function resolveProfileAssets(
+  body: Record<string, unknown> | undefined,
+): ProfileAssetContext[] {
+  const candidate = body?.profileAssets;
+  if (!Array.isArray(candidate)) return [];
+  const out: ProfileAssetContext[] = [];
+  for (const entry of candidate) {
+    if (!entry || typeof entry !== "object") continue;
+    const obj = entry as Record<string, unknown>;
+    const src = obj.src;
+    const name = obj.originalFilename;
+    if (typeof src !== "string" || !src.startsWith(PROFILE_URL_PREFIX)) {
+      continue;
+    }
+    if (typeof name !== "string" || name.length === 0) continue;
+    out.push({ src, originalFilename: name });
+    if (out.length >= 20) break;
+  }
+  return out;
+}
+
+/**
+ * Render the profile-assets section of the new-deck creator system
+ * prompt. Returns an empty string when no assets are available — the
+ * prompt then doesn't mention this surface at all, saving tokens on
+ * users who haven't uploaded anything yet.
+ */
+function renderProfileAssetsSection(
+  assets: ProfileAssetContext[],
+): string {
+  if (assets.length === 0) return "";
+  const lines = assets
+    .map((a) => `- \`${a.src}\` — ${a.originalFilename}`)
+    .join("\n");
+  return `
+
+PROFILE ASSETS
+
+The user has uploaded the following recurring assets to their profile
+library. These are stable, immutable URLs that resolve at runtime:
+
+${lines}
+
+When the user's prompt references something one of these clearly
+matches ("use my speaker photo", "drop my logo on the title slide",
+"my headshot"), include the matching URL in the \`prompt\` you pass
+to \`createDeckDraft\`. Phrase the instruction so the deck generator
+embeds the URL directly — e.g. "use /images/profile/<hash>/foo.jpg
+as the speaker photo on the title slide".
+
+Do NOT invent profile asset URLs. The list above is the complete set
+of profile assets the user has uploaded; anything not on this list
+does not exist. If the user asks for an asset that isn't here, say
+so and suggest they upload it via the Profile assets shelf rather
+than guessing at a URL.`;
+}
+
+/**
  * System prompt for the new-deck creator surface (`/admin/decks/new`,
  * instance name prefixed `new-deck-`). The user is sitting in front
  * of an EMPTY surface — there is no existing deck. The job here is:
@@ -428,6 +516,8 @@ function buildNewDeckCreatorSystemPrompt(
   body: Record<string, unknown> | undefined,
 ): string {
   const visibility = resolveDefaultVisibility(body);
+  const profileAssets = resolveProfileAssets(body);
+  const profileAssetsSection = renderProfileAssetsSection(profileAssets);
   return `You are the AI assistant for creating new decks in Slide of Hand,
 a JSX-first deck platform. The user is on the new-deck creator
 page. There is NO existing deck to read or modify. Your job is
@@ -466,7 +556,7 @@ The user has selected a default visibility for new decks: **${visibility}**.
 Pass \`visibility: "${visibility}"\` to the create-draft tool unless
 the user explicitly overrides it ("make it public", "actually keep
 it private", etc.). If they explicitly choose the opposite, use
-their explicit choice.
+their explicit choice.${profileAssetsSection}
 
 ITERATION
 

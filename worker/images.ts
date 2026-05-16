@@ -45,7 +45,7 @@
  */
 
 import { isValidSlug } from "../src/lib/theme-tokens";
-import { requireAccessAuth } from "./access-auth";
+import { requireAccessAuth, getAccessUserEmail } from "./access-auth";
 
 export interface ImagesEnv {
   IMAGES: R2Bucket;
@@ -84,8 +84,96 @@ function publicSrc(slug: string, hash: string, ext: string): string {
   return `/images/decks/${slug}/${hash}.${ext}`;
 }
 
+// ─── Profile-asset key/URL shapes — issue #266 ───────────────────────
+//
+// Profile assets are per-user recurring images (speaker photos, logos,
+// brand marks) uploaded ONCE and surfaced on every new-deck creator
+// run. Storage is content-addressed and namespaced by a **hashed**
+// owner identifier so the user's email is never present in:
+//
+//   - R2 object keys
+//   - public URLs the deck embeds
+//   - the KV index key
+//
+// `ownerHash` is the first 32 hex chars of SHA-256(lowercased email).
+// 32 hex chars = 128 bits of entropy — enough that collisions across
+// any realistic Cloudflare team are negligible — but short enough to
+// keep URLs readable. Lowercasing the email matches Cloudflare Access's
+// canonical-form behaviour and avoids per-keyboard-state drift
+// (`Foo@Example.com` and `foo@example.com` must hash to the same key).
+
+/** Profile-assets KV index key shape — `profile-assets:<ownerHash>`. */
+const PROFILE_INDEX_KEY = (ownerHash: string) =>
+  `profile-assets:${ownerHash}`;
+
+/** Profile-assets R2 object key shape — `profile-assets/<ownerHash>/<hash>.<ext>`. */
+function profileR2Key(
+  ownerHash: string,
+  hash: string,
+  ext: string,
+): string {
+  return `profile-assets/${ownerHash}/${hash}.${ext}`;
+}
+
+/** Profile-assets public URL shape — `/images/profile/<ownerHash>/<hash>.<ext>`. */
+function profilePublicSrc(
+  ownerHash: string,
+  hash: string,
+  ext: string,
+): string {
+  return `/images/profile/${ownerHash}/${hash}.${ext}`;
+}
+
+/**
+ * Hash a Cloudflare Access email to its opaque public owner ID.
+ * Lowercased before hashing to match Access's canonical form and
+ * collapse keyboard-state drift. Returns the first 32 hex chars
+ * (128 bits) — short enough for readable URLs, long enough that
+ * collisions across any realistic team are negligible.
+ *
+ * Exported so callers / tests can validate that the ownerHash they
+ * encounter in a URL or KV key matches the expected derivation.
+ * NEVER emit the raw email back to any client surface — that's the
+ * entire reason this helper exists.
+ */
+export async function hashOwnerEmail(email: string): Promise<string> {
+  const normalized = email.trim().toLowerCase();
+  const bytes = new TextEncoder().encode(normalized);
+  // `bytes` is a `Uint8Array` (which is a subtype of `ArrayBufferView`),
+  // not an `ArrayBuffer` itself. Pass `bytes` directly — `digest`
+  // accepts either, but TypeScript's lib.dom typings narrow it to
+  // `ArrayBuffer` if you pass `bytes.buffer`, which throws when the
+  // underlying buffer has been transferred or sliced.
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    bytes as unknown as ArrayBuffer,
+  );
+  const out = new Uint8Array(digest);
+  let hex = "";
+  for (const b of out) hex += b.toString(16).padStart(2, "0");
+  return hex.slice(0, 32);
+}
+
+// Note: an `isValidOwnerHash` helper is intentionally NOT exported.
+// The hash is derived server-side from the Access email — clients
+// never pass an ownerHash into any admin endpoint, so there's no
+// boundary that needs to validate one. The public serve route does
+// a string `startsWith("profile/")` redirect into the namespaced R2
+// prefix; an invalid hash will just 404 on the R2 read.
+
 const ADMIN_PATH = /^\/api\/admin\/images\/([^/]+)(?:\/([^/]+))?\/?$/;
 const PUBLIC_PATH = /^\/images\/(.+)$/;
+
+/**
+ * Profile-assets admin path — issue #266. Distinct from the deck
+ * surface so per-user assets never collide with deck-scoped indexes.
+ *
+ *   GET    /api/admin/profile-assets                 — list current user's profile assets
+ *   POST   /api/admin/profile-assets                 — multipart upload
+ *   DELETE /api/admin/profile-assets/<contentHash>   — remove a profile asset
+ */
+const PROFILE_ADMIN_PATH =
+  /^\/api\/admin\/profile-assets(?:\/([^/]+))?\/?$/;
 
 /**
  * MIME allowlist for v0.1. Maps MIME → file extension used in the R2 key.
@@ -191,6 +279,28 @@ async function writeIndex(
   env: ImagesEnv,
 ): Promise<void> {
   await env.IMAGES_INDEX.put(INDEX_KEY(slug), JSON.stringify(records));
+}
+
+async function readProfileIndex(
+  ownerHash: string,
+  env: ImagesEnv,
+): Promise<ImageRecord[]> {
+  const stored = (await env.IMAGES_INDEX.get(
+    PROFILE_INDEX_KEY(ownerHash),
+    "json",
+  )) as ImageRecord[] | null;
+  return Array.isArray(stored) ? stored : [];
+}
+
+async function writeProfileIndex(
+  ownerHash: string,
+  records: ImageRecord[],
+  env: ImagesEnv,
+): Promise<void> {
+  await env.IMAGES_INDEX.put(
+    PROFILE_INDEX_KEY(ownerHash),
+    JSON.stringify(records),
+  );
 }
 
 /**
@@ -331,6 +441,143 @@ async function handleDeleteImage(
   return new Response(null, { status: 204 });
 }
 
+// ─── Profile-asset handlers — issue #266 ─────────────────────────────
+//
+// The implementation reuses every helper used by the deck-asset path:
+// content-addressed R2 keys, the same MIME allowlist + 10 MiB cap, the
+// same KV-backed index for the picker UI. Only the namespace and the
+// owner identity change.
+//
+// Owner identity: profile assets are scoped to the interactive Access
+// user. Service-token callers have no user identity, so the require-
+// interactive-email check below is strict — service-token requests
+// receive 403. This matches the contract documented in the issue
+// brief.
+
+const PROFILE_REQUIRES_INTERACTIVE =
+  "profile assets require an interactive Cloudflare Access session";
+
+function profileForbidden(): Response {
+  return jsonError(PROFILE_REQUIRES_INTERACTIVE, 403);
+}
+
+/**
+ * Multipart upload for the current user's profile assets. Same
+ * allowlist + size cap as `handleUpload`; the only differences are
+ * the R2 key prefix and the index key shape (both namespaced by
+ * `ownerHash`, never by raw email).
+ */
+async function handleProfileUpload(
+  ownerHash: string,
+  request: Request,
+  env: ImagesEnv,
+): Promise<Response> {
+  const contentLength = request.headers.get("content-length");
+  if (contentLength) {
+    const declared = Number(contentLength);
+    if (Number.isFinite(declared) && declared > MAX_UPLOAD_BYTES) {
+      return payloadTooLarge("upload exceeds 10MB limit");
+    }
+  }
+
+  let formData: FormData;
+  try {
+    formData = await request.formData();
+  } catch {
+    return badRequest("invalid multipart body");
+  }
+
+  const file = formData.get("file");
+  if (!file || typeof file === "string") {
+    return badRequest("missing file field");
+  }
+
+  const blob = file as File;
+  const mimeType = blob.type;
+  if (!MIME_TO_EXT[mimeType]) {
+    return unsupportedMediaType(
+      `unsupported MIME type: ${mimeType || "(none)"}`,
+    );
+  }
+  if (blob.size > MAX_UPLOAD_BYTES) {
+    return payloadTooLarge("upload exceeds 10MB limit");
+  }
+
+  const buffer = await blob.arrayBuffer();
+  if (buffer.byteLength === 0) {
+    return badRequest("empty file");
+  }
+  if (buffer.byteLength > MAX_UPLOAD_BYTES) {
+    return payloadTooLarge("upload exceeds 10MB limit");
+  }
+
+  const contentHash = await sha256Hex(buffer);
+  const ext = MIME_TO_EXT[mimeType];
+  const key = profileR2Key(ownerHash, contentHash, ext);
+  const src = profilePublicSrc(ownerHash, contentHash, ext);
+  const originalFilename = blob.name || "upload";
+  const size = buffer.byteLength;
+
+  const existing = await env.IMAGES.head(key);
+  if (!existing) {
+    await env.IMAGES.put(key, buffer, {
+      httpMetadata: { contentType: mimeType },
+    });
+  }
+
+  const index = await readProfileIndex(ownerHash, env);
+  const filtered = index.filter((r) => r.contentHash !== contentHash);
+  const record: ImageRecord = {
+    src,
+    contentHash,
+    size,
+    mimeType,
+    originalFilename,
+    uploadedAt: new Date().toISOString(),
+  };
+  filtered.push(record);
+  await writeProfileIndex(ownerHash, filtered, env);
+
+  return new Response(JSON.stringify(record), {
+    status: 200,
+    headers: NO_STORE_HEADERS,
+  });
+}
+
+async function handleProfileIndexRead(
+  ownerHash: string,
+  env: ImagesEnv,
+): Promise<Response> {
+  const records = await readProfileIndex(ownerHash, env);
+  return new Response(JSON.stringify({ images: records }), {
+    status: 200,
+    headers: NO_STORE_HEADERS,
+  });
+}
+
+async function handleProfileDelete(
+  ownerHash: string,
+  contentHash: string,
+  env: ImagesEnv,
+): Promise<Response> {
+  if (!isContentHash(contentHash)) {
+    return badRequest("invalid contentHash");
+  }
+  const index = await readProfileIndex(ownerHash, env);
+  const target = index.find((r) => r.contentHash === contentHash);
+  if (target) {
+    const ext = MIME_TO_EXT[target.mimeType];
+    if (ext) {
+      await env.IMAGES.delete(profileR2Key(ownerHash, contentHash, ext));
+    }
+  }
+  const remaining = index.filter((r) => r.contentHash !== contentHash);
+  if (remaining.length !== index.length) {
+    await writeProfileIndex(ownerHash, remaining, env);
+  }
+  return new Response(null, { status: 204 });
+}
+
 /**
  * Public serve. Path is the segment after `/images/` — typically
  * `decks/<slug>/<hash>.<ext>`. Streams the R2 body back with the
@@ -341,7 +588,16 @@ async function handlePublicServe(
   path: string,
   env: ImagesEnv,
 ): Promise<Response> {
-  const obj = await env.IMAGES.get(path);
+  // Profile assets are served from `/images/profile/<ownerHash>/<hash>.<ext>`
+  // but stored at `profile-assets/<ownerHash>/<hash>.<ext>` in R2. The
+  // shorter public prefix keeps deck URLs (`/images/decks/...`) and
+  // profile URLs symmetrical for users embedding them in slides. The
+  // R2 prefix stays longer because it has to coexist alongside other
+  // future top-level namespaces (e.g. theme assets) without overlap.
+  const r2Path = path.startsWith("profile/")
+    ? `profile-assets/${path.slice("profile/".length)}`
+    : path;
+  const obj = await env.IMAGES.get(r2Path);
   if (!obj) return notFound();
 
   const headers = new Headers({ "cache-control": IMMUTABLE_CACHE });
@@ -376,6 +632,39 @@ export async function handleImages(
 ): Promise<Response | null> {
   const url = new URL(request.url);
   const path = url.pathname;
+
+  // Profile-assets endpoints first — they share `/api/admin/` prefix
+  // but their own sub-namespace. Hashed owner identifier comes from
+  // the Access-issued email; service-token callers (no email) are
+  // rejected with 403.
+  const profileMatch = path.match(PROFILE_ADMIN_PATH);
+  if (profileMatch) {
+    const denied = requireAccessAuth(request);
+    if (denied) return denied;
+
+    const email = getAccessUserEmail(request);
+    if (!email) return profileForbidden();
+    const ownerHash = await hashOwnerEmail(email);
+
+    const contentHash = profileMatch[1]
+      ? decodeURIComponent(profileMatch[1])
+      : null;
+
+    if (contentHash !== null) {
+      if (request.method === "DELETE") {
+        return handleProfileDelete(ownerHash, contentHash, env);
+      }
+      return methodNotAllowed(["DELETE"]);
+    }
+
+    if (request.method === "POST") {
+      return handleProfileUpload(ownerHash, request, env);
+    }
+    if (request.method === "GET" || request.method === "HEAD") {
+      return handleProfileIndexRead(ownerHash, env);
+    }
+    return methodNotAllowed(["GET", "HEAD", "POST"]);
+  }
 
   const adminMatch = path.match(ADMIN_PATH);
   if (adminMatch) {

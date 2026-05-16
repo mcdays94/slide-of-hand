@@ -71,6 +71,7 @@ import {
   handleAgent,
   DeckAuthorAgent,
   resolveAiAssistantModel,
+  resolveProfileAssets,
   AI_ASSISTANT_MODEL_IDS,
   AI_GATEWAY_ID,
   buildSystemPrompt,
@@ -603,6 +604,147 @@ describe("buildSystemPrompt — new-deck creator branch (issue #171)", () => {
     // accidentally drop them in a future edit.
     expect(prompt).toMatch(/publish/i);
     expect(prompt).toMatch(/open a PR|pull request/i);
+  });
+});
+
+// ─── buildSystemPrompt — profile assets section (issue #266) ─────────
+//
+// When the new-deck creator body carries a `profileAssets` array the
+// creator prompt grows a section that surfaces each asset URL to the
+// model. The model is told to USE the matching URL when the user
+// references one of these assets and to NOT invent URLs.
+
+describe("buildSystemPrompt — profile assets section (issue #266)", () => {
+  const HASH_PREFIX = "/images/profile/abcd1234abcd1234abcd1234abcd1234";
+
+  it("omits the section when body.profileAssets is missing", () => {
+    const prompt = buildSystemPrompt("new-deck-anything");
+    expect(prompt).not.toMatch(/PROFILE ASSETS/);
+  });
+
+  it("omits the section when body.profileAssets is an empty array", () => {
+    const prompt = buildSystemPrompt("new-deck-anything", {
+      profileAssets: [],
+    });
+    expect(prompt).not.toMatch(/PROFILE ASSETS/);
+  });
+
+  it("renders each asset URL and filename when assets are provided", () => {
+    const prompt = buildSystemPrompt("new-deck-anything", {
+      profileAssets: [
+        {
+          src: `${HASH_PREFIX}/aaaa.png`,
+          originalFilename: "speaker.png",
+        },
+        {
+          src: `${HASH_PREFIX}/bbbb.svg`,
+          originalFilename: "logo.svg",
+        },
+      ],
+    });
+    expect(prompt).toMatch(/PROFILE ASSETS/);
+    expect(prompt).toContain(`${HASH_PREFIX}/aaaa.png`);
+    expect(prompt).toContain("speaker.png");
+    expect(prompt).toContain(`${HASH_PREFIX}/bbbb.svg`);
+    expect(prompt).toContain("logo.svg");
+  });
+
+  it("tells the model to USE listed URLs verbatim and NOT to invent new ones", () => {
+    const prompt = buildSystemPrompt("new-deck-anything", {
+      profileAssets: [
+        { src: `${HASH_PREFIX}/aaaa.png`, originalFilename: "speaker.png" },
+      ],
+    });
+    // Anti-hallucination guidance — at least one of these phrasings
+    // must be present, since the model needs both an instruction to
+    // USE the URLs and an instruction NOT to fabricate new ones.
+    expect(prompt).toMatch(/include the matching URL|use the matching URL/i);
+    expect(prompt).toMatch(/do not invent|never invent|not to invent/i);
+  });
+
+  it("never leaks the raw email — only hashed-owner URLs appear", () => {
+    const prompt = buildSystemPrompt("new-deck-anything", {
+      profileAssets: [
+        { src: `${HASH_PREFIX}/aaaa.png`, originalFilename: "speaker.png" },
+      ],
+      // A tampered client could send a stray email field. The
+      // resolver/prompt path must not surface it.
+      email: "user@example.com",
+    });
+    expect(prompt).not.toContain("user@example.com");
+  });
+
+  it("filters entries with non-profile URLs (defence against tampered client)", () => {
+    const prompt = buildSystemPrompt("new-deck-anything", {
+      profileAssets: [
+        { src: "https://evil.example.com/x.png", originalFilename: "x.png" },
+        { src: "/images/decks/hello/y.png", originalFilename: "y.png" },
+        {
+          src: `${HASH_PREFIX}/legit.png`,
+          originalFilename: "legit.png",
+        },
+      ],
+    });
+    expect(prompt).not.toContain("evil.example.com");
+    expect(prompt).not.toContain("/images/decks/hello/y.png");
+    expect(prompt).toContain(`${HASH_PREFIX}/legit.png`);
+  });
+
+  it("falls back to no-section when body.profileAssets is malformed", () => {
+    const prompt = buildSystemPrompt("new-deck-anything", {
+      profileAssets: "not-an-array",
+    });
+    expect(prompt).not.toMatch(/PROFILE ASSETS/);
+  });
+});
+
+// ─── resolveProfileAssets — defensive filtering (issue #266) ────────
+//
+// The body the creator surface ships through is client-controlled.
+// `resolveProfileAssets` is the boundary that gates which entries
+// reach the prompt — pin its filtering contract directly here so the
+// prompt-shape tests above don't have to enumerate every edge case.
+
+describe("resolveProfileAssets", () => {
+  const HASH_PREFIX = "/images/profile/abcd1234abcd1234abcd1234abcd1234";
+
+  it("returns [] when body is undefined", () => {
+    expect(resolveProfileAssets(undefined)).toEqual([]);
+  });
+
+  it("returns [] when profileAssets is missing", () => {
+    expect(resolveProfileAssets({ visibility: "private" })).toEqual([]);
+  });
+
+  it("returns [] when profileAssets is not an array", () => {
+    expect(resolveProfileAssets({ profileAssets: 42 })).toEqual([]);
+    expect(resolveProfileAssets({ profileAssets: "x" })).toEqual([]);
+    expect(resolveProfileAssets({ profileAssets: {} })).toEqual([]);
+  });
+
+  it("preserves only entries with a /images/profile/ src + non-empty filename", () => {
+    const out = resolveProfileAssets({
+      profileAssets: [
+        { src: `${HASH_PREFIX}/a.png`, originalFilename: "a.png" },
+        { src: "https://evil/x.png", originalFilename: "x.png" },
+        { src: `${HASH_PREFIX}/b.png`, originalFilename: "" },
+        { src: `${HASH_PREFIX}/c.png` },
+        null,
+        "not an object",
+      ],
+    });
+    expect(out).toEqual([
+      { src: `${HASH_PREFIX}/a.png`, originalFilename: "a.png" },
+    ]);
+  });
+
+  it("caps at 20 entries to bound the context-window cost", () => {
+    const big = Array.from({ length: 50 }, (_, i) => ({
+      src: `${HASH_PREFIX}/file${i}.png`,
+      originalFilename: `file${i}.png`,
+    }));
+    const out = resolveProfileAssets({ profileAssets: big });
+    expect(out).toHaveLength(20);
   });
 });
 

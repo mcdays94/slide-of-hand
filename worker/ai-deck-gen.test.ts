@@ -569,6 +569,32 @@ describe("streamDeckFiles — uploaded asset URLs (#235)", () => {
     expect(system).toMatch(/<img\s+src=/);
   });
 
+  it("instructs the model to also accept /images/profile/<ownerHash>/... URLs (#266)", async () => {
+    // Issue #266 — profile assets are per-user recurring images
+    // (speaker photo, logos) served from `/images/profile/<ownerHash>/...`.
+    // The deck-gen prompt must recognise this shape so the user can
+    // paste a profile URL into a follow-up prompt and have the model
+    // embed it directly, the same way it would for a deck URL.
+    generateObjectMock.mockReturnValueOnce(
+      fakeGenerateObject({
+        files: [{ path: "src/decks/public/x/meta.ts", content: "a" }],
+        commitMessage: "x",
+      }),
+    );
+    const stream = streamDeckFiles(fakeAiBinding, {
+      slug: "x",
+      userPrompt: "x",
+    });
+    await collect(stream);
+    const system = (generateObjectMock.mock.calls[0]?.[0] as { system: string })
+      .system;
+    // Either the explicit URL shape or the "PROFILE ASSETS" label
+    // must be present — both prove the prompt teaches the second
+    // canonical asset surface.
+    expect(system).toMatch(/\/images\/profile\//);
+    expect(system).toMatch(/profile asset/i);
+  });
+
   it("forbids the model from inventing asset URLs", async () => {
     generateObjectMock.mockReturnValueOnce(
       fakeGenerateObject({

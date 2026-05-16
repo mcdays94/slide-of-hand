@@ -540,12 +540,25 @@ shelf's Copy URL button), USE IT DIRECTLY in your JSX:
 />
 \`\`\`
 
+The user may also embed PROFILE ASSETS — recurring images uploaded
+once to their profile library (speaker photo, logos, brand marks).
+Those URLs have the shape:
+
+\`\`\`
+/images/profile/<ownerHash>/<contentHash>.<ext>
+\`\`\`
+
+Treat them the same way as deck assets: if the prompt references
+one of these URLs, embed it directly. They are stable + immutable.
+The ownerHash is opaque (a hash of the author's identity); never
+try to derive it or guess at one.
+
 Do NOT invent asset URLs. If the user wants an image you do not
 have a URL for, either (a) leave a clearly-labelled placeholder
 that asks the user to upload + paste a URL, or (b) skip the image
 entirely. Never guess at a path like \`/images/decks/${slug}/photo.png\`
-that the user has not explicitly given you — those will 404 at
-runtime.
+or \`/images/profile/<anything>/<anything>.png\` that the user has
+not explicitly given you — those will 404 at runtime.
 
 You MUST NOT emit binary file content. The output schema only
 carries text files (\`{ path, content }\`). For any image needed in

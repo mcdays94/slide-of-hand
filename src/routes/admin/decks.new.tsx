@@ -49,7 +49,9 @@ import { Link, useNavigate } from "react-router-dom";
 import { ArrowLeft, Globe, Lock } from "lucide-react";
 import { DeckCreationCanvas } from "@/components/deck-creation-canvas";
 import { DraftAssetShelf } from "@/components/deck-creation-canvas/DraftAssetShelf";
+import { ProfileAssetShelf } from "@/components/deck-creation-canvas/ProfileAssetShelf";
 import { RenderedDraftPreview } from "@/components/deck-creation-canvas/RenderedDraftPreview";
+import { useProfileAssets } from "@/hooks/useProfileAssets";
 import {
   extractLatestDeckCreationCall,
   findLastUserPromptText,
@@ -110,6 +112,21 @@ export default function NewDeckRoute() {
   // through `useAgentChat({ body })` so the agent sees the current
   // selection on every turn and can pass it to `createDeckDraft`.
   const [visibility, setVisibility] = useState<DeckVisibility>("private");
+  // Issue #266 — the author's recurring profile assets (speaker
+  // photo, logos, brand marks). Mount the hook at the route level
+  // (not inside the shelf) so the same list flows into both the
+  // visible shelf AND the agent's per-turn body payload. The agent
+  // surfaces these URLs in the new-deck creator system prompt so
+  // the model can embed them when relevant.
+  const { assets: profileAssets } = useProfileAssets();
+  // Pass only the compact { src, originalFilename } shape — the
+  // agent intentionally rejects everything else. Defence in depth:
+  // even though the route is the only caller, sending only what's
+  // needed keeps the wire surface narrow.
+  const profileAssetsForBody = (profileAssets ?? []).map((a) => ({
+    src: a.src,
+    originalFilename: a.originalFilename,
+  }));
   // Mirrors the panel's internal split-layout state via the panel's
   // `onPivotChange` callback (issue #178 polish). Once the model
   // fires its first deck-creation tool-call the panel pivots to a
@@ -182,6 +199,15 @@ export default function NewDeckRoute() {
         <VisibilitySelector value={visibility} onChange={setVisibility} />
       )}
 
+      {/* Profile assets shelf (#266). Rendered at the route level so
+          it's visible from the moment the user lands on this page —
+          well before the model picks a slug. URLs from the shelf are
+          also threaded into the agent body (`profileAssetsForBody`
+          above) so the model sees them on every turn and can embed
+          them in the generated JSX. Hidden post-pivot to keep the
+          two-column layout focused on the draft. */}
+      {!hasPivoted && <ProfileAssetShelf />}
+
       {/* The panel. `flex-1` so it fills the rest of the viewport
           below the page header. The lazy boundary mirrors the
           existing mounts in Deck.tsx / EditMode.tsx — the bundle is
@@ -206,7 +232,7 @@ export default function NewDeckRoute() {
             // any `createDeckDraft` call without an explicit
             // visibility to this value. So the toggle deterministically
             // wins unless the user types "make it public" in chat.
-            body={{ visibility }}
+            body={{ visibility, profileAssets: profileAssetsForBody }}
             emptyState={{
               title: "What deck would you like to build?",
               description:
