@@ -85,6 +85,13 @@ import {
   type PendingSourceActionType,
 } from "../src/lib/pending-source-actions";
 
+const CLONE_TIMEOUT_MS = 90_000;
+const MUTATE_TIMEOUT_MS = 30_000;
+const TEST_GATE_TIMEOUT_MS = 180_000;
+const GITHUB_PUSH_TIMEOUT_MS = 90_000;
+const OPEN_PR_TIMEOUT_MS = 60_000;
+const PENDING_RECORD_TIMEOUT_MS = 30_000;
+
 export interface SourceDeckLifecycleEnv {
   Sandbox: DurableObjectNamespace<Sandbox>;
   /** Pending source action store (same KV namespace as decks). */
@@ -463,11 +470,24 @@ async function runSourceLifecycle<A extends PendingSourceActionType>(
   const sandbox = getSandboxFn(env.Sandbox, `${config.sandboxKeyPrefix}${slug}`);
 
   // 5. Clone slide-of-hand from GitHub.
-  const ghClone = await cloneRepoIntoSandbox(sandbox, {
-    token: stored.token,
-    repo: TARGET_REPO,
-    workdir: "/workspace/slide-of-hand",
-  });
+  let ghClone;
+  try {
+    ghClone = await withSourceActionTimeout(
+      cloneRepoIntoSandbox(sandbox, {
+        token: stored.token,
+        repo: TARGET_REPO,
+        workdir: "/workspace/slide-of-hand",
+      }),
+      CLONE_TIMEOUT_MS,
+      "GitHub clone",
+    );
+  } catch (err) {
+    return {
+      ok: false,
+      phase: "clone_github",
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
   if (!ghClone.ok) {
     return { ok: false, phase: "clone_github", error: ghClone.error };
   }
@@ -538,7 +558,11 @@ async function runSourceLifecycle<A extends PendingSourceActionType>(
   // 7. Apply the tree mutation (move or remove).
   let moveResult;
   try {
-    moveResult = await sandbox.exec(mutateCommand, { cwd: workdir });
+    moveResult = await withSourceActionTimeout(
+      sandbox.exec(mutateCommand, { cwd: workdir }),
+      MUTATE_TIMEOUT_MS,
+      "Source tree mutation",
+    );
   } catch (err) {
     return {
       ok: false,
@@ -557,7 +581,20 @@ async function runSourceLifecycle<A extends PendingSourceActionType>(
   }
 
   // 8. Test gate against the post-move tree.
-  const gate = await runSandboxTestGate(sandbox, workdir);
+  let gate;
+  try {
+    gate = await withSourceActionTimeout(
+      runSandboxTestGate(sandbox, workdir),
+      TEST_GATE_TIMEOUT_MS,
+      "Cloudflare Sandbox test/build gate",
+    );
+  } catch (err) {
+    return {
+      ok: false,
+      phase: "test_gate",
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
   if (!gate.ok) {
     return {
       ok: false,
@@ -574,16 +611,29 @@ async function runSourceLifecycle<A extends PendingSourceActionType>(
   // branch behind.
   const branchName = `${config.branchPrefix}${slug}-${Date.now()}`;
   const commitMessage = config.commitMessage(slug);
-  const commit = await commitAndPushInSandbox(
-    sandbox,
-    {
-      branchName,
-      authorName: SLIDE_OF_HAND_COMMIT_IDENTITY.name,
-      authorEmail: SLIDE_OF_HAND_COMMIT_IDENTITY.email,
-      commitMessage,
-    },
-    workdir,
-  );
+  let commit;
+  try {
+    commit = await withSourceActionTimeout(
+      commitAndPushInSandbox(
+        sandbox,
+        {
+          branchName,
+          authorName: SLIDE_OF_HAND_COMMIT_IDENTITY.name,
+          authorEmail: SLIDE_OF_HAND_COMMIT_IDENTITY.email,
+          commitMessage,
+        },
+        workdir,
+      ),
+      GITHUB_PUSH_TIMEOUT_MS,
+      "GitHub branch push",
+    );
+  } catch (err) {
+    return {
+      ok: false,
+      phase: "github_push",
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
   if (!commit.ok) {
     return {
       ok: false,
@@ -594,23 +644,40 @@ async function runSourceLifecycle<A extends PendingSourceActionType>(
   }
 
   // 10. Open the draft PR.
-  const pr = await openPullRequest({
-    token: stored.token,
-    head: commit.branch,
-    base: "main",
-    title: config.prTitle(slug),
-    body: config.prBody(slug, commit.branch),
-    draft: true,
-  });
+  let pr;
+  try {
+    pr = await withSourceActionTimeout(
+      openPullRequest({
+        token: stored.token,
+        head: commit.branch,
+        base: "main",
+        title: config.prTitle(slug),
+        body: config.prBody(slug, commit.branch),
+        draft: true,
+      }),
+      OPEN_PR_TIMEOUT_MS,
+      "GitHub draft PR creation",
+    );
+  } catch (err) {
+    return {
+      ok: false,
+      phase: "open_pr",
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
   if (!pr.ok) {
     return { ok: false, phase: "open_pr", error: pr.message };
   }
 
   // 11. Persist the pending source-action record.
   try {
-    await writePendingRecord(
-      env,
-      makePendingRecord(slug, config.action, pr.result.htmlUrl),
+    await withSourceActionTimeout(
+      writePendingRecord(
+        env,
+        makePendingRecord(slug, config.action, pr.result.htmlUrl),
+      ),
+      PENDING_RECORD_TIMEOUT_MS,
+      "Pending marker write",
     );
   } catch (err) {
     const actionLabel =
@@ -633,6 +700,32 @@ async function runSourceLifecycle<A extends PendingSourceActionType>(
     prUrl: pr.result.htmlUrl,
     action: config.action,
   };
+}
+
+async function withSourceActionTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  label: string,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () =>
+            reject(
+              new Error(
+                `${label} timed out after ${Math.round(timeoutMs / 1000)} seconds. The source action was not finalized; please retry.`,
+              ),
+            ),
+          timeoutMs,
+        );
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 // ── runArchiveSourceDeck ────────────────────────────────────────────

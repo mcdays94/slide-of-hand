@@ -678,6 +678,12 @@ export function DeckCard({
                 Archived section and its public link will stop working
                 once the action is finalized. You can restore it later.
               </p>
+              {archiving && (
+                <p className="mt-3 text-xs text-cf-text-muted">
+                  Running the Cloudflare Sandbox gate and opening a GitHub
+                  draft PR. This can take a couple of minutes.
+                </p>
+              )}
               {archiveError && (
                 <p
                   role="alert"
