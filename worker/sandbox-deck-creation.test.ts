@@ -115,6 +115,18 @@ vi.mock("@cloudflare/sandbox", () => ({
   getSandbox: getSandboxMock,
 }));
 
+// Preview-wiring mocks (#271). The orchestrator calls
+// `upsertDraftPreviewMapping` from `./draft-previews-store` after a
+// successful commit; the preview builder itself is injected via a
+// test seam (`runBuildDraftPreviewFn`) so we don't need to mock
+// `./sandbox-preview-build` at the module level.
+const { upsertDraftPreviewMappingMock } = vi.hoisted(() => ({
+  upsertDraftPreviewMappingMock: vi.fn(),
+}));
+vi.mock("./draft-previews-store", () => ({
+  upsertDraftPreviewMapping: upsertDraftPreviewMappingMock,
+}));
+
 import {
   ensureDraftFalseInMetaContent,
   ensureDraftTrueInMetaContent,
@@ -124,6 +136,7 @@ import {
   setDraftFlagInMetaContent,
   type DeckCreationSnapshot,
   type PublishDraftEnv,
+  type RunBuildDraftPreviewFn,
   type SandboxDeckCreationEnv,
 } from "./sandbox-deck-creation";
 import type { AiDeckGenResult, DeckGenPartial } from "./ai-deck-gen";
@@ -141,6 +154,23 @@ function makeEnv(): SandboxDeckCreationEnv {
     ARTIFACTS: {} as unknown as Artifacts,
     AI: {} as unknown as Ai,
     CF_ACCOUNT_ID: TEST_ACCOUNT_ID,
+  };
+}
+
+/**
+ * Env carrying the optional preview bindings (#271). When ALL of
+ * `PREVIEW_BUNDLES`, `DECKS`, and `GITHUB_TOKENS` are present the
+ * orchestrator runs the preview-wiring branch; absent any one of
+ * them, the orchestrator skips preview entirely. Test code that
+ * exercises preview wiring uses this helper; legacy tests stick
+ * with `makeEnv()`.
+ */
+function makeEnvWithPreview(): SandboxDeckCreationEnv {
+  return {
+    ...makeEnv(),
+    PREVIEW_BUNDLES: {} as unknown as R2Bucket,
+    DECKS: {} as unknown as KVNamespace,
+    GITHUB_TOKENS: {} as unknown as KVNamespace,
   };
 }
 
@@ -254,6 +284,7 @@ beforeEach(() => {
   getSandboxMock.mockReset();
   openPullRequestMock.mockReset();
   getStoredGitHubTokenMock.mockReset();
+  upsertDraftPreviewMappingMock.mockReset();
 });
 
 // ── runCreateDeckDraft ───────────────────────────────────────────────
@@ -1691,5 +1722,541 @@ describe("runPublishDraft — flips meta.draft (#191 slice 5)", () => {
       slug: "my",
     });
     expect(callOrder).toEqual(["readFile", "testGate"]);
+  });
+});
+
+// ── Preview wiring (#271) ────────────────────────────────────────────
+//
+// `runCreateDeckDraft` / `runIterateOnDeckDraft` extend the post-commit
+// path with an opt-in preview build. The env must carry
+// `PREVIEW_BUNDLES` + `DECKS` + `GITHUB_TOKENS` for the wiring to
+// engage; absent any of them the orchestrator skips preview entirely
+// (legacy + skill-composer behaviour).
+//
+// Three orchestrator-level guarantees we lock down here:
+//
+//   1. The preview builder is called AFTER the Artifacts commit
+//      lands — never on a failed create/iterate.
+//   2. Preview success surfaces `previewStatus: "ready"` +
+//      `previewUrl` on both the final snapshot AND the lean tool
+//      result.
+//   3. Preview failure is non-destructive — the lean result remains
+//      `ok: true`, but carries `previewStatus: "error"` +
+//      `previewError` so the UI can warn.
+
+const TEST_PREVIEW_ID = "pv_0123456789abcdef";
+
+function setPreviewHappyPathMocks(): void {
+  upsertDraftPreviewMappingMock.mockResolvedValue({
+    previewId: TEST_PREVIEW_ID,
+    ownerEmail: "alice@example.com",
+    draftRepoName: "alice-example-com-my",
+    slug: "my",
+    latestCommitSha: "abc1234567890abcdef1234567890abcdef12345",
+    createdAt: "2026-05-01T00:00:00Z",
+    updatedAt: "2026-05-01T00:00:00Z",
+  });
+}
+
+describe("runCreateDeckDraft — preview wiring (#271)", () => {
+  beforeEach(() => {
+    setHappyPathMocks();
+    setPreviewHappyPathMocks();
+  });
+
+  it("calls the preview builder with userEmail, slug, draftRepoName, commitSha, previewId after a successful commit", async () => {
+    const builder = vi.fn<RunBuildDraftPreviewFn>(async () => ({
+      ok: true,
+      previewUrl:
+        "/preview/pv_0123456789abcdef/abc1234567890abcdef1234567890abcdef12345/index.html",
+      uploadedFiles: 14,
+    }));
+    const { result } = await runGen(
+      runCreateDeckDraft(
+        makeEnvWithPreview(),
+        {
+          userEmail: "alice@example.com",
+          slug: "my",
+          prompt: "x",
+        },
+        getSandboxMock as unknown as typeof getSandboxMock,
+        builder,
+      ),
+    );
+    expect(result.ok).toBe(true);
+    expect(builder).toHaveBeenCalledTimes(1);
+    const [, builderInput] = builder.mock.calls[0];
+    expect(builderInput).toMatchObject({
+      userEmail: "alice@example.com",
+      slug: "my",
+      commitSha: "abc1234567890abcdef1234567890abcdef12345",
+      previewId: TEST_PREVIEW_ID,
+    });
+    // draftRepoName is whatever upsertDraftPreviewMapping established
+    // for this (owner, slug) pair — the orchestrator threads the
+    // commit's draftId through. Mirrors what the mapping store
+    // records as `draftRepoName`.
+    expect(builderInput.draftRepoName).toMatch(/-my$/);
+  });
+
+  it("includes previewUrl + previewStatus: 'ready' on the final lean tool result when preview succeeds", async () => {
+    const builder = vi.fn<RunBuildDraftPreviewFn>(async () => ({
+      ok: true,
+      previewUrl:
+        "/preview/pv_0123456789abcdef/abc1234567890abcdef1234567890abcdef12345/index.html",
+      uploadedFiles: 14,
+    }));
+    const { result } = await runGen(
+      runCreateDeckDraft(
+        makeEnvWithPreview(),
+        {
+          userEmail: "alice@example.com",
+          slug: "my",
+          prompt: "x",
+        },
+        getSandboxMock as unknown as typeof getSandboxMock,
+        builder,
+      ),
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.previewStatus).toBe("ready");
+      expect(result.previewUrl).toBe(
+        "/preview/pv_0123456789abcdef/abc1234567890abcdef1234567890abcdef12345/index.html",
+      );
+      expect(result.previewUploadedFiles).toBe(14);
+    }
+  });
+
+  it("stamps the final 'done' snapshot with previewStatus + previewUrl when preview succeeds", async () => {
+    const builder = vi.fn<RunBuildDraftPreviewFn>(async () => ({
+      ok: true,
+      previewUrl: "/preview/pv_x/abc1234/index.html",
+      uploadedFiles: 3,
+    }));
+    const { snapshots } = await runGen(
+      runCreateDeckDraft(
+        makeEnvWithPreview(),
+        {
+          userEmail: "alice@example.com",
+          slug: "my",
+          prompt: "x",
+        },
+        getSandboxMock as unknown as typeof getSandboxMock,
+        builder,
+      ),
+    );
+    // The orchestrator yields TWO "done" snapshots when preview
+    // wiring runs: one with `previewStatus: "building"` BEFORE the
+    // builder fires, and one (the final) with the terminal preview
+    // state stamped on. The final snapshot is what consumers
+    // surface to the UI.
+    const doneSnaps = snapshots.filter((s) => s.phase === "done");
+    expect(doneSnaps.length).toBeGreaterThanOrEqual(2);
+    const finalDone = doneSnaps[doneSnaps.length - 1];
+    expect(finalDone?.previewStatus).toBe("ready");
+    expect(finalDone?.previewUrl).toBe("/preview/pv_x/abc1234/index.html");
+  });
+
+  it("yields an intermediate 'done' snapshot with previewStatus: 'building' before the builder runs", async () => {
+    let yieldedBuilding = false;
+    const builder = vi.fn<RunBuildDraftPreviewFn>(async () => {
+      // The orchestrator must have yielded the "building" snapshot
+      // BEFORE we get here. Confirm via a side-channel flag.
+      yieldedBuilding = true;
+      return {
+        ok: true,
+        previewUrl: "/preview/pv_x/abc/index.html",
+        uploadedFiles: 1,
+      };
+    });
+    const { snapshots } = await runGen(
+      runCreateDeckDraft(
+        makeEnvWithPreview(),
+        {
+          userEmail: "alice@example.com",
+          slug: "my",
+          prompt: "x",
+        },
+        getSandboxMock as unknown as typeof getSandboxMock,
+        builder,
+      ),
+    );
+    expect(yieldedBuilding).toBe(true);
+    const buildingSnap = snapshots.find(
+      (s) => s.phase === "done" && s.previewStatus === "building",
+    );
+    expect(buildingSnap).toBeDefined();
+  });
+
+  it("leaves the lean tool result ok: true even when the preview build fails (non-destructive)", async () => {
+    const builder = vi.fn<RunBuildDraftPreviewFn>(async () => ({
+      ok: false,
+      phase: "build",
+      error: "vite build failed (exit 1).",
+    }));
+    const { result } = await runGen(
+      runCreateDeckDraft(
+        makeEnvWithPreview(),
+        {
+          userEmail: "alice@example.com",
+          slug: "my",
+          prompt: "x",
+        },
+        getSandboxMock as unknown as typeof getSandboxMock,
+        builder,
+      ),
+    );
+    // Deck draft succeeded despite preview failure.
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.commitSha).toBe(
+        "abc1234567890abcdef1234567890abcdef12345",
+      );
+      expect(result.previewStatus).toBe("error");
+      expect(result.previewError).toMatch(/vite build failed/);
+      expect(result.previewUrl).toBeUndefined();
+    }
+  });
+
+  it("stamps the final 'done' snapshot with previewStatus: 'error' on preview failure", async () => {
+    const builder = vi.fn<RunBuildDraftPreviewFn>(async () => ({
+      ok: false,
+      phase: "build",
+      error: "vite build failed (exit 1).",
+    }));
+    const { snapshots } = await runGen(
+      runCreateDeckDraft(
+        makeEnvWithPreview(),
+        {
+          userEmail: "alice@example.com",
+          slug: "my",
+          prompt: "x",
+        },
+        getSandboxMock as unknown as typeof getSandboxMock,
+        builder,
+      ),
+    );
+    const finalSnap = snapshots[snapshots.length - 1];
+    expect(finalSnap?.phase).toBe("done");
+    expect(finalSnap?.previewStatus).toBe("error");
+    expect(finalSnap?.previewError).toMatch(/vite build failed/);
+  });
+
+  it("treats a thrown preview-builder error as a non-destructive preview failure", async () => {
+    const builder = vi.fn<RunBuildDraftPreviewFn>(async () => {
+      throw new Error("Sandbox network unreachable");
+    });
+    const { result } = await runGen(
+      runCreateDeckDraft(
+        makeEnvWithPreview(),
+        {
+          userEmail: "alice@example.com",
+          slug: "my",
+          prompt: "x",
+        },
+        getSandboxMock as unknown as typeof getSandboxMock,
+        builder,
+      ),
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.previewStatus).toBe("error");
+      expect(result.previewError).toMatch(/network unreachable/);
+    }
+  });
+
+  it("does NOT call the preview builder when the commit/push step fails", async () => {
+    // Force commit to fail — preview must NOT fire because there's
+    // no committed SHA to build against.
+    commitAndPushToArtifactsInSandboxMock.mockResolvedValueOnce({
+      ok: false,
+      error: "push rejected",
+    });
+    const builder = vi.fn<RunBuildDraftPreviewFn>(async () => ({
+      ok: true,
+      previewUrl: "/preview/pv_x/abc/index.html",
+      uploadedFiles: 1,
+    }));
+    const { result } = await runGen(
+      runCreateDeckDraft(
+        makeEnvWithPreview(),
+        {
+          userEmail: "alice@example.com",
+          slug: "my",
+          prompt: "x",
+        },
+        getSandboxMock as unknown as typeof getSandboxMock,
+        builder,
+      ),
+    );
+    expect(result.ok).toBe(false);
+    expect(builder).not.toHaveBeenCalled();
+  });
+
+  it("does NOT call the preview builder when AI gen fails", async () => {
+    streamDeckFilesMock.mockReturnValueOnce(
+      fakeStreamDeckFiles([], {
+        ok: false,
+        phase: "model_error",
+        error: "rate limit",
+      }),
+    );
+    const builder = vi.fn<RunBuildDraftPreviewFn>(async () => ({
+      ok: true,
+      previewUrl: "/preview/pv_x/abc/index.html",
+      uploadedFiles: 1,
+    }));
+    const { result } = await runGen(
+      runCreateDeckDraft(
+        makeEnvWithPreview(),
+        {
+          userEmail: "alice@example.com",
+          slug: "my",
+          prompt: "x",
+        },
+        getSandboxMock as unknown as typeof getSandboxMock,
+        builder,
+      ),
+    );
+    expect(result.ok).toBe(false);
+    expect(builder).not.toHaveBeenCalled();
+  });
+
+  it("skips preview wiring silently when PREVIEW_BUNDLES is absent from the env", async () => {
+    // Legacy env shape — no preview bindings. The orchestrator must
+    // skip preview entirely and the final result must NOT carry any
+    // preview fields. This guarantees backwards compatibility for
+    // every existing caller that pre-dates #271.
+    const builder = vi.fn<RunBuildDraftPreviewFn>(async () => ({
+      ok: true,
+      previewUrl: "/should/not/be/called",
+      uploadedFiles: 0,
+    }));
+    const { result } = await runGen(
+      runCreateDeckDraft(
+        makeEnv(),
+        {
+          userEmail: "alice@example.com",
+          slug: "my",
+          prompt: "x",
+        },
+        getSandboxMock as unknown as typeof getSandboxMock,
+        builder,
+      ),
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.previewStatus).toBeUndefined();
+      expect(result.previewUrl).toBeUndefined();
+      expect(result.previewError).toBeUndefined();
+    }
+    expect(builder).not.toHaveBeenCalled();
+    expect(upsertDraftPreviewMappingMock).not.toHaveBeenCalled();
+  });
+
+  it("upserts the draft preview mapping with the committed SHA so iteration refreshes the same previewId", async () => {
+    const builder = vi.fn<RunBuildDraftPreviewFn>(async () => ({
+      ok: true,
+      previewUrl: "/preview/pv_x/abc/index.html",
+      uploadedFiles: 1,
+    }));
+    await runGen(
+      runCreateDeckDraft(
+        makeEnvWithPreview(),
+        {
+          userEmail: "alice@example.com",
+          slug: "my",
+          prompt: "x",
+        },
+        getSandboxMock as unknown as typeof getSandboxMock,
+        builder,
+      ),
+    );
+    expect(upsertDraftPreviewMappingMock).toHaveBeenCalledTimes(1);
+    const [, upsertInput] = upsertDraftPreviewMappingMock.mock.calls[0];
+    expect(upsertInput).toMatchObject({
+      ownerEmail: "alice@example.com",
+      slug: "my",
+      latestCommitSha: "abc1234567890abcdef1234567890abcdef12345",
+    });
+    expect(upsertInput.draftRepoName).toMatch(/-my$/);
+  });
+});
+
+describe("runIterateOnDeckDraft — preview wiring (#271)", () => {
+  beforeEach(() => {
+    setIterateHappyPathMocks();
+    setPreviewHappyPathMocks();
+  });
+
+  it("calls the preview builder with the new iteration SHA after a successful iterate commit", async () => {
+    const builder = vi.fn<RunBuildDraftPreviewFn>(async () => ({
+      ok: true,
+      previewUrl:
+        "/preview/pv_0123456789abcdef/def1234567890abcdef1234567890abcdef12345/index.html",
+      uploadedFiles: 14,
+    }));
+    const { result } = await runGen(
+      runIterateOnDeckDraft(
+        makeEnvWithPreview(),
+        {
+          userEmail: "alice@example.com",
+          slug: "my",
+          prompt: "tweak",
+        },
+        getSandboxMock as unknown as typeof getSandboxMock,
+        builder,
+      ),
+    );
+    expect(result.ok).toBe(true);
+    expect(builder).toHaveBeenCalledTimes(1);
+    const [, builderInput] = builder.mock.calls[0];
+    expect(builderInput).toMatchObject({
+      userEmail: "alice@example.com",
+      slug: "my",
+      commitSha: "def1234567890abcdef1234567890abcdef12345",
+      previewId: TEST_PREVIEW_ID,
+    });
+  });
+
+  it("includes previewUrl on the lean tool result when iterate-preview succeeds", async () => {
+    const builder = vi.fn<RunBuildDraftPreviewFn>(async () => ({
+      ok: true,
+      previewUrl:
+        "/preview/pv_0123456789abcdef/def1234567890abcdef1234567890abcdef12345/index.html",
+      uploadedFiles: 14,
+    }));
+    const { result } = await runGen(
+      runIterateOnDeckDraft(
+        makeEnvWithPreview(),
+        {
+          userEmail: "alice@example.com",
+          slug: "my",
+          prompt: "tweak",
+        },
+        getSandboxMock as unknown as typeof getSandboxMock,
+        builder,
+      ),
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.previewStatus).toBe("ready");
+      expect(result.previewUrl).toBe(
+        "/preview/pv_0123456789abcdef/def1234567890abcdef1234567890abcdef12345/index.html",
+      );
+    }
+  });
+
+  it("leaves iterate ok: true even when the preview build fails (non-destructive)", async () => {
+    const builder = vi.fn<RunBuildDraftPreviewFn>(async () => ({
+      ok: false,
+      phase: "install",
+      error: "npm install failed (exit 1).",
+    }));
+    const { result } = await runGen(
+      runIterateOnDeckDraft(
+        makeEnvWithPreview(),
+        {
+          userEmail: "alice@example.com",
+          slug: "my",
+          prompt: "tweak",
+        },
+        getSandboxMock as unknown as typeof getSandboxMock,
+        builder,
+      ),
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.commitSha).toBe(
+        "def1234567890abcdef1234567890abcdef12345",
+      );
+      expect(result.previewStatus).toBe("error");
+      expect(result.previewError).toMatch(/npm install failed/);
+      expect(result.previewUrl).toBeUndefined();
+    }
+  });
+
+  it("does NOT call the preview builder when the iterate commit fails", async () => {
+    commitAndPushToArtifactsInSandboxMock.mockResolvedValueOnce({
+      ok: false,
+      error: "push rejected",
+    });
+    const builder = vi.fn<RunBuildDraftPreviewFn>(async () => ({
+      ok: true,
+      previewUrl: "/preview/pv_x/def/index.html",
+      uploadedFiles: 1,
+    }));
+    const { result } = await runGen(
+      runIterateOnDeckDraft(
+        makeEnvWithPreview(),
+        {
+          userEmail: "alice@example.com",
+          slug: "my",
+          prompt: "tweak",
+        },
+        getSandboxMock as unknown as typeof getSandboxMock,
+        builder,
+      ),
+    );
+    expect(result.ok).toBe(false);
+    expect(builder).not.toHaveBeenCalled();
+  });
+
+  it("skips preview wiring silently when the env lacks the preview bindings", async () => {
+    const builder = vi.fn<RunBuildDraftPreviewFn>(async () => ({
+      ok: true,
+      previewUrl: "/should/not/be/called",
+      uploadedFiles: 0,
+    }));
+    const { result } = await runGen(
+      runIterateOnDeckDraft(
+        makeEnv(),
+        {
+          userEmail: "alice@example.com",
+          slug: "my",
+          prompt: "tweak",
+        },
+        getSandboxMock as unknown as typeof getSandboxMock,
+        builder,
+      ),
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.previewStatus).toBeUndefined();
+      expect(result.previewUrl).toBeUndefined();
+    }
+    expect(builder).not.toHaveBeenCalled();
+  });
+
+  it("redacts Artifacts token shapes from preview errors before surfacing them", async () => {
+    // Defence-in-depth: if a preview builder error string ever
+    // contained a leaked token, the orchestrator MUST scrub it
+    // before stamping the snapshot/tool result. The builder itself
+    // already does this; the orchestrator's redaction is the second
+    // layer.
+    const builder = vi.fn<RunBuildDraftPreviewFn>(async () => ({
+      ok: false,
+      phase: "artifacts_clone",
+      error: "auth failed for art_v1_deadbeef1234?expires=999",
+    }));
+    const { result } = await runGen(
+      runIterateOnDeckDraft(
+        makeEnvWithPreview(),
+        {
+          userEmail: "alice@example.com",
+          slug: "my",
+          prompt: "tweak",
+        },
+        getSandboxMock as unknown as typeof getSandboxMock,
+        builder,
+      ),
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.previewError).toBeDefined();
+      expect(result.previewError).not.toMatch(/art_v1_/);
+      expect(result.previewError).toMatch(/\[REDACTED\]/);
+    }
   });
 });

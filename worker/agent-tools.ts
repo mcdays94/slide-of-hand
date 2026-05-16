@@ -127,6 +127,15 @@ export interface AgentToolsEnv {
    * present so the Workers AI call carries the gateway auth header.
    */
   CF_AI_GATEWAY_TOKEN?: string;
+  /**
+   * Preview-bundle R2 bucket (#269 / #271). When present along
+   * with `DECKS`, the create/iterate deck-draft tools run a
+   * preview build after the Artifacts commit lands and surface
+   * the preview URL on the lean tool result. Optional so the
+   * tool registry continues to type-check in code paths that
+   * pre-date #271.
+   */
+  PREVIEW_BUNDLES?: R2Bucket;
 }
 
 const KV_DECK = (slug: string) => `deck:${slug}`;

@@ -34,9 +34,32 @@ export interface DeckGenPartial {
 }
 
 /**
+ * Preview-build status reported alongside snapshots and the final
+ * lean tool result (issue #271). Tied to the Artifacts commit SHA;
+ * built AFTER the commit has landed, so its lifecycle is decoupled
+ * from the six-phase create/iterate strip.
+ *
+ *   - `"building"` — preview bundle build in flight.
+ *   - `"ready"`    — bundle uploaded; `previewUrl` is populated.
+ *   - `"error"`    — preview build failed. `previewError` carries
+ *                    a redacted, UI-safe message. The deck draft
+ *                    itself is still successful (preview failure
+ *                    is non-destructive); the field exists so the
+ *                    UI can surface a warning rather than swallow.
+ */
+export type PreviewStatus = "building" | "ready" | "error";
+
+/**
  * Streaming snapshot yielded by the orchestrators at every phase
  * boundary AND for each `DeckGenPartial` during `ai_gen`. Drives the
  * canvas UI.
+ *
+ * The `preview*` fields surface the preview-bundle build status
+ * (issue #271). They are populated only AFTER the Artifacts commit
+ * has landed — the preview is built from the committed source, not
+ * model output mid-stream. All four fields are optional so the
+ * shape stays backwards-compatible with consumers that pre-date
+ * the preview wiring.
  */
 export interface DeckCreationSnapshot {
   phase: PipelinePhase | "done" | "error";
@@ -47,6 +70,14 @@ export interface DeckCreationSnapshot {
   draftId?: string;
   error?: string;
   failedPhase?: PipelinePhase;
+  /** Lifecycle marker for the preview-bundle build, when one was attempted. */
+  previewStatus?: PreviewStatus;
+  /** Preview URL, populated when `previewStatus === "ready"`. */
+  previewUrl?: string;
+  /** Redacted error message, populated when `previewStatus === "error"`. */
+  previewError?: string;
+  /** Count of files uploaded to R2 in this preview build, when known. */
+  previewUploadedFiles?: number;
 }
 
 /**
@@ -67,6 +98,24 @@ export interface DeckDraftToolSuccess {
   fileCount: number;
   commitMessage: string;
   promptNotePushed?: boolean;
+  /**
+   * Preview-bundle status for the commit just landed (issue #271).
+   * Optional + backwards-compatible — pre-#271 consumers see the
+   * field as undefined and behave as before.
+   *
+   *   - `"ready"` → `previewUrl` is populated; iframe-ready.
+   *   - `"error"` → `previewError` carries a redacted message; the
+   *                 draft itself is still ok (preview failure is
+   *                 non-destructive).
+   *
+   * The intermediate `"building"` state never appears on the lean
+   * tool result — by definition the result is emitted AFTER the
+   * preview build attempt has terminated.
+   */
+  previewStatus?: PreviewStatus;
+  previewUrl?: string;
+  previewError?: string;
+  previewUploadedFiles?: number;
 }
 
 export interface DeckDraftToolError {
