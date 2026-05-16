@@ -49,10 +49,13 @@ import { Link, useNavigate } from "react-router-dom";
 import { ArrowLeft, Globe, Lock } from "lucide-react";
 import { DeckCreationCanvas } from "@/components/deck-creation-canvas";
 import { DraftAssetShelf } from "@/components/deck-creation-canvas/DraftAssetShelf";
+import { RenderedDraftPreview } from "@/components/deck-creation-canvas/RenderedDraftPreview";
 import {
   extractLatestDeckCreationCall,
   findLastUserPromptText,
+  type DeckCreationCall,
 } from "@/components/deck-creation-canvas/extractLatestCall";
+import type { PreviewStatus } from "@/lib/deck-creation-snapshot";
 
 // Lazy-load to keep the agent SDK + ai-chat off the first paint of
 // the static admin routes. Same pattern as the existing mounts in
@@ -237,11 +240,19 @@ export default function NewDeckRoute() {
               // never re-populated.
               const call = extractLatestDeckCreationCall(messages);
               const inferredSlug = call?.inputSlug ?? inferSlugFromCall(call);
+              // Issue #272 — pull the preview-build status off the
+              // latest snapshot or lean tool result. Both shapes
+              // carry `previewStatus` / `previewUrl` / `previewError`
+              // (since #271); a single helper handles the union.
+              const previewFields = extractPreviewFields(call);
               return (
-                <div className="flex h-full flex-col gap-4 overflow-y-auto">
-                  <DeckCreationCanvas messages={messages} {...retryProps} />
-                  <DraftAssetShelf slug={inferredSlug} />
-                </div>
+                <NewDeckLeftPane
+                  call={call}
+                  inferredSlug={inferredSlug}
+                  previewFields={previewFields}
+                  retryProps={retryProps}
+                  messages={messages}
+                />
               );
             }}
             // Mirror the panel's internal pivot state up to the
@@ -284,6 +295,166 @@ function inferSlugFromCall(
     if (m && m[1]) return m[1];
   }
   return undefined;
+}
+
+/**
+ * Pull preview-bundle fields off the latest deck-creation call's
+ * output (issue #272). Both the intermediate `DeckCreationSnapshot`
+ * and the final lean `DeckDraftToolSuccess` shape carry
+ * `previewStatus` / `previewUrl` / `previewError` since #271, so a
+ * single helper handles the union without re-narrowing each shape.
+ *
+ * Returns an empty object when no preview status has been reported
+ * yet — the `<RenderedDraftPreview>` component then renders its
+ * idle explainer.
+ */
+interface PreviewFields {
+  previewStatus?: PreviewStatus;
+  previewUrl?: string;
+  previewError?: string;
+}
+
+function extractPreviewFields(call: DeckCreationCall | null): PreviewFields {
+  if (!call) return {};
+  const out = call.output;
+  if (!out || typeof out !== "object") return {};
+  const obj = out as unknown as Record<string, unknown>;
+  const result: PreviewFields = {};
+  const status = obj.previewStatus;
+  if (status === "building" || status === "ready" || status === "error") {
+    result.previewStatus = status;
+  }
+  if (typeof obj.previewUrl === "string" && obj.previewUrl.length > 0) {
+    result.previewUrl = obj.previewUrl;
+  }
+  if (typeof obj.previewError === "string" && obj.previewError.length > 0) {
+    result.previewError = obj.previewError;
+  }
+  return result;
+}
+
+/**
+ * Left-pane container for `/admin/decks/new` (#272). Before any
+ * deck-creation tool-call has landed (`call === null`), there's
+ * nothing to preview — render the canvas + asset shelf stack
+ * directly, matching the wave-2 / wave-3 layout. Once a call
+ * exists, layer in a Source / Preview tab switcher.
+ *
+ * Both tab contents stay mounted across tab switches via CSS
+ * visibility-toggling… actually no, we conditionally render each
+ * tab's children so the canvas's streaming-aware state doesn't
+ * keep firing layout work when off-screen. The iframe inside
+ * `<RenderedDraftPreview>` uses `loading="lazy"` so its network
+ * fetch only kicks off when it becomes visible.
+ */
+type PaneTab = "source" | "preview";
+
+interface NewDeckLeftPaneProps {
+  call: DeckCreationCall | null;
+  inferredSlug: string | undefined;
+  previewFields: PreviewFields;
+  retryProps: { onRetry?: () => void };
+  messages: ReadonlyArray<{
+    id?: string;
+    parts: Array<{ type: string; [k: string]: unknown }>;
+  }>;
+}
+
+function NewDeckLeftPane({
+  call,
+  inferredSlug,
+  previewFields,
+  retryProps,
+  messages,
+}: NewDeckLeftPaneProps) {
+  const [tab, setTab] = useState<PaneTab>("source");
+
+  const hasCall = call !== null;
+
+  // Pre-tool-call: no tabs, just the legacy stack. Avoids gratuitous
+  // chrome before the user has even seen the model commit to a draft.
+  if (!hasCall) {
+    return (
+      <div className="flex h-full flex-col gap-4 overflow-y-auto">
+        <DeckCreationCanvas
+          messages={messages as Parameters<typeof DeckCreationCanvas>[0]["messages"]}
+          {...retryProps}
+        />
+        <DraftAssetShelf slug={inferredSlug} />
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex h-full flex-col overflow-hidden">
+      <PaneTabs active={tab} onChange={setTab} />
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        {tab === "source" ? (
+          <div className="flex h-full flex-col gap-4">
+            <DeckCreationCanvas
+              messages={messages as Parameters<typeof DeckCreationCanvas>[0]["messages"]}
+              {...retryProps}
+            />
+            <DraftAssetShelf slug={inferredSlug} />
+          </div>
+        ) : (
+          <div className="flex h-full flex-col p-1">
+            <RenderedDraftPreview {...previewFields} />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * SOURCE / PREVIEW tab switcher (#272). Mono caps labels in the
+ * existing Studio voice. Uses `role="tablist"` / `role="tab"` so
+ * screen readers announce it as a tab control; the panes themselves
+ * are conditionally rendered (not always-mounted with `aria-hidden`)
+ * so we don't bother with `tabpanel` wiring.
+ */
+function PaneTabs({
+  active,
+  onChange,
+}: {
+  active: PaneTab;
+  onChange: (next: PaneTab) => void;
+}) {
+  const TABS: Array<{ value: PaneTab; label: string }> = [
+    { value: "source", label: "Source" },
+    { value: "preview", label: "Preview" },
+  ];
+  return (
+    <div
+      data-testid="new-deck-pane-tabs"
+      role="tablist"
+      aria-label="Draft view"
+      className="flex items-center gap-1 self-start rounded-md border border-cf-border bg-cf-bg-200 p-0.5"
+    >
+      {TABS.map((t) => {
+        const isActive = t.value === active;
+        return (
+          <button
+            key={t.value}
+            type="button"
+            role="tab"
+            data-testid={`new-deck-pane-tab-${t.value}`}
+            aria-selected={isActive}
+            data-interactive
+            onClick={() => onChange(t.value)}
+            className={`inline-flex items-center gap-1.5 rounded px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.2em] transition-colors ${
+              isActive
+                ? "bg-cf-orange text-cf-bg-100"
+                : "text-cf-text-muted hover:text-cf-text"
+            }`}
+          >
+            {t.label}
+          </button>
+        );
+      })}
+    </div>
+  );
 }
 
 /**
