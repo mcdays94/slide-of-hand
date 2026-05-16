@@ -10,18 +10,19 @@
  * Plus a `probeHealth` helper that wraps `tools/list` for the
  * Settings UI's per-server status badge.
  *
- * ## Why pure JSON, not SSE
+ * ## JSON-first, with single-event SSE compatibility
  *
  * The MCP Streamable HTTP spec lets servers reply with either a single
- * JSON response or open a Server-Sent Events stream for long-running
- * tool calls. For the agent's chat-turn flow we don't need streaming
- * inside the MCP call itself — the agent's overall response is already
- * streamed via the AI SDK, and each MCP tool call inside that stream
- * is a one-shot. Restricting to JSON keeps the client simple and
- * dependency-free.
+ * JSON response or a Server-Sent Events stream. For the agent's
+ * chat-turn flow we don't need long-running streaming inside the MCP
+ * call itself — the agent's overall response is already streamed via
+ * the AI SDK, and each MCP tool call inside that stream is a one-shot.
  *
- * If a server insists on SSE (sets `Content-Type: text/event-stream`
- * on the response), the client throws — that's a v2 feature.
+ * Some no-auth Cloudflare MCP servers return a single `event: message`
+ * containing the JSON-RPC response even for a simple `tools/list`.
+ * We accept that single-event form, then unwrap it exactly like the
+ * regular JSON body. Multi-event / long-lived streaming remains out of
+ * scope for v1.
  *
  * ## Auth
  *
@@ -121,6 +122,116 @@ export class McpError extends Error {
   }
 }
 
+export class McpOAuthRequiredError extends Error {
+  constructor(
+    message: string,
+    public readonly resourceMetadataUrl?: string,
+  ) {
+    super(message);
+    this.name = "McpOAuthRequiredError";
+  }
+}
+
+function parseWwwAuthenticateParams(header: string): Record<string, string> {
+  const params: Record<string, string> = {};
+  const withoutScheme = header.replace(/^\s*Bearer\s+/i, "");
+  let i = 0;
+
+  while (i < withoutScheme.length) {
+    while (withoutScheme[i] === " " || withoutScheme[i] === ",") i += 1;
+    const keyStart = i;
+    while (i < withoutScheme.length && withoutScheme[i] !== "=") i += 1;
+    const key = withoutScheme.slice(keyStart, i).trim();
+    if (!key || withoutScheme[i] !== "=") break;
+    i += 1;
+
+    let value = "";
+    if (withoutScheme[i] === '"') {
+      i += 1;
+      while (i < withoutScheme.length) {
+        const ch = withoutScheme[i];
+        if (ch === '"') {
+          i += 1;
+          break;
+        }
+        if (ch === "\\" && i + 1 < withoutScheme.length) {
+          value += withoutScheme[i + 1];
+          i += 2;
+          continue;
+        }
+        value += ch;
+        i += 1;
+      }
+    } else {
+      const valueStart = i;
+      while (i < withoutScheme.length && withoutScheme[i] !== ",") i += 1;
+      value = withoutScheme.slice(valueStart, i).trim();
+    }
+    params[key] = value;
+  }
+
+  return params;
+}
+
+function maybeThrowOAuthRequired(config: McpServerConfig, response: Response) {
+  if (response.status !== 401) return;
+  const challenge = response.headers.get("www-authenticate") ?? "";
+  if (!/^\s*Bearer\b/i.test(challenge)) return;
+  const params = parseWwwAuthenticateParams(challenge);
+  const description = params.error_description ?? params.error;
+  const suffix = description ? `: ${description}` : ".";
+  throw new McpOAuthRequiredError(
+    `OAuth authorization required for ${config.url}${suffix}`,
+    params.resource_metadata,
+  );
+}
+
+function parseSseJsonRpcResponse<R>(
+  text: string,
+  serverUrl: string,
+): JsonRpcResponse<R> {
+  const lines = text.split(/\r?\n/);
+  const dataLines: string[] = [];
+
+  for (const line of lines) {
+    if (line === "") {
+      if (dataLines.length > 0) break;
+      continue;
+    }
+    if (line.startsWith("data:")) {
+      dataLines.push(line.slice(5).trimStart());
+    }
+  }
+
+  if (dataLines.length === 0) {
+    throw new Error(
+      `MCP server ${serverUrl} returned an SSE stream without a data event.`,
+    );
+  }
+
+  try {
+    return JSON.parse(dataLines.join("\n")) as JsonRpcResponse<R>;
+  } catch {
+    throw new Error(
+      `MCP server ${serverUrl} returned an SSE data event that was not JSON.`,
+    );
+  }
+}
+
+function unwrapJsonRpc<R>(parsed: JsonRpcResponse<R>, serverUrl: string): R {
+  if (isJsonRpcError(parsed)) {
+    throw new McpError(parsed.error.message, parsed.error.code, parsed.error.data);
+  }
+
+  if (!("result" in parsed)) {
+    throw new Error(
+      `MCP server ${serverUrl} returned a response with neither result nor error.`,
+    );
+  }
+
+  return parsed.result as R;
+}
+
 /**
  * Generate a per-request id. Crypto-random when available; falls back
  * to a counter that hashes the time so collisions don't matter for
@@ -157,8 +268,8 @@ async function sendJsonRpc<P, R>(
   const headers = new Headers(config.headers ?? {});
   headers.set("content-type", "application/json");
   // Streamable HTTP spec — advertise both JSON and SSE so servers
-  // that prefer streaming know we're a willing party. We only handle
-  // JSON responses in v1; SSE responses will be rejected below.
+  // that prefer the single-event SSE envelope know we're a willing
+  // party. We only consume the first JSON-RPC data event in v1.
   headers.set("accept", "application/json, text/event-stream");
   if (config.bearerToken) {
     headers.set("authorization", `Bearer ${config.bearerToken}`);
@@ -175,6 +286,8 @@ async function sendJsonRpc<P, R>(
 
   const response = await fetch(config.url, init);
 
+  maybeThrowOAuthRequired(config, response);
+
   if (!response.ok) {
     const text = await response.text().catch(() => "");
     throw new Error(
@@ -187,10 +300,11 @@ async function sendJsonRpc<P, R>(
   const contentType = response.headers.get("content-type") ?? "";
   if (!contentType.includes("application/json")) {
     if (contentType.includes("text/event-stream")) {
-      throw new Error(
-        `MCP server ${config.url} returned an SSE stream; ` +
-          "the v1 client only handles single-JSON responses.",
+      const parsed = parseSseJsonRpcResponse<R>(
+        await response.text(),
+        config.url,
       );
+      return unwrapJsonRpc(parsed, config.url);
     }
     throw new Error(
       `MCP server ${config.url} returned unexpected content-type ${contentType}; ` +
@@ -199,18 +313,7 @@ async function sendJsonRpc<P, R>(
   }
 
   const parsed = (await response.json()) as JsonRpcResponse<R>;
-
-  if (isJsonRpcError(parsed)) {
-    throw new McpError(parsed.error.message, parsed.error.code, parsed.error.data);
-  }
-
-  if (!("result" in parsed)) {
-    throw new Error(
-      `MCP server ${config.url} returned a response with neither result nor error.`,
-    );
-  }
-
-  return parsed.result as R;
+  return unwrapJsonRpc(parsed, config.url);
 }
 
 /**
@@ -253,7 +356,12 @@ export async function callTool(
 
 export type ProbeHealthResult =
   | { ok: true; toolCount: number }
-  | { ok: false; error: string };
+  | {
+      ok: false;
+      error: string;
+      oauthRequired?: boolean;
+      resourceMetadataUrl?: string;
+    };
 
 /**
  * Probe an MCP server by attempting `tools/list`. Wraps the call in
@@ -294,6 +402,16 @@ export async function probeHealth(
     const tools = await listTools(config, { signal: controller.signal });
     return { ok: true, toolCount: tools.length };
   } catch (err) {
+    if (err instanceof McpOAuthRequiredError) {
+      return {
+        ok: false,
+        error: err.message,
+        oauthRequired: true,
+        ...(err.resourceMetadataUrl
+          ? { resourceMetadataUrl: err.resourceMetadataUrl }
+          : {}),
+      };
+    }
     const message = err instanceof Error ? err.message : String(err);
     return { ok: false, error: message };
   } finally {

@@ -153,6 +153,29 @@ describe("listTools", () => {
     expect(result).toEqual(tools);
   });
 
+  it("accepts a single JSON-RPC message delivered as text/event-stream", async () => {
+    const tools: McpTool[] = [
+      {
+        name: "search_cloudflare_documentation",
+        description: "Search Cloudflare docs.",
+        inputSchema: {
+          type: "object",
+          properties: { query: { type: "string" } },
+          required: ["query"],
+        },
+      },
+    ];
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        `event: message\ndata: ${JSON.stringify(jsonRpcOk("x", { tools }))}\n\n`,
+        { status: 200, headers: { "content-type": "text/event-stream" } },
+      ),
+    );
+
+    const result = await listTools({ url: TEST_URL });
+    expect(result).toEqual(tools);
+  });
+
   it("throws an McpError on JSON-RPC error responses", async () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse(jsonRpcErr("x", -32601, "Method not found")),
@@ -291,6 +314,35 @@ describe("probeHealth", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error).toMatch(/Method not found/);
+    }
+  });
+
+  it("returns OAuth metadata when the MCP server requires authorization", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          error: "invalid_token",
+          error_description: "Missing or invalid access token",
+        }),
+        {
+          status: 401,
+          headers: {
+            "content-type": "application/json",
+            "www-authenticate":
+              'Bearer realm="OAuth", resource_metadata="https://ai-gateway.mcp.cloudflare.com/.well-known/oauth-protected-resource/mcp", error="invalid_token", error_description="Missing or invalid access token"',
+          },
+        },
+      ),
+    );
+
+    const result = await probeHealth({ url: TEST_URL });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toMatch(/OAuth authorization required/i);
+      expect(result.oauthRequired).toBe(true);
+      expect(result.resourceMetadataUrl).toBe(
+        "https://ai-gateway.mcp.cloudflare.com/.well-known/oauth-protected-resource/mcp",
+      );
     }
   });
 

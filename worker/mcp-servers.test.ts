@@ -14,7 +14,7 @@
  * fire real network requests.
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // Mock the MCP client so health probe tests don't hit the network.
 const { probeHealthMock } = vi.hoisted(() => ({
@@ -81,6 +81,10 @@ function makeEnv(seed: Record<string, unknown> = {}): McpServersEnv {
 
 beforeEach(() => {
   probeHealthMock.mockReset();
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
 });
 
 describe("handleMcpServers — path matching", () => {
@@ -467,6 +471,120 @@ describe("GET /api/admin/mcp-servers/:id/health", () => {
     const res = await handleMcpServers(req, env);
     expect(res!.status).toBe(404);
     expect(probeHealthMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("MCP OAuth flow", () => {
+  it("starts OAuth by discovering metadata, registering a client, and returning an auth URL", async () => {
+    probeHealthMock.mockResolvedValueOnce({
+      ok: false,
+      error: "OAuth authorization required.",
+      oauthRequired: true,
+      resourceMetadataUrl:
+        "https://ai-gateway.mcp.cloudflare.com/.well-known/oauth-protected-resource/mcp",
+    });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            resource: "https://ai-gateway.mcp.cloudflare.com/mcp",
+            authorization_servers: ["https://ai-gateway.mcp.cloudflare.com"],
+          }),
+          { headers: { "content-type": "application/json" } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            authorization_endpoint:
+              "https://ai-gateway.mcp.cloudflare.com/oauth/authorize",
+            token_endpoint: "https://ai-gateway.mcp.cloudflare.com/token",
+            registration_endpoint: "https://ai-gateway.mcp.cloudflare.com/register",
+          }),
+          { headers: { "content-type": "application/json" } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ client_id: "client-123" }), {
+          headers: { "content-type": "application/json" },
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    const env = makeEnv({
+      "mcp-servers:alice@example.com": [
+        {
+          id: "srv-1",
+          name: "AI Gateway",
+          url: "https://ai-gateway.mcp.cloudflare.com/mcp",
+          enabled: true,
+        },
+      ],
+    });
+    const req = adminRequest(
+      "https://example.com/api/admin/mcp-servers/srv-1/oauth/start",
+      { method: "POST" },
+    );
+
+    const res = await handleMcpServers(req, env);
+    expect(res!.status).toBe(200);
+    const body = (await res!.json()) as { ok: boolean; authUrl: string };
+    expect(body.ok).toBe(true);
+    const authUrl = new URL(body.authUrl);
+    expect(authUrl.origin).toBe("https://ai-gateway.mcp.cloudflare.com");
+    expect(authUrl.pathname).toBe("/oauth/authorize");
+    expect(authUrl.searchParams.get("client_id")).toBe("client-123");
+    expect(authUrl.searchParams.get("redirect_uri")).toBe(
+      "https://example.com/api/admin/mcp-servers/oauth/callback",
+    );
+    expect(authUrl.searchParams.get("code_challenge_method")).toBe("S256");
+    expect(authUrl.searchParams.get("resource")).toBe(
+      "https://ai-gateway.mcp.cloudflare.com/mcp",
+    );
+  });
+
+  it("stores the OAuth access token on callback and clears the temporary state", async () => {
+    const state = "state-123";
+    const { kv, store } = makeMockKv({
+      "mcp-servers:alice@example.com": [
+        {
+          id: "srv-1",
+          name: "AI Gateway",
+          url: "https://ai-gateway.mcp.cloudflare.com/mcp",
+          enabled: true,
+        },
+      ],
+      [`mcp-oauth-state:${state}`]: {
+        email: "alice@example.com",
+        serverId: "srv-1",
+        clientId: "client-123",
+        codeVerifier: "verifier-123",
+        redirectUri: "https://example.com/api/admin/mcp-servers/oauth/callback",
+        tokenEndpoint: "https://ai-gateway.mcp.cloudflare.com/token",
+        resource: "https://ai-gateway.mcp.cloudflare.com/mcp",
+      },
+    });
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      new Response(JSON.stringify({ access_token: "access-token-123" }), {
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const req = adminRequest(
+      `https://example.com/api/admin/mcp-servers/oauth/callback?state=${state}&code=code-123`,
+    );
+    const res = await handleMcpServers(req, { MCP_SERVERS: kv });
+
+    expect(res!.status).toBe(200);
+    const records = JSON.parse(
+      store.get("mcp-servers:alice@example.com")!,
+    ) as McpServerRecord[];
+    expect(records[0].bearerToken).toBe("access-token-123");
+    expect(store.has(`mcp-oauth-state:${state}`)).toBe(false);
+    const tokenBody = fetchMock.mock.calls[0][1].body as string;
+    expect(tokenBody).toContain("code=code-123");
+    expect(tokenBody).toContain("code_verifier=verifier-123");
   });
 });
 

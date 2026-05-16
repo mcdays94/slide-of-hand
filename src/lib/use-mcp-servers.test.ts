@@ -198,4 +198,54 @@ describe("useMcpServers — probeHealth", () => {
     expect(healthResult!.ok).toBe(false);
     expect(healthResult!.error).toMatch(/boom/);
   });
+
+  it("returns OAuth-required probe details", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ servers: [] }));
+    const { result } = renderHook(() => useMcpServers());
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        ok: false,
+        error: "OAuth authorization required.",
+        oauthRequired: true,
+        resourceMetadataUrl:
+          "https://ai-gateway.mcp.cloudflare.com/.well-known/oauth-protected-resource/mcp",
+      }),
+    );
+    let healthResult: Awaited<ReturnType<typeof result.current.probeHealth>>;
+    await act(async () => {
+      healthResult = await result.current.probeHealth("id");
+    });
+
+    expect(healthResult!.ok).toBe(false);
+    expect(healthResult!.oauthRequired).toBe(true);
+    expect(healthResult!.resourceMetadataUrl).toContain("oauth-protected-resource");
+  });
+
+  it("starts an OAuth flow and returns the authorization URL", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ servers: [] }));
+    const { result } = renderHook(() => useMcpServers());
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        ok: true,
+        authUrl: "https://ai-gateway.mcp.cloudflare.com/oauth/authorize?state=abc",
+      }),
+    );
+
+    let startResult: Awaited<ReturnType<typeof result.current.startOAuth>>;
+    await act(async () => {
+      startResult = await result.current.startOAuth("id");
+    });
+
+    expect(startResult!).toEqual({
+      ok: true,
+      authUrl: "https://ai-gateway.mcp.cloudflare.com/oauth/authorize?state=abc",
+    });
+    expect(fetchMock.mock.calls[1][0]).toBe(
+      "/api/admin/mcp-servers/id/oauth/start",
+    );
+  });
 });
