@@ -467,6 +467,79 @@ describe("streamDeckFiles — creation-as-draft prompt (#191)", () => {
   });
 });
 
+describe("streamDeckFiles — citation discipline (#234)", () => {
+  // Pin the citation primitives in the system prompt. The framework
+  // exports `@/framework/citation` with `Cite`, `SourceFooter`, and
+  // `type Source`. AI-generated decks rely on that import path being
+  // stable — if the prompt drifts off the export, the model emits
+  // imports that don't resolve at build time. Both halves (the
+  // import line and the factual-claim usage rule) need to be present
+  // for the model to know HOW to cite, not just THAT it should.
+  it("instructs the model to import from @/framework/citation", async () => {
+    generateObjectMock.mockReturnValueOnce(
+      fakeGenerateObject({
+        files: [{ path: "src/decks/public/x/meta.ts", content: "a" }],
+        commitMessage: "x",
+      }),
+    );
+    const stream = streamDeckFiles(fakeAiBinding, {
+      slug: "x",
+      userPrompt: "x",
+    });
+    await collect(stream);
+    const system = (generateObjectMock.mock.calls[0]?.[0] as { system: string })
+      .system;
+    expect(system).toMatch(
+      /import \{[^}]*Cite[^}]*SourceFooter[^}]*\} from "@\/framework\/citation"/,
+    );
+    expect(system).toMatch(/type Source/);
+  });
+
+  it("includes a factual-claim citation rule (Cite + SourceFooter usage)", async () => {
+    generateObjectMock.mockReturnValueOnce(
+      fakeGenerateObject({
+        files: [{ path: "src/decks/public/x/meta.ts", content: "a" }],
+        commitMessage: "x",
+      }),
+    );
+    const stream = streamDeckFiles(fakeAiBinding, {
+      slug: "x",
+      userPrompt: "x",
+    });
+    await collect(stream);
+    const system = (generateObjectMock.mock.calls[0]?.[0] as { system: string })
+      .system;
+    // The rule names both primitives and tells the model how the
+    // pair lines up. We assert on the canonical tokens so wording
+    // can evolve without breaking the test, but the contract — use
+    // <Cite> next to claims, render a SourceFooter on the slide —
+    // stays pinned.
+    expect(system).toMatch(/<Cite\s+n=\{[^}]+\}\s*\/?>/);
+    expect(system).toMatch(/<SourceFooter\s+sources=\{SOURCES\}/);
+    expect(system).toMatch(/factual claim/i);
+  });
+
+  it("tells the model not to fabricate sources", async () => {
+    // The whole point of #234 is that in-app generated decks
+    // produce REAL citations — or none. Hallucinated URLs are worse
+    // than missing citations. Pin the anti-fabrication line.
+    generateObjectMock.mockReturnValueOnce(
+      fakeGenerateObject({
+        files: [{ path: "src/decks/public/x/meta.ts", content: "a" }],
+        commitMessage: "x",
+      }),
+    );
+    const stream = streamDeckFiles(fakeAiBinding, {
+      slug: "x",
+      userPrompt: "x",
+    });
+    await collect(stream);
+    const system = (generateObjectMock.mock.calls[0]?.[0] as { system: string })
+      .system;
+    expect(system).toMatch(/(do not|don't|never)\s+fabricate/i);
+  });
+});
+
 describe("streamDeckFiles — auth + wiring", () => {
   // Pins the AI Gateway auth header attachment so the issue-#177
   // production fix can't silently regress. The token flows from the
