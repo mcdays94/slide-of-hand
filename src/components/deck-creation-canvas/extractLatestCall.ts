@@ -46,6 +46,16 @@ export interface DeckCreationToolPart {
   type: string;
   toolCallId?: string;
   state?: ToolCallState;
+  /**
+   * The tool's input arguments as streamed in by the AI SDK. Populated
+   * (incrementally) once the model commits to a tool call — typically
+   * arrives ~30-60s before the first output yield because
+   * `createDeckDraft` runs the full fork → clone → ai_gen pipeline
+   * before emitting anything. Issue #235's asset shelf reads
+   * `input.slug` from here so users can upload speaker photos /
+   * logos while the model is still composing.
+   */
+  input?: unknown;
   output?: unknown;
   errorText?: string;
 }
@@ -87,6 +97,14 @@ export interface DeckCreationCall {
    *   - No `ok` → a `DeckCreationSnapshot` (intermediate streaming yield).
    */
   output: DeckCreationSnapshot | DeckDraftToolResult | undefined;
+  /**
+   * The draft slug the model picked, surfaced from `part.input.slug`
+   * as soon as the AI SDK exposes it (often during `input-streaming`,
+   * always by `input-available`). `undefined` until the model has
+   * committed to a slug — earlier than waiting for the first output
+   * file path. Issue #235.
+   */
+  inputSlug?: string;
   /** Set when the AI SDK signals `output-error`. */
   errorText?: string;
 }
@@ -110,11 +128,13 @@ export function extractLatestDeckCreationCall(
       const toolName = deckCreationToolName(part);
       if (toolName) {
         const tp = part as DeckCreationToolPart;
+        const inputSlug = extractInputSlug(tp.input);
         return {
           toolCallId: tp.toolCallId ?? "",
           toolName,
           state: tp.state ?? "input-streaming",
           output: tp.output as DeckCreationCall["output"],
+          ...(inputSlug ? { inputSlug } : {}),
           ...(tp.errorText ? { errorText: tp.errorText } : {}),
         };
       }
@@ -141,6 +161,25 @@ function deckCreationToolName(
 
 // `isDeckCreationSnapshot` / `isDeckDraftToolResult` re-exported
 // from `@/lib/deck-creation-snapshot` at the top of this file.
+
+/**
+ * Pull a non-empty string `slug` off the tool's `input` object, if
+ * present. The AI SDK streams the input JSON token-by-token, so any
+ * field can be `undefined`, `null`, an empty string, or even the
+ * wrong type during early ticks — we narrow defensively and return
+ * `undefined` for anything that isn't a usable slug.
+ *
+ * Issue #235. The asset shelf on `/admin/decks/new` reads this so
+ * the user can upload speaker photos / logos as soon as the model
+ * picks a slug (which lands minutes before the first generated file).
+ */
+function extractInputSlug(input: unknown): string | undefined {
+  if (!input || typeof input !== "object") return undefined;
+  const maybe = (input as { slug?: unknown }).slug;
+  if (typeof maybe !== "string") return undefined;
+  const trimmed = maybe.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
 
 /**
  * Walk `messages` newest-first and return the text of the most

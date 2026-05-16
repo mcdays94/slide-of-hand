@@ -511,4 +511,120 @@ describe("<NewDeckRoute>", () => {
       expect(screen.getByTestId("deck-creation-writing-caret")).toBeDefined();
     });
   });
+
+  // Issue #235 — once the model has committed to a draft slug (via
+  // `part.input.slug` on the deck-creation tool call), the left pane
+  // mounts the `<DraftAssetShelf>` so users can upload speaker
+  // photos / logos and reference the returned URLs in follow-up
+  // prompts. Pre-tool-call the shelf is hidden.
+  describe("draft asset shelf wiring (#235)", () => {
+    it("does NOT render the asset shelf in the empty state (no tool call yet)", async () => {
+      setupHooks();
+      await renderRoute();
+      expect(screen.queryByTestId("draft-asset-shelf")).toBeNull();
+    });
+
+    it("renders the asset shelf with the model's input.slug as soon as the tool call exposes it (before any output)", async () => {
+      // The AI SDK pushes the tool call to `input-available` once the
+      // model commits to its arguments — typically MINUTES before
+      // any output arrives (the full fork → clone → ai_gen pipeline
+      // has to run). The shelf should appear as soon as the slug is
+      // known so the user can start uploading assets in parallel.
+      useAgentMock.mockReturnValue({
+        agent: "DeckAuthorAgent",
+        name: "new-deck-test-uuid",
+        getHttpUrl: () => "https://example.com/api/admin/agents/...",
+      });
+      useAgentChatMock.mockReturnValue({
+        messages: [
+          {
+            id: "msg-1",
+            role: "assistant",
+            parts: [
+              {
+                type: "tool-createDeckDraft",
+                toolCallId: "call-1",
+                state: "input-available",
+                input: {
+                  slug: "crdt-collab",
+                  prompt: "build a CRDT deck",
+                  visibility: "private",
+                },
+              },
+            ],
+          },
+        ],
+        sendMessage: vi.fn(),
+        clearHistory: vi.fn(),
+        stop: vi.fn(),
+        status: "streaming",
+        addToolOutput: vi.fn(),
+        addToolApprovalResponse: vi.fn(),
+        setMessages: vi.fn(),
+        isStreaming: true,
+        isServerStreaming: false,
+        isToolContinuation: false,
+      });
+      useAccessAuthMock.mockReturnValue("authenticated");
+
+      await renderRoute();
+
+      const shelf = screen.getByTestId("draft-asset-shelf");
+      expect(shelf.getAttribute("data-slug")).toBe("crdt-collab");
+    });
+
+    it("also renders the shelf when the slug can only be inferred from an emitted file path", async () => {
+      // Defensive fallback — if the input-slug surface ever drops out
+      // (e.g. replayed history without `input` populated), the slug
+      // segment in the first emitted file path is still authoritative.
+      useAgentMock.mockReturnValue({
+        agent: "DeckAuthorAgent",
+        name: "new-deck-test-uuid",
+        getHttpUrl: () => "https://example.com/api/admin/agents/...",
+      });
+      useAgentChatMock.mockReturnValue({
+        messages: [
+          {
+            id: "msg-1",
+            role: "assistant",
+            parts: [
+              {
+                type: "tool-createDeckDraft",
+                toolCallId: "call-1",
+                state: "output-available",
+                // No `input` populated — only `output.files`.
+                output: {
+                  phase: "ai_gen",
+                  files: [
+                    {
+                      path: "src/decks/public/inferred-slug/meta.ts",
+                      content: "x",
+                      state: "writing",
+                    },
+                  ],
+                  currentFile: "src/decks/public/inferred-slug/meta.ts",
+                },
+              },
+            ],
+          },
+        ],
+        sendMessage: vi.fn(),
+        clearHistory: vi.fn(),
+        stop: vi.fn(),
+        status: "streaming",
+        addToolOutput: vi.fn(),
+        addToolApprovalResponse: vi.fn(),
+        setMessages: vi.fn(),
+        isStreaming: true,
+        isServerStreaming: false,
+        isToolContinuation: false,
+      });
+      useAccessAuthMock.mockReturnValue("authenticated");
+
+      await renderRoute();
+
+      const shelf = screen.getByTestId("draft-asset-shelf");
+      expect(shelf.getAttribute("data-slug")).toBe("inferred-slug");
+    });
+  });
 });

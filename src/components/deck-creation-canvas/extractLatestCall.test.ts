@@ -174,6 +174,106 @@ describe("extractLatestDeckCreationCall", () => {
     expect(result?.errorText).toBe("Sandbox crashed");
   });
 
+  // Issue #235 — the asset shelf on `/admin/decks/new` needs the
+  // draft slug as soon as the model has decided on it, which is the
+  // moment the AI SDK pushes the `input-available` state with
+  // `input: { slug, prompt, visibility }`. That's BEFORE any output
+  // arrives (model is still generating). Surfacing the input lets
+  // the route show the upload UI ~30-60s earlier than waiting for
+  // the first file path.
+  describe("input slug surfacing (issue #235)", () => {
+    it("returns inputSlug when part.input contains a string slug", () => {
+      const messages: DeckCreationMessage[] = [
+        {
+          parts: [
+            {
+              type: "tool-createDeckDraft",
+              toolCallId: "call-1",
+              state: "input-available",
+              input: { slug: "crdt-collab", prompt: "...", visibility: "private" },
+            },
+          ],
+        },
+      ];
+      const result = extractLatestDeckCreationCall(messages);
+      expect(result?.inputSlug).toBe("crdt-collab");
+    });
+
+    it("returns inputSlug even while state is input-streaming (partial input)", () => {
+      // The AI SDK streams the input JSON token-by-token; the slug
+      // may land before the prompt / visibility. We want it surfaced
+      // as soon as it's a non-empty string.
+      const messages: DeckCreationMessage[] = [
+        {
+          parts: [
+            {
+              type: "tool-createDeckDraft",
+              toolCallId: "call-1",
+              state: "input-streaming",
+              input: { slug: "hello-world" },
+            },
+          ],
+        },
+      ];
+      const result = extractLatestDeckCreationCall(messages);
+      expect(result?.inputSlug).toBe("hello-world");
+    });
+
+    it("leaves inputSlug undefined when there is no input object yet", () => {
+      const messages: DeckCreationMessage[] = [
+        {
+          parts: [
+            {
+              type: "tool-createDeckDraft",
+              toolCallId: "call-1",
+              state: "input-streaming",
+            },
+          ],
+        },
+      ];
+      const result = extractLatestDeckCreationCall(messages);
+      expect(result?.inputSlug).toBeUndefined();
+    });
+
+    it("leaves inputSlug undefined when input.slug is not a non-empty string", () => {
+      // Defensive — partial streaming might leave `slug` as undefined,
+      // null, or an empty string for a tick. We treat those the same
+      // as absent so the shelf doesn't render a stale empty `/api/admin/images/` URL.
+      const messages: DeckCreationMessage[] = [
+        {
+          parts: [
+            {
+              type: "tool-createDeckDraft",
+              toolCallId: "call-1",
+              state: "input-streaming",
+              input: { slug: "" },
+            },
+          ],
+        },
+      ];
+      const result = extractLatestDeckCreationCall(messages);
+      expect(result?.inputSlug).toBeUndefined();
+    });
+
+    it("surfaces inputSlug for iterateOnDeckDraft as well as createDeckDraft", () => {
+      const messages: DeckCreationMessage[] = [
+        {
+          parts: [
+            {
+              type: "tool-iterateOnDeckDraft",
+              toolCallId: "call-2",
+              state: "input-available",
+              input: { slug: "crdt-collab", prompt: "fix the title" },
+            },
+          ],
+        },
+      ];
+      const result = extractLatestDeckCreationCall(messages);
+      expect(result?.toolName).toBe("iterateOnDeckDraft");
+      expect(result?.inputSlug).toBe("crdt-collab");
+    });
+  });
+
   it("ignores non-deck-creation tool parts that appear AFTER a deck-creation call", () => {
     // The extractor walks newest-first, so a later readDeck call
     // would be encountered first. The extractor must skip it and

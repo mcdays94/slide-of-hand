@@ -48,7 +48,11 @@ import { Suspense, lazy, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { ArrowLeft, Globe, Lock } from "lucide-react";
 import { DeckCreationCanvas } from "@/components/deck-creation-canvas";
-import { findLastUserPromptText } from "@/components/deck-creation-canvas/extractLatestCall";
+import { DraftAssetShelf } from "@/components/deck-creation-canvas/DraftAssetShelf";
+import {
+  extractLatestDeckCreationCall,
+  findLastUserPromptText,
+} from "@/components/deck-creation-canvas/extractLatestCall";
 
 // Lazy-load to keep the agent SDK + ai-chat off the first paint of
 // the static admin routes. Same pattern as the existing mounts in
@@ -217,8 +221,27 @@ export default function NewDeckRoute() {
               const retryProps = lastPrompt
                 ? { onRetry: () => sendMessage({ text: lastPrompt }) }
                 : {};
+              // Issue #235 — surface the draft asset shelf as soon
+              // as the model has committed to a slug. The slug
+              // arrives on `part.input.slug` BEFORE the first
+              // generated file (often by ~30-60s) so users can
+              // upload speaker photos / logos while the model is
+              // still composing, then reference the returned URLs
+              // in a follow-up iteration prompt.
+              //
+              // We fall back to inferring the slug from the first
+              // emitted file path (the same heuristic the canvas
+              // itself uses) so the shelf still shows up if the
+              // input-slug surface is empty for any reason — e.g.
+              // model retried mid-stream and the partial input
+              // never re-populated.
+              const call = extractLatestDeckCreationCall(messages);
+              const inferredSlug = call?.inputSlug ?? inferSlugFromCall(call);
               return (
-                <DeckCreationCanvas messages={messages} {...retryProps} />
+                <div className="flex h-full flex-col gap-4 overflow-y-auto">
+                  <DeckCreationCanvas messages={messages} {...retryProps} />
+                  <DraftAssetShelf slug={inferredSlug} />
+                </div>
               );
             }}
             // Mirror the panel's internal pivot state up to the
@@ -232,6 +255,35 @@ export default function NewDeckRoute() {
       </div>
     </main>
   );
+}
+
+/**
+ * Fallback slug inference for the asset shelf (#235). The model's
+ * `input.slug` is the canonical source — surfaced as `call.inputSlug`
+ * by `extractLatestDeckCreationCall`. If for any reason that's empty
+ * (e.g. partial streaming state, replayed history), peek at the
+ * first emitted file's path: deck-creation tool yields use
+ * `src/decks/public/<slug>/...`, and the slug segment is stable across
+ * the whole run.
+ *
+ * Returns `undefined` when no slug can be derived; the shelf renders
+ * nothing in that state.
+ */
+function inferSlugFromCall(
+  call: ReturnType<typeof extractLatestDeckCreationCall>,
+): string | undefined {
+  if (!call) return undefined;
+  const out = call.output;
+  if (!out || typeof out !== "object") return undefined;
+  // Lean tool result carries `draftId` (shape `${email}-${slug}`),
+  // not a clean slug — we don't reach for that here. Snapshot files
+  // are the reliable source.
+  if (!("files" in out) || !Array.isArray(out.files)) return undefined;
+  for (const f of out.files) {
+    const m = f?.path?.match?.(/^src\/decks\/public\/([^/]+)\//);
+    if (m && m[1]) return m[1];
+  }
+  return undefined;
 }
 
 /**

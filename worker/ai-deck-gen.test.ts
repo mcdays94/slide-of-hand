@@ -540,6 +540,78 @@ describe("streamDeckFiles — citation discipline (#234)", () => {
   });
 });
 
+describe("streamDeckFiles — uploaded asset URLs (#235)", () => {
+  // Issue #235 v1: users upload binary assets (speaker photos, logos)
+  // into `/images/decks/<slug>/<hash>.<ext>` via the existing R2
+  // image API. The model still emits text-only JSX, but it MUST
+  // recognise an uploaded URL pasted into a follow-up prompt and
+  // use it directly in `<img src="..." />`. The two pinned rules
+  // here capture that contract: (1) USE uploaded URLs as-is, (2)
+  // NEVER invent new ones.
+  it("instructs the model to use uploaded /images/decks/<slug>/... URLs verbatim", async () => {
+    generateObjectMock.mockReturnValueOnce(
+      fakeGenerateObject({
+        files: [{ path: "src/decks/public/x/meta.ts", content: "a" }],
+        commitMessage: "x",
+      }),
+    );
+    const stream = streamDeckFiles(fakeAiBinding, {
+      slug: "x",
+      userPrompt: "x",
+    });
+    await collect(stream);
+    const system = (generateObjectMock.mock.calls[0]?.[0] as { system: string })
+      .system;
+    // The prompt names the canonical URL shape so the model can
+    // pattern-match user-pasted URLs.
+    expect(system).toMatch(/\/images\/decks\/[^/]*\//);
+    // ...and tells it to use the URL DIRECTLY in `<img src=...>`.
+    expect(system).toMatch(/<img\s+src=/);
+  });
+
+  it("forbids the model from inventing asset URLs", async () => {
+    generateObjectMock.mockReturnValueOnce(
+      fakeGenerateObject({
+        files: [{ path: "src/decks/public/x/meta.ts", content: "a" }],
+        commitMessage: "x",
+      }),
+    );
+    const stream = streamDeckFiles(fakeAiBinding, {
+      slug: "x",
+      userPrompt: "x",
+    });
+    await collect(stream);
+    const system = (generateObjectMock.mock.calls[0]?.[0] as { system: string })
+      .system;
+    // Hallucinated asset paths break at runtime (404) and erode
+    // trust — pin the anti-fabrication clause, same posture as
+    // the citation discipline above.
+    expect(system).toMatch(/(do not|don't|never)\s+invent/i);
+  });
+
+  it("forbids the model from emitting binary file content", async () => {
+    // The schema only carries `{ path, content }` text files. If the
+    // model tried to inline a base64 image into `content` it would
+    // either explode the response or land bytes on disk that the
+    // build can't serve. Belt + braces with a schema-level reject —
+    // pin the explicit "no binary" steer.
+    generateObjectMock.mockReturnValueOnce(
+      fakeGenerateObject({
+        files: [{ path: "src/decks/public/x/meta.ts", content: "a" }],
+        commitMessage: "x",
+      }),
+    );
+    const stream = streamDeckFiles(fakeAiBinding, {
+      slug: "x",
+      userPrompt: "x",
+    });
+    await collect(stream);
+    const system = (generateObjectMock.mock.calls[0]?.[0] as { system: string })
+      .system;
+    expect(system).toMatch(/binary/i);
+  });
+});
+
 describe("streamDeckFiles — auth + wiring", () => {
   // Pins the AI Gateway auth header attachment so the issue-#177
   // production fix can't silently regress. The token flows from the
