@@ -43,6 +43,11 @@ interface RenderOpts {
   onDelete?: (slug: string) => Promise<void> | void;
   onArchive?: (slug: string) => Promise<void> | void;
   onRestore?: (slug: string) => Promise<void> | void;
+  onToggleVisibility?: (
+    slug: string,
+    next: "public" | "private",
+  ) => Promise<void> | void;
+  canToggleVisibility?: boolean;
   ideHref?: string;
   hoverPreviewSlideCount?: number;
 }
@@ -406,6 +411,174 @@ describe("DeckCard", () => {
         ),
       );
       expect(screen.getByTestId("confirm-dialog")).toBeDefined();
+    });
+  });
+
+  describe("visibility toggle (issue #214, admin slot)", () => {
+    /**
+     * Issue #214 — quick PUBLIC ↔ PRIVATE toggle on admin cards for
+     * KV-backed decks. When `onToggleVisibility` is provided AND
+     * `canToggleVisibility` is true, the card renders an interactive
+     * pill that, on click, calls back with the next visibility value.
+     * Source-backed admin cards and the public surface MUST NOT render
+     * the interactive toggle — those cards still get the static
+     * `private` badge via `visibility="private"`.
+     */
+    it("does NOT render the toggle when onToggleVisibility is omitted", () => {
+      renderCard(baseMeta, { visibility: "public" });
+      expect(
+        screen.queryByTestId("deck-visibility-toggle-alpha"),
+      ).toBeNull();
+    });
+
+    it("does NOT render the toggle when canToggleVisibility is false (source-backed admin row)", () => {
+      const onToggleVisibility = vi.fn();
+      renderCard(baseMeta, {
+        visibility: "public",
+        onToggleVisibility,
+        canToggleVisibility: false,
+      });
+      expect(
+        screen.queryByTestId("deck-visibility-toggle-alpha"),
+      ).toBeNull();
+      // The static visibility badge for private is unaffected by this
+      // path — `visibility="public"` here, so we expect no badge.
+      expect(document.querySelector("[data-visibility]")).toBeNull();
+    });
+
+    it("renders a PUBLIC toggle when visibility=public and both props are wired", () => {
+      const onToggleVisibility = vi.fn();
+      renderCard(baseMeta, {
+        visibility: "public",
+        onToggleVisibility,
+        canToggleVisibility: true,
+      });
+      const toggle = screen.getByTestId("deck-visibility-toggle-alpha");
+      expect(toggle.textContent).toMatch(/public/i);
+      expect(toggle.getAttribute("data-visibility")).toBe("public");
+    });
+
+    it("renders a PRIVATE toggle when visibility=private and both props are wired", () => {
+      const onToggleVisibility = vi.fn();
+      renderCard(baseMeta, {
+        visibility: "private",
+        onToggleVisibility,
+        canToggleVisibility: true,
+      });
+      const toggle = screen.getByTestId("deck-visibility-toggle-alpha");
+      expect(toggle.textContent).toMatch(/private/i);
+      expect(toggle.getAttribute("data-visibility")).toBe("private");
+    });
+
+    it("clicking the toggle on a public deck calls onToggleVisibility with 'private'", async () => {
+      const onToggleVisibility = vi.fn().mockResolvedValue(undefined);
+      renderCard(baseMeta, {
+        visibility: "public",
+        onToggleVisibility,
+        canToggleVisibility: true,
+      });
+      fireEvent.click(screen.getByTestId("deck-visibility-toggle-alpha"));
+      await waitFor(() =>
+        expect(onToggleVisibility).toHaveBeenCalledWith("alpha", "private"),
+      );
+    });
+
+    it("clicking the toggle on a private deck calls onToggleVisibility with 'public'", async () => {
+      const onToggleVisibility = vi.fn().mockResolvedValue(undefined);
+      renderCard(baseMeta, {
+        visibility: "private",
+        onToggleVisibility,
+        canToggleVisibility: true,
+      });
+      fireEvent.click(screen.getByTestId("deck-visibility-toggle-alpha"));
+      await waitFor(() =>
+        expect(onToggleVisibility).toHaveBeenCalledWith("alpha", "public"),
+      );
+    });
+
+    it("the toggle is a `<button>` and carries `data-interactive` so the wrapping card link click flow stays inert", async () => {
+      // The toggle is rendered INSIDE the wrapping <Link>, so the
+      // browser would otherwise navigate when the user clicks the
+      // pill. The implementation defends against that two ways:
+      //   1. The toggle is a `<button>` (button clicks default to
+      //      no-navigation; `event.preventDefault()` plus
+      //      `event.stopPropagation()` in the React handler ensure
+      //      React Router's synthetic onClick on `<Link>` never
+      //      fires).
+      //   2. `data-interactive` marks the affordance for the
+      //      keyboard nav layer.
+      // We assert these two invariants rather than chase JSDOM-
+      // specific bubble timing — production navigation is governed
+      // by React Router's synthetic onClick, which the handler's
+      // `event.stopPropagation()` defeats.
+      const onToggleVisibility = vi.fn().mockResolvedValue(undefined);
+      renderCard(baseMeta, {
+        visibility: "public",
+        onToggleVisibility,
+        canToggleVisibility: true,
+        to: "/admin/decks/alpha",
+      });
+      const toggle = screen.getByTestId("deck-visibility-toggle-alpha");
+      expect(toggle.tagName).toBe("BUTTON");
+      expect(toggle.hasAttribute("data-interactive")).toBe(true);
+    });
+
+    it("does NOT call window.confirm during the toggle flow", async () => {
+      const confirmSpy = vi
+        .spyOn(window, "confirm")
+        .mockImplementation(() => true);
+      const onToggleVisibility = vi.fn().mockResolvedValue(undefined);
+      renderCard(baseMeta, {
+        visibility: "public",
+        onToggleVisibility,
+        canToggleVisibility: true,
+      });
+      fireEvent.click(screen.getByTestId("deck-visibility-toggle-alpha"));
+      await waitFor(() => expect(onToggleVisibility).toHaveBeenCalled());
+      expect(confirmSpy).not.toHaveBeenCalled();
+      confirmSpy.mockRestore();
+    });
+
+    it("surfaces an inline error when onToggleVisibility throws and keeps the toggle visible", async () => {
+      const onToggleVisibility = vi
+        .fn()
+        .mockRejectedValue(new Error("kv unavailable"));
+      renderCard(baseMeta, {
+        visibility: "public",
+        onToggleVisibility,
+        canToggleVisibility: true,
+      });
+      fireEvent.click(screen.getByTestId("deck-visibility-toggle-alpha"));
+      await waitFor(() =>
+        expect(
+          screen.getByTestId("visibility-toggle-error-alpha").textContent,
+        ).toMatch(/kv unavailable/),
+      );
+      // Toggle stays mounted so the user can retry.
+      expect(
+        screen.getByTestId("deck-visibility-toggle-alpha"),
+      ).toBeDefined();
+    });
+
+    it("when toggle is wired, the static private badge is NOT rendered separately (toggle replaces it)", () => {
+      // Avoid double-pill noise: the interactive toggle is the
+      // canonical visibility surface when wired; the static `private`
+      // badge stays only for surfaces without the toggle.
+      const onToggleVisibility = vi.fn();
+      renderCard(baseMeta, {
+        visibility: "private",
+        onToggleVisibility,
+        canToggleVisibility: true,
+      });
+      // The toggle is rendered.
+      expect(
+        screen.getByTestId("deck-visibility-toggle-alpha"),
+      ).toBeDefined();
+      // No separate static badge — the toggle itself carries the
+      // `data-visibility` attribute.
+      const badges = document.querySelectorAll("[data-visibility='private']");
+      // The toggle itself counts as one; no second standalone badge.
+      expect(badges.length).toBe(1);
     });
   });
 

@@ -65,6 +65,15 @@ export interface DeckCardGridItem {
    * slice than its archive backend.
    */
   canRestore?: boolean;
+  /**
+   * Whether THIS item can have its visibility toggled inline
+   * (issue #214). KV-backed admin rows set this to `true`;
+   * source-backed admin rows set it to `false` (their visibility is
+   * dictated by source folder placement, not a KV field). Public
+   * surfaces never receive a wired `onToggleVisibility`, so this
+   * flag is a no-op there.
+   */
+  canToggleVisibility?: boolean;
   /** Optional "Open in IDE" link target for source decks (admin / dev only). */
   ideHref?: string;
   /**
@@ -103,6 +112,19 @@ export interface DeckCardGridProps {
    * on archived cards via the Restore menu item.
    */
   onRestore?: (slug: string) => Promise<void> | void;
+  /**
+   * Admin-only visibility toggle callback (issue #214). When wired
+   * AND an item declares `canToggleVisibility: true`, the card
+   * renders an interactive PUBLIC ↔ PRIVATE pill that invokes this
+   * callback with the deck slug + the NEXT visibility value. The
+   * public surface MUST NOT pass this prop — the audience-facing
+   * homepage has no admin authority and the toggle would be a false
+   * promise.
+   */
+  onToggleVisibility?: (
+    slug: string,
+    next: DeckCardVisibility,
+  ) => Promise<void> | void;
 }
 
 export function DeckCardGrid({
@@ -112,6 +134,7 @@ export function DeckCardGrid({
   onDelete,
   onArchive,
   onRestore,
+  onToggleVisibility,
 }: DeckCardGridProps) {
   const { mode, setMode } = useViewPreference(surface);
   const { settings } = useSettings();
@@ -172,6 +195,9 @@ export function DeckCardGrid({
           const showDelete = Boolean(onDelete && it.canDelete);
           const showArchive = Boolean(onArchive && it.canArchive);
           const showRestore = Boolean(onRestore && it.canRestore);
+          const showVisibilityToggle = Boolean(
+            onToggleVisibility && it.canToggleVisibility,
+          );
           return (
             <li key={it.meta.slug} className="contents">
               <DeckCard
@@ -183,6 +209,10 @@ export function DeckCardGrid({
                 onDelete={showDelete ? onDelete : undefined}
                 onArchive={showArchive ? onArchive : undefined}
                 onRestore={showRestore ? onRestore : undefined}
+                onToggleVisibility={
+                  showVisibilityToggle ? onToggleVisibility : undefined
+                }
+                canToggleVisibility={showVisibilityToggle}
                 hoverPreviewSlideCount={hoverPreviewSlideCount}
                 pending={it.pending}
               />

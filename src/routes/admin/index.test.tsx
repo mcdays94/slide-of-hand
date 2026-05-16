@@ -2006,9 +2006,283 @@ describe("AdminIndex — pending reconciliation (#250)", () => {
       </SettingsProvider>,
     );
     await new Promise((r) => setTimeout(r, 20));
-    expect(mockReconcile).toHaveBeenCalledTimes(1);
+      expect(mockReconcile).toHaveBeenCalledTimes(1);
     // Resolve the in-flight promise so React state updates settle
     // before test teardown.
     resolverRef.current?.({ reconciled: true });
+  });
+});
+
+// ─── Visibility quick-toggle (issue #214) ────────────────────────────
+//
+// The admin index renders an interactive PUBLIC ↔ PRIVATE pill on
+// KV-backed deck cards. Source-backed cards do NOT render the
+// interactive pill (their public/private semantics come from source
+// folder placement; the static private badge still shows where
+// appropriate). The handler:
+//
+//   1. Fetches the full DataDeck record via
+//      `GET /api/admin/decks/<slug>` (Access-gated; in dev injects
+//      the placeholder header).
+//   2. Mutates `meta.visibility` to the next value.
+//   3. POSTs the full record back to the same path (existing upsert).
+//   4. Optimistically updates local visibility so the pill flips
+//      immediately; on failure, reverts.
+describe("AdminIndex — KV visibility quick toggle (#214)", () => {
+  async function renderAdmin() {
+    const AdminIndex = await loadAdminIndex();
+    return render(
+      <SettingsProvider>
+        <MemoryRouter>
+          <AdminIndex />
+        </MemoryRouter>
+      </SettingsProvider>,
+    );
+  }
+
+  /**
+   * Build a stub fetch that walks the toggle flow:
+   *   GET → returns the seeded DataDeck record;
+   *   POST → returns 200 with the updated deck.
+   */
+  function makeToggleFetch(
+    slug: string,
+    initialVisibility: "public" | "private",
+    {
+      getOk = true,
+      postOk = true,
+      postError,
+    }: {
+      getOk?: boolean;
+      postOk?: boolean;
+      postError?: string;
+    } = {},
+  ) {
+    const initialDeck = {
+      meta: {
+        slug,
+        title: slug,
+        date: "2026-05-01",
+        visibility: initialVisibility,
+      },
+      slides: [
+        {
+          id: "intro",
+          title: "Intro",
+          layout: "cover",
+          template: "cf-cover-classic",
+          values: [],
+        },
+      ],
+    };
+    return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (url === `/api/admin/decks/${slug}` && method === "GET") {
+        if (!getOk) {
+          return {
+            ok: false,
+            status: 500,
+            json: async () => ({ error: "kv read failed" }),
+          } as unknown as Response;
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => initialDeck,
+        } as unknown as Response;
+      }
+      if (url === `/api/admin/decks/${slug}` && method === "POST") {
+        if (!postOk) {
+          return {
+            ok: false,
+            status: 500,
+            json: async () => ({ error: postError ?? "kv write failed" }),
+          } as unknown as Response;
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => initialDeck,
+        } as unknown as Response;
+      }
+      return {
+        ok: false,
+        status: 404,
+        json: async () => ({ error: "unexpected url" }),
+      } as unknown as Response;
+    });
+  }
+
+  it("renders an enabled visibility toggle for KV-backed PUBLIC decks", async () => {
+    mockEntries = [entry("kv-public", "KV Public", "kv", "public")];
+    await renderAdmin();
+    const toggle = screen.getByTestId("deck-visibility-toggle-kv-public");
+    expect(toggle.getAttribute("data-visibility")).toBe("public");
+    expect(toggle.textContent).toMatch(/public/i);
+  });
+
+  it("renders an enabled visibility toggle for KV-backed PRIVATE decks", async () => {
+    mockEntries = [entry("kv-private", "KV Private", "kv", "private")];
+    await renderAdmin();
+    const toggle = screen.getByTestId("deck-visibility-toggle-kv-private");
+    expect(toggle.getAttribute("data-visibility")).toBe("private");
+    expect(toggle.textContent).toMatch(/private/i);
+  });
+
+  it("source-backed decks do NOT render the interactive visibility toggle", async () => {
+    mockEntries = [entry("source-deck", "Source Deck", "source", "public")];
+    await renderAdmin();
+    expect(
+      screen.queryByTestId("deck-visibility-toggle-source-deck"),
+    ).toBeNull();
+  });
+
+  it("toggling public → private fetches full record, POSTs flipped record, and the pill flips to PRIVATE", async () => {
+    const fetchMock = makeToggleFetch("kv-public", "public");
+    vi.stubGlobal("fetch", fetchMock);
+
+    mockEntries = [entry("kv-public", "KV Public", "kv", "public")];
+    await renderAdmin();
+
+    fireEvent.click(screen.getByTestId("deck-visibility-toggle-kv-public"));
+
+    await waitFor(() => {
+      // First call: GET to fetch the full record.
+      expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(2);
+    });
+    const [getUrl, getInit] = fetchMock.mock.calls[0];
+    expect(getUrl).toBe("/api/admin/decks/kv-public");
+    expect((getInit as RequestInit | undefined)?.method ?? "GET").toBe("GET");
+
+    const [postUrl, postInit] = fetchMock.mock.calls[1];
+    expect(postUrl).toBe("/api/admin/decks/kv-public");
+    expect((postInit as RequestInit).method).toBe("POST");
+    const body = JSON.parse(String((postInit as RequestInit).body));
+    expect(body.meta.visibility).toBe("private");
+    expect(body.meta.slug).toBe("kv-public");
+    const headers = (postInit as RequestInit).headers as Record<string, string>;
+    expect(headers["cf-access-authenticated-user-email"]).toBe("dev@local");
+    expect(headers["content-type"]).toMatch(/json/);
+
+    // Pill flips locally.
+    await waitFor(() => {
+      const toggle = screen.getByTestId("deck-visibility-toggle-kv-public");
+      expect(toggle.getAttribute("data-visibility")).toBe("private");
+      expect(toggle.textContent).toMatch(/private/i);
+    });
+  });
+
+  it("toggling private → public similarly flips to PUBLIC", async () => {
+    const fetchMock = makeToggleFetch("kv-private", "private");
+    vi.stubGlobal("fetch", fetchMock);
+
+    mockEntries = [entry("kv-private", "KV Private", "kv", "private")];
+    await renderAdmin();
+
+    fireEvent.click(screen.getByTestId("deck-visibility-toggle-kv-private"));
+
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(2);
+    });
+    const [, postInit] = fetchMock.mock.calls[1];
+    const body = JSON.parse(String((postInit as RequestInit).body));
+    expect(body.meta.visibility).toBe("public");
+
+    await waitFor(() => {
+      const toggle = screen.getByTestId("deck-visibility-toggle-kv-private");
+      expect(toggle.getAttribute("data-visibility")).toBe("public");
+    });
+  });
+
+  it("POST failure reverts the optimistic visibility state and surfaces an inline error", async () => {
+    const fetchMock = makeToggleFetch("kv-public", "public", {
+      postOk: false,
+      postError: "kv unavailable",
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    mockEntries = [entry("kv-public", "KV Public", "kv", "public")];
+    await renderAdmin();
+
+    fireEvent.click(screen.getByTestId("deck-visibility-toggle-kv-public"));
+
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("visibility-toggle-error-kv-public").textContent,
+      ).toMatch(/kv unavailable/),
+    );
+    // Optimistic flip has been reverted — the toggle reads PUBLIC again.
+    const toggle = screen.getByTestId("deck-visibility-toggle-kv-public");
+    expect(toggle.getAttribute("data-visibility")).toBe("public");
+  });
+
+  it("GET failure surfaces an inline error and does NOT issue a POST", async () => {
+    const fetchMock = makeToggleFetch("kv-public", "public", {
+      getOk: false,
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    mockEntries = [entry("kv-public", "KV Public", "kv", "public")];
+    await renderAdmin();
+
+    fireEvent.click(screen.getByTestId("deck-visibility-toggle-kv-public"));
+
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("visibility-toggle-error-kv-public"),
+      ).toBeDefined(),
+    );
+    // Only the GET was attempted; no POST.
+    const posts = fetchMock.mock.calls.filter(
+      ([, init]) => (init as RequestInit | undefined)?.method === "POST",
+    );
+    expect(posts.length).toBe(0);
+  });
+
+  it("the toggle is rendered on the admin surface and never invokes window.confirm", async () => {
+    const confirmSpy = vi
+      .spyOn(window, "confirm")
+      .mockImplementation(() => true);
+    const fetchMock = makeToggleFetch("kv-public", "public");
+    vi.stubGlobal("fetch", fetchMock);
+
+    mockEntries = [entry("kv-public", "KV Public", "kv", "public")];
+    await renderAdmin();
+
+    fireEvent.click(screen.getByTestId("deck-visibility-toggle-kv-public"));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    expect(confirmSpy).not.toHaveBeenCalled();
+    confirmSpy.mockRestore();
+  });
+
+  it("archived KV decks still render the visibility toggle (toggle is orthogonal to archive lifecycle)", async () => {
+    // Archived decks are filtered from the public surface by the
+    // archived flag — visibility toggle still works for ergonomics
+    // (flipping a future-restored deck's visibility ahead of time).
+    mockEntries = [
+      entry("retired-kv", "Retired KV", "kv", "public", { archived: true }),
+    ];
+    await renderAdmin();
+    expect(
+      screen.getByTestId("deck-visibility-toggle-retired-kv"),
+    ).toBeDefined();
+  });
+
+  it("does NOT regress the archive/delete lifecycle menu — both still open on the same card", async () => {
+    mockEntries = [entry("kv-public", "KV Public", "kv", "public")];
+    await renderAdmin();
+    // Toggle is present.
+    expect(
+      screen.getByTestId("deck-visibility-toggle-kv-public"),
+    ).toBeDefined();
+    // Lifecycle menu still opens to Archive + Delete.
+    fireEvent.click(screen.getByTestId("lifecycle-menu-trigger-kv-public"));
+    expect(
+      screen.getByTestId("lifecycle-menu-archive-kv-public"),
+    ).toBeDefined();
+    expect(
+      screen.getByTestId("lifecycle-menu-delete-kv-public"),
+    ).toBeDefined();
   });
 });
