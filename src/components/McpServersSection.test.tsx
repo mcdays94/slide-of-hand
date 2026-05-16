@@ -44,6 +44,7 @@ function buildHookValue(overrides: Partial<ReturnType<typeof useMcpServersMock>>
     addServer: vi.fn().mockResolvedValue({ ok: true }),
     deleteServer: vi.fn().mockResolvedValue({ ok: true }),
     probeHealth: vi.fn().mockResolvedValue({ ok: true, toolCount: 0 }),
+    startOAuth: vi.fn().mockResolvedValue({ ok: true, authUrl: "https://auth.example.com" }),
     ...overrides,
   };
 }
@@ -144,6 +145,72 @@ describe("<McpServersSection> — server list", () => {
         screen.getByTestId("settings-modal-mcp-servers-row-a-health"),
       ).toHaveTextContent(/7 tools/i),
     );
+  });
+
+  it("shows the concrete probe error instead of a generic error label", async () => {
+    const probeHealth = vi.fn().mockResolvedValue({
+      ok: false,
+      error: "MCP server returned unexpected content-type text/html.",
+    });
+    useMcpServersMock.mockReturnValue(
+      buildHookValue({
+        servers: [
+          { id: "a", name: "x", url: "https://x.example.com", enabled: true },
+        ],
+        probeHealth,
+      }),
+    );
+    render(<McpServersSection />);
+
+    fireEvent.click(screen.getByTestId("settings-modal-mcp-servers-row-a-probe"));
+
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("settings-modal-mcp-servers-row-a-health"),
+      ).toHaveTextContent(/unexpected content-type/i),
+    );
+  });
+
+  it("shows an OAuth connect action when a probe reports OAuth required", async () => {
+    const probeHealth = vi.fn().mockResolvedValue({
+      ok: false,
+      error: "OAuth authorization required.",
+      oauthRequired: true,
+    });
+    const startOAuth = vi.fn().mockResolvedValue({
+      ok: true,
+      authUrl: "https://ai-gateway.mcp.cloudflare.com/oauth/authorize?state=abc",
+    });
+    const openSpy = vi
+      .spyOn(window, "open")
+      .mockImplementation(() => null);
+    useMcpServersMock.mockReturnValue(
+      buildHookValue({
+        servers: [
+          { id: "a", name: "x", url: "https://x.example.com", enabled: true },
+        ],
+        probeHealth,
+        startOAuth,
+      }),
+    );
+    render(<McpServersSection />);
+
+    fireEvent.click(screen.getByTestId("settings-modal-mcp-servers-row-a-probe"));
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("settings-modal-mcp-servers-row-a-oauth"),
+      ).toBeInTheDocument(),
+    );
+
+    fireEvent.click(screen.getByTestId("settings-modal-mcp-servers-row-a-oauth"));
+
+    await waitFor(() => expect(startOAuth).toHaveBeenCalledWith("a"));
+    expect(openSpy).toHaveBeenCalledWith(
+      "https://ai-gateway.mcp.cloudflare.com/oauth/authorize?state=abc",
+      "_blank",
+      "noopener,noreferrer",
+    );
+    openSpy.mockRestore();
   });
 
   it("calls deleteServer when the Remove button is clicked", async () => {

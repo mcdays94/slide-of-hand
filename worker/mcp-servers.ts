@@ -96,6 +96,8 @@ export interface McpServerPublic {
 
 const ROUTE_PREFIX = "/api/admin/mcp-servers";
 const KV_KEY = (email: string) => `mcp-servers:${email}`;
+const OAUTH_STATE_KEY = (state: string) => `mcp-oauth-state:${state}`;
+const OAUTH_STATE_TTL_SECONDS = 10 * 60;
 
 const JSON_HEADERS = {
   "content-type": "application/json",
@@ -264,8 +266,43 @@ function generateId(): string {
 }
 
 interface RouteMatch {
-  kind: "collection" | "item" | "health";
+  kind: "collection" | "item" | "health" | "oauthStart" | "oauthCallback";
   id?: string;
+}
+
+interface McpOAuthState {
+  email: string;
+  serverId: string;
+  clientId: string;
+  clientSecret?: string;
+  codeVerifier: string;
+  redirectUri: string;
+  tokenEndpoint: string;
+  resource?: string;
+}
+
+interface ProtectedResourceMetadata {
+  resource?: string;
+  authorization_servers?: string[];
+}
+
+interface OAuthAuthorizationServerMetadata {
+  authorization_endpoint?: string;
+  token_endpoint?: string;
+  registration_endpoint?: string;
+}
+
+interface DynamicClientRegistrationResponse {
+  client_id?: string;
+  client_secret?: string;
+}
+
+interface OAuthTokenResponse {
+  access_token?: string;
+  token_type?: string;
+  refresh_token?: string;
+  expires_in?: number;
+  scope?: string;
 }
 
 /**
@@ -276,6 +313,7 @@ function matchRoute(pathname: string): RouteMatch | null {
   if (pathname === ROUTE_PREFIX) return { kind: "collection" };
   if (!pathname.startsWith(`${ROUTE_PREFIX}/`)) return null;
   const tail = pathname.slice(ROUTE_PREFIX.length + 1);
+  if (tail === "oauth/callback") return { kind: "oauthCallback" };
   // `/<id>` or `/<id>/health`. Reject empty id segments.
   const parts = tail.split("/");
   if (parts.length === 1 && parts[0].length > 0) {
@@ -283,6 +321,14 @@ function matchRoute(pathname: string): RouteMatch | null {
   }
   if (parts.length === 2 && parts[0].length > 0 && parts[1] === "health") {
     return { kind: "health", id: parts[0] };
+  }
+  if (
+    parts.length === 3 &&
+    parts[0].length > 0 &&
+    parts[1] === "oauth" &&
+    parts[2] === "start"
+  ) {
+    return { kind: "oauthStart", id: parts[0] };
   }
   return null;
 }
@@ -336,7 +382,23 @@ export async function handleMcpServers(
   }
 
   // health
-  if (request.method === "GET") return handleHealth(kv, email, match.id!);
+  if (match.kind === "health") {
+    if (request.method === "GET") return handleHealth(kv, email, match.id!);
+    return errorResponse(405, "Method not allowed");
+  }
+
+  if (match.kind === "oauthStart") {
+    if (request.method === "POST") {
+      return handleOAuthStart(request, kv, email, match.id!);
+    }
+    return errorResponse(405, "Method not allowed");
+  }
+
+  if (match.kind === "oauthCallback") {
+    if (request.method === "GET") return handleOAuthCallback(request, kv, email);
+    return errorResponse(405, "Method not allowed");
+  }
+
   return errorResponse(405, "Method not allowed");
 }
 
@@ -474,4 +536,309 @@ async function handleHealth(
 
   const result = await probeHealth(config);
   return jsonResponse(result);
+}
+
+function oauthCallbackHtml(status: number, title: string, body: string): Response {
+  const html = `<!doctype html>
+<html lang="en">
+  <head><meta charset="utf-8" /><title>${escapeHtml(title)}</title></head>
+  <body style="font-family: system-ui, sans-serif; margin: 2rem; line-height: 1.5;">
+    <h1>${escapeHtml(title)}</h1>
+    <p>${escapeHtml(body)}</p>
+  </body>
+</html>`;
+  return new Response(html, {
+    status,
+    headers: {
+      "content-type": "text/html; charset=utf-8",
+      "cache-control": "no-store",
+    },
+  });
+}
+
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"]/g, (ch) => {
+    switch (ch) {
+      case "&":
+        return "&amp;";
+      case "<":
+        return "&lt;";
+      case ">":
+        return "&gt;";
+      case '"':
+        return "&quot;";
+      default:
+        return ch;
+    }
+  });
+}
+
+function fallbackResourceMetadataUrl(serverUrl: string): string {
+  const url = new URL(serverUrl);
+  return `${url.origin}/.well-known/oauth-protected-resource${url.pathname}`;
+}
+
+async function fetchJsonObject<T>(url: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(url, init);
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(`${url} returned ${res.status}: ${text || res.statusText}`);
+  }
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    throw new Error(`${url} did not return JSON.`);
+  }
+}
+
+function randomBase64Url(bytes: number = 32): string {
+  const arr = new Uint8Array(bytes);
+  crypto.getRandomValues(arr);
+  return base64Url(arr);
+}
+
+function base64Url(bytes: Uint8Array): string {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary)
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
+}
+
+async function codeChallengeFor(verifier: string): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(verifier),
+  );
+  return base64Url(new Uint8Array(digest));
+}
+
+async function handleOAuthStart(
+  request: Request,
+  kv: KVNamespace,
+  email: string,
+  id: string,
+): Promise<Response> {
+  const existing = await readServers(kv, email);
+  const server = existing.find((s) => s.id === id);
+  if (!server) return errorResponse(404, "MCP server not found.");
+
+  const health = await probeHealth({
+    url: server.url,
+    ...(server.bearerToken ? { bearerToken: server.bearerToken } : {}),
+    ...(server.headers ? { headers: server.headers } : {}),
+  });
+  if (health.ok) {
+    return errorResponse(400, "MCP server is already reachable; OAuth is not required.");
+  }
+  if (!health.oauthRequired) {
+    return errorResponse(
+      400,
+      health.error || "MCP server did not advertise an OAuth authorization flow.",
+    );
+  }
+
+  const resourceMetadataUrl =
+    health.resourceMetadataUrl ?? fallbackResourceMetadataUrl(server.url);
+  let protectedResource: ProtectedResourceMetadata;
+  try {
+    protectedResource = await fetchJsonObject<ProtectedResourceMetadata>(
+      resourceMetadataUrl,
+    );
+  } catch (err) {
+    return errorResponse(
+      502,
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+
+  const authorizationServer = protectedResource.authorization_servers?.[0];
+  if (!authorizationServer) {
+    return errorResponse(
+      502,
+      "MCP OAuth metadata did not include an authorization server.",
+    );
+  }
+
+  let authMetadata: OAuthAuthorizationServerMetadata;
+  try {
+    authMetadata = await fetchJsonObject<OAuthAuthorizationServerMetadata>(
+      `${authorizationServer.replace(/\/$/, "")}/.well-known/oauth-authorization-server`,
+    );
+  } catch (err) {
+    return errorResponse(
+      502,
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+  if (
+    !authMetadata.authorization_endpoint ||
+    !authMetadata.token_endpoint ||
+    !authMetadata.registration_endpoint
+  ) {
+    return errorResponse(
+      502,
+      "MCP OAuth authorization server metadata is incomplete.",
+    );
+  }
+
+  const redirectUri = new URL(
+    `${ROUTE_PREFIX}/oauth/callback`,
+    new URL(request.url).origin,
+  ).toString();
+  let registration: DynamicClientRegistrationResponse;
+  try {
+    registration = await fetchJsonObject<DynamicClientRegistrationResponse>(
+      authMetadata.registration_endpoint,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          client_name: "Slide of Hand",
+          redirect_uris: [redirectUri],
+          grant_types: ["authorization_code", "refresh_token"],
+          response_types: ["code"],
+          token_endpoint_auth_method: "none",
+        }),
+      },
+    );
+  } catch (err) {
+    return errorResponse(
+      502,
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+  if (!registration.client_id) {
+    return errorResponse(502, "MCP OAuth client registration returned no client_id.");
+  }
+
+  const state = randomBase64Url(24);
+  const codeVerifier = randomBase64Url(32);
+  const codeChallenge = await codeChallengeFor(codeVerifier);
+  const oauthState: McpOAuthState = {
+    email,
+    serverId: id,
+    clientId: registration.client_id,
+    ...(registration.client_secret
+      ? { clientSecret: registration.client_secret }
+      : {}),
+    codeVerifier,
+    redirectUri,
+    tokenEndpoint: authMetadata.token_endpoint,
+    ...(protectedResource.resource ? { resource: protectedResource.resource } : {}),
+  };
+  await kv.put(OAUTH_STATE_KEY(state), JSON.stringify(oauthState), {
+    expirationTtl: OAUTH_STATE_TTL_SECONDS,
+  });
+
+  const authUrl = new URL(authMetadata.authorization_endpoint);
+  authUrl.searchParams.set("response_type", "code");
+  authUrl.searchParams.set("client_id", registration.client_id);
+  authUrl.searchParams.set("redirect_uri", redirectUri);
+  authUrl.searchParams.set("state", state);
+  authUrl.searchParams.set("code_challenge", codeChallenge);
+  authUrl.searchParams.set("code_challenge_method", "S256");
+  if (protectedResource.resource) {
+    authUrl.searchParams.set("resource", protectedResource.resource);
+  }
+
+  return jsonResponse({ ok: true, authUrl: authUrl.toString() });
+}
+
+async function handleOAuthCallback(
+  request: Request,
+  kv: KVNamespace,
+  email: string,
+): Promise<Response> {
+  const url = new URL(request.url);
+  const error = url.searchParams.get("error");
+  if (error) {
+    return oauthCallbackHtml(
+      400,
+      "MCP connection failed",
+      url.searchParams.get("error_description") ?? error,
+    );
+  }
+
+  const state = url.searchParams.get("state");
+  const code = url.searchParams.get("code");
+  if (!state || !code) {
+    return oauthCallbackHtml(
+      400,
+      "MCP connection failed",
+      "The OAuth callback was missing its state or code.",
+    );
+  }
+
+  const stored = await kv.get(OAUTH_STATE_KEY(state), "json");
+  if (!stored || typeof stored !== "object" || Array.isArray(stored)) {
+    return oauthCallbackHtml(
+      400,
+      "MCP connection expired",
+      "Start the MCP connection again from Settings.",
+    );
+  }
+  const oauthState = stored as McpOAuthState;
+  if (oauthState.email !== email) {
+    return oauthCallbackHtml(
+      403,
+      "MCP connection failed",
+      "This OAuth callback belongs to a different user.",
+    );
+  }
+
+  const tokenBody = new URLSearchParams({
+    grant_type: "authorization_code",
+    code,
+    redirect_uri: oauthState.redirectUri,
+    client_id: oauthState.clientId,
+    code_verifier: oauthState.codeVerifier,
+  });
+  if (oauthState.clientSecret) {
+    tokenBody.set("client_secret", oauthState.clientSecret);
+  }
+  if (oauthState.resource) tokenBody.set("resource", oauthState.resource);
+
+  let token: OAuthTokenResponse;
+  try {
+    token = await fetchJsonObject<OAuthTokenResponse>(oauthState.tokenEndpoint, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: tokenBody.toString(),
+    });
+  } catch (err) {
+    return oauthCallbackHtml(
+      502,
+      "MCP connection failed",
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+  if (!token.access_token) {
+    return oauthCallbackHtml(
+      502,
+      "MCP connection failed",
+      "The OAuth token endpoint returned no access token.",
+    );
+  }
+
+  const existing = await readServers(kv, email);
+  const idx = existing.findIndex((s) => s.id === oauthState.serverId);
+  if (idx < 0) {
+    return oauthCallbackHtml(
+      404,
+      "MCP connection failed",
+      "The MCP server was removed before OAuth completed.",
+    );
+  }
+  const next = [...existing];
+  next[idx] = { ...next[idx], bearerToken: token.access_token };
+  await writeServers(kv, email, next);
+  await kv.delete(OAUTH_STATE_KEY(state));
+
+  return oauthCallbackHtml(
+    200,
+    "MCP server connected",
+    "Return to Slide of Hand and run Probe again. You can close this tab.",
+  );
 }

@@ -55,6 +55,7 @@ export function McpServersSection({
   const [healthById, setHealthById] = useState<
     Record<string, McpHealthResult | "probing">
   >({});
+  const [oauthById, setOauthById] = useState<Record<string, "starting">>({});
 
   function resetForm() {
     setForm(initialFormState);
@@ -104,6 +105,24 @@ export function McpServersSection({
     setHealthById((prev) => ({ ...prev, [id]: "probing" }));
     const result = await mcp.probeHealth(id);
     setHealthById((prev) => ({ ...prev, [id]: result }));
+  }
+
+  async function handleStartOAuth(id: string) {
+    setOauthById((prev) => ({ ...prev, [id]: "starting" }));
+    const result = await mcp.startOAuth(id);
+    setOauthById((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+    if (!result.ok || !result.authUrl) {
+      setHealthById((prev) => ({
+        ...prev,
+        [id]: { ok: false, error: result.error ?? "Could not start OAuth." },
+      }));
+      return;
+    }
+    window.open(result.authUrl, "_blank", "noopener,noreferrer");
   }
 
   async function handleDelete(id: string) {
@@ -194,6 +213,22 @@ export function McpServersSection({
                         testId={`${testId}-row-${server.id}-health`}
                       />
                     )}
+                    {health &&
+                      health !== "probing" &&
+                      health.oauthRequired && (
+                        <button
+                          type="button"
+                          onClick={() => void handleStartOAuth(server.id)}
+                          className="rounded border border-cf-orange/40 bg-cf-orange/5 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.15em] text-cf-orange hover:border-dashed"
+                          data-testid={`${testId}-row-${server.id}-oauth`}
+                          data-interactive
+                          disabled={oauthById[server.id] === "starting"}
+                        >
+                          {oauthById[server.id] === "starting"
+                            ? "Opening..."
+                            : "Connect"}
+                        </button>
+                      )}
                     <button
                       type="button"
                       onClick={() => void handleProbe(server.id)}
@@ -343,6 +378,11 @@ function HealthBadge({ result, testId }: HealthBadgeProps) {
       </span>
     );
   }
+  const message = result.oauthRequired
+    ? "OAuth required"
+    : (result.error ?? "Probe failed");
+  const shortMessage =
+    message.length > 72 ? `${message.slice(0, 69)}...` : message;
   return (
     <span
       className="inline-flex items-center gap-1 rounded border border-cf-border bg-cf-bg-100 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-[0.15em] text-cf-text-muted"
@@ -350,7 +390,7 @@ function HealthBadge({ result, testId }: HealthBadgeProps) {
       title={result.error ?? "Probe failed"}
     >
       <span aria-hidden="true">×</span>
-      <span>error</span>
+      <span>{shortMessage}</span>
     </span>
   );
 }

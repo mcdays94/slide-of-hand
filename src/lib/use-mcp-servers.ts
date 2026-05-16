@@ -25,6 +25,8 @@ const LIST_PATH = "/api/admin/mcp-servers";
 const itemPath = (id: string) => `${LIST_PATH}/${encodeURIComponent(id)}`;
 const healthPath = (id: string) =>
   `${LIST_PATH}/${encodeURIComponent(id)}/health`;
+const oauthStartPath = (id: string) =>
+  `${LIST_PATH}/${encodeURIComponent(id)}/oauth/start`;
 
 export interface McpServerPublic {
   id: string;
@@ -48,6 +50,8 @@ export interface McpHealthResult {
   ok: boolean;
   toolCount?: number;
   error?: string;
+  oauthRequired?: boolean;
+  resourceMetadataUrl?: string;
 }
 
 export interface UseMcpServersResult {
@@ -64,6 +68,11 @@ export interface UseMcpServersResult {
   }>;
   deleteServer: (id: string) => Promise<{ ok: boolean; error?: string }>;
   probeHealth: (id: string) => Promise<McpHealthResult>;
+  startOAuth: (id: string) => Promise<{
+    ok: boolean;
+    authUrl?: string;
+    error?: string;
+  }>;
 }
 
 interface ListResponse {
@@ -216,6 +225,35 @@ export function useMcpServers(): UseMcpServersResult {
     [],
   );
 
+  const startOAuth = useCallback(
+    async (
+      id: string,
+    ): Promise<{ ok: boolean; authUrl?: string; error?: string }> => {
+      try {
+        const res = await fetch(oauthStartPath(id), {
+          method: "POST",
+          credentials: "include",
+          headers: adminWriteHeaders(),
+        });
+        const body = (await res.json().catch(() => ({}))) as {
+          ok?: boolean;
+          authUrl?: string;
+          error?: string;
+        };
+        if (!res.ok || body.ok === false || !body.authUrl) {
+          return { ok: false, error: body.error ?? `HTTP ${res.status}` };
+        }
+        return { ok: true, authUrl: body.authUrl };
+      } catch (err) {
+        return {
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    },
+    [],
+  );
+
   return {
     servers,
     isLoading,
@@ -224,5 +262,6 @@ export function useMcpServers(): UseMcpServersResult {
     addServer,
     deleteServer,
     probeHealth,
+    startOAuth,
   };
 }
