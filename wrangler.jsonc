@@ -83,6 +83,22 @@
      */
     "run_worker_first": true
   },
+  "queues": {
+    "producers": [
+      {
+        "binding": "SOURCE_DECK_LIFECYCLE_QUEUE",
+        "queue": "source-deck-lifecycle"
+      }
+    ],
+    "consumers": [
+      {
+        "queue": "source-deck-lifecycle",
+        "max_batch_size": 1,
+        "max_batch_timeout": 0,
+        "max_retries": 2
+      }
+    ]
+  },
   /**
    * Per-deck theme overrides (issue #12 / Bucket B1).
    *

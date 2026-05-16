@@ -59,6 +59,11 @@ let mockPendingActions: Record<
 > = {};
 const mockClearPending = vi.fn(async () => {});
 const mockRefetchPending = vi.fn(async () => {});
+const mockUpsertPending = vi.fn(
+  async (action: import("@/lib/pending-source-actions").PendingSourceAction) => {
+    mockPendingActions = { ...mockPendingActions, [action.slug]: action };
+  },
+);
 // Issue #250 — reconcile mock. Default behaviour mirrors the real
 // hook: on a `reconciled: true` response, the local map drops the
 // entry. Tests that exercise the reconcile flow swap the
@@ -76,6 +81,7 @@ vi.mock("@/lib/use-pending-source-actions", () => ({
     isLoading: false,
     clearPending: mockClearPending,
     refetch: mockRefetchPending,
+    upsertPending: mockUpsertPending,
     reconcile: mockReconcile,
   }),
 }));
@@ -144,6 +150,10 @@ beforeEach(() => {
   mockPendingActions = {};
   mockClearPending.mockClear();
   mockRefetchPending.mockClear();
+  mockUpsertPending.mockClear();
+  mockUpsertPending.mockImplementation(async (action) => {
+    mockPendingActions = { ...mockPendingActions, [action.slug]: action };
+  });
   mockReconcile.mockClear();
   mockReconcile.mockImplementation(async () => ({ reconciled: false }));
   // Default GitHub OAuth state is "disconnected" so the new source
@@ -848,13 +858,18 @@ describe("AdminIndex — Archived section (#243)", () => {
     mockGitHubState = "connected";
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
-      status: 200,
+      status: 202,
       json: async () => ({
         ok: true,
-        prUrl: "https://github.com/mcdays94/slide-of-hand/pull/247",
-        prNumber: 247,
-        branch: "archive/hello-1700000000000",
-        action: "archive",
+        pending: {
+          slug: "hello",
+          action: "archive",
+          expectedState: "archived",
+          status: "queued",
+          jobId: "job-123",
+          createdAt: "2026-05-16T12:00:00.000Z",
+          updatedAt: "2026-05-16T12:00:00.000Z",
+        },
       }),
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -881,6 +896,45 @@ describe("AdminIndex — Archived section (#243)", () => {
     // The hook's refetch was invoked so the pending pill appears
     // without a full reload.
     await waitFor(() => expect(mockRefetchPending).toHaveBeenCalled());
+    expect(mockUpsertPending).toHaveBeenCalledWith(
+      expect.objectContaining({ slug: "hello", status: "queued" }),
+    );
+  });
+
+  it("source-backed Archive queued response closes the modal and projects the card as Queued archive", async () => {
+    mockGitHubState = "connected";
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 202,
+      json: async () => ({
+        ok: true,
+        pending: {
+          slug: "hello",
+          action: "archive",
+          expectedState: "archived",
+          status: "queued",
+          jobId: "job-123",
+          createdAt: "2026-05-16T12:00:00.000Z",
+          updatedAt: "2026-05-16T12:00:00.000Z",
+        },
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    mockEntries = [entry("hello", "Hello", "source")];
+    await renderAdmin();
+
+    fireEvent.click(screen.getByTestId("lifecycle-menu-trigger-hello"));
+    fireEvent.click(screen.getByTestId("lifecycle-menu-archive-hello"));
+    fireEvent.click(screen.getByTestId("confirm-dialog-confirm"));
+
+    await waitFor(() =>
+      expect(screen.queryByTestId("confirm-dialog")).toBeNull(),
+    );
+    const archived = screen.getByTestId("admin-archived-section");
+    expect(archived.textContent).toMatch(/Hello/);
+    expect(archived.textContent).toMatch(/Queued archive/i);
+    expect(screen.queryByTestId("pending-pr-link-hello")).toBeNull();
   });
 
   it("source-backed Archive (GitHub connected): surfaces a server error inline without closing the dialog (#247)", async () => {

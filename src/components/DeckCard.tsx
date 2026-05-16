@@ -61,7 +61,10 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import { Link } from "react-router-dom";
 import type { DeckMeta } from "@/framework/viewer/types";
-import type { PendingSourceActionType } from "@/lib/pending-source-actions";
+import type {
+  PendingSourceActionStatus,
+  PendingSourceActionType,
+} from "@/lib/pending-source-actions";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { DeckLifecycleMenu } from "./DeckLifecycleMenu";
 import { TypedSlugConfirmDialog } from "./TypedSlugConfirmDialog";
@@ -87,7 +90,9 @@ export type DeckCardVisibility = "public" | "private";
  */
 export interface DeckCardPending {
   action: PendingSourceActionType;
-  prUrl: string;
+  status?: PendingSourceActionStatus;
+  prUrl?: string;
+  error?: string;
   /**
    * Optional Clear callback. When provided the pill renders a small
    * Clear button alongside the PR link. Errors thrown by the
@@ -95,6 +100,7 @@ export interface DeckCardPending {
    * retry.
    */
   onClear?: (slug: string) => Promise<void> | void;
+  onRetry?: (slug: string) => Promise<void> | void;
 }
 
 export interface DeckCardProps {
@@ -297,6 +303,10 @@ export function DeckCard({
   const [clearPendingError, setClearPendingError] = useState<string | null>(
     null,
   );
+  const [retryingPending, setRetryingPending] = useState(false);
+  const [retryPendingError, setRetryPendingError] = useState<string | null>(
+    null,
+  );
 
   // Visibility toggle state (issue #214). The toggle is a single
   // affordance with no confirm dialog, so we surface "in flight" via
@@ -432,6 +442,21 @@ export function DeckCard({
     }
   }, [pending, meta.slug]);
 
+  const handleRetryPending = useCallback(async () => {
+    if (!pending?.onRetry) return;
+    setRetryingPending(true);
+    setRetryPendingError(null);
+    try {
+      await pending.onRetry(meta.slug);
+      setRetryingPending(false);
+    } catch (e) {
+      setRetryPendingError(
+        e instanceof Error ? e.message : "Network error — try again.",
+      );
+      setRetryingPending(false);
+    }
+  }, [pending, meta.slug]);
+
   // Lifecycle-aware callbacks for the menu. Active decks expose
   // Archive + Delete; archived decks expose Restore + Delete.
   const menuOnArchive =
@@ -484,6 +509,9 @@ export function DeckCard({
               onClear={pending.onClear ? handleClearPending : undefined}
               clearing={clearingPending}
               clearError={clearPendingError}
+              onRetry={pending.onRetry ? handleRetryPending : undefined}
+              retrying={retryingPending}
+              retryError={retryPendingError}
             />
           </div>
         )}
@@ -753,12 +781,41 @@ interface PendingActionPillProps {
   onClear?: () => void;
   clearing: boolean;
   clearError: string | null;
+  onRetry?: () => void;
+  retrying: boolean;
+  retryError: string | null;
 }
 
-const PENDING_LABEL: Record<PendingSourceActionType, string> = {
-  archive: "Pending archive",
-  restore: "Pending restore",
-  delete: "Pending delete",
+const PENDING_LABEL: Record<
+  Exclude<PendingSourceActionStatus, "running"> | "legacy",
+  Record<PendingSourceActionType, string>
+> = {
+  legacy: {
+    archive: "Pending archive",
+    restore: "Pending restore",
+    delete: "Pending delete",
+  },
+  queued: {
+    archive: "Queued archive",
+    restore: "Queued restore",
+    delete: "Queued delete",
+  },
+  pr_open: {
+    archive: "Pending archive",
+    restore: "Pending restore",
+    delete: "Pending delete",
+  },
+  failed: {
+    archive: "Failed archive",
+    restore: "Failed restore",
+    delete: "Failed delete",
+  },
+};
+
+const RUNNING_LABEL: Record<PendingSourceActionType, string> = {
+  archive: "Running archive",
+  restore: "Running restore",
+  delete: "Running delete",
 };
 
 function PendingActionPill({
@@ -767,7 +824,14 @@ function PendingActionPill({
   onClear,
   clearing,
   clearError,
+  onRetry,
+  retrying,
+  retryError,
 }: PendingActionPillProps) {
+  const label =
+    pending.status === "running"
+      ? RUNNING_LABEL[pending.action]
+      : PENDING_LABEL[pending.status ?? "legacy"][pending.action];
   return (
     <div
       data-testid={`pending-action-${slug}`}
@@ -781,20 +845,38 @@ function PendingActionPill({
             data-testid={`pending-pill-${slug}`}
             className="font-mono text-[10px] uppercase tracking-[0.25em] text-cf-orange"
           >
-            {PENDING_LABEL[pending.action]}
+            {label}
           </span>
-          <a
-            href={pending.prUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            data-interactive
-            data-testid={`pending-pr-link-${slug}`}
-            onClick={(e) => e.stopPropagation()}
-            className="font-mono text-[10px] uppercase tracking-[0.2em] text-cf-orange underline decoration-cf-orange/40 underline-offset-4 hover:decoration-cf-orange"
-          >
-            View PR
-          </a>
+          {pending.prUrl && (
+            <a
+              href={pending.prUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              data-interactive
+              data-testid={`pending-pr-link-${slug}`}
+              onClick={(e) => e.stopPropagation()}
+              className="font-mono text-[10px] uppercase tracking-[0.2em] text-cf-orange underline decoration-cf-orange/40 underline-offset-4 hover:decoration-cf-orange"
+            >
+              View PR
+            </a>
+          )}
         </div>
+        {pending.status === "failed" && onRetry && (
+          <button
+            type="button"
+            data-interactive
+            data-testid={`pending-retry-${slug}`}
+            disabled={retrying}
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              onRetry();
+            }}
+            className="rounded border border-cf-orange/40 px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.2em] text-cf-orange transition-colors hover:bg-cf-orange/20 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {retrying ? "Retrying…" : "Retry"}
+          </button>
+        )}
         {onClear && (
           <button
             type="button"
@@ -812,6 +894,24 @@ function PendingActionPill({
           </button>
         )}
       </div>
+      {pending.status === "failed" && pending.error && (
+        <p
+          role="alert"
+          data-testid={`pending-error-${slug}`}
+          className="text-xs text-cf-orange"
+        >
+          {pending.error}
+        </p>
+      )}
+      {retryError && (
+        <p
+          role="alert"
+          data-testid={`pending-retry-error-${slug}`}
+          className="font-mono text-[10px] uppercase tracking-[0.2em] text-cf-orange"
+        >
+          {retryError}
+        </p>
+      )}
       {clearError && (
         <p
           role="alert"

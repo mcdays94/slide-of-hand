@@ -64,6 +64,8 @@ export interface UsePendingSourceActionsResult {
    * failure). Never throws — refetch is best-effort.
    */
   refetch: () => Promise<void>;
+  /** Locally upsert a queued/running/pr-open/failed record returned by an endpoint. */
+  upsertPending: (action: PendingSourceAction) => Promise<void>;
   /**
    * Reconcile the pending marker for `slug` against the deployed
    * source state the caller has observed (issue #250). Fires
@@ -132,6 +134,10 @@ export function usePendingSourceActions(): UsePendingSourceActionsResult {
   const refetch = useCallback(async (): Promise<void> => {
     await fetchActions();
   }, [fetchActions]);
+
+  const upsertPending = useCallback(async (action: PendingSourceAction) => {
+    setActions((prev) => ({ ...prev, [action.slug]: action }));
+  }, []);
 
   const clearPending = useCallback(async (slug: string) => {
     const res = await fetch(
@@ -204,5 +210,5 @@ export function usePendingSourceActions(): UsePendingSourceActionsResult {
     [],
   );
 
-  return { actions, isLoading, clearPending, refetch, reconcile };
+  return { actions, isLoading, clearPending, refetch, upsertPending, reconcile };
 }

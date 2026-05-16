@@ -98,6 +98,16 @@ export interface SourceDeckLifecycleEnv {
   DECKS: KVNamespace;
   /** GitHub OAuth token store (per-user). */
   GITHUB_TOKENS: KVNamespace;
+  /** Background queue for slow source lifecycle Sandbox/GitHub work. */
+  SOURCE_DECK_LIFECYCLE_QUEUE?: Queue<SourceDeckLifecycleJob>;
+}
+
+export interface SourceDeckLifecycleJob {
+  jobId: string;
+  action: PendingSourceActionType;
+  slug: string;
+  userEmail: string;
+  enqueuedAt: string;
 }
 
 export interface ArchiveSourceDeckInput {
@@ -236,6 +246,10 @@ interface RemoveSourceLifecycleConfig<A extends PendingSourceActionType>
 type SourceLifecycleConfig<A extends PendingSourceActionType> =
   | MoveSourceLifecycleConfig<A>
   | RemoveSourceLifecycleConfig<A>;
+
+interface SourceLifecycleOptions {
+  writePendingRecord?: boolean;
+}
 
 /** Archive config: public → archive. */
 const ARCHIVE_CONFIG: SourceLifecycleConfig<"archive"> = {
@@ -382,14 +396,60 @@ function makePendingRecord<A extends PendingSourceActionType>(
   slug: string,
   action: A,
   prUrl: string,
+  extras: Pick<PendingSourceAction, "branch" | "jobId"> = {},
 ): PendingSourceAction {
+  const now = new Date().toISOString();
   return {
     slug,
     action,
     expectedState: expectedStateFor(action),
     prUrl,
-    createdAt: new Date().toISOString(),
+    status: "pr_open",
+    createdAt: now,
+    updatedAt: now,
+    ...extras,
   };
+}
+
+function makeQueuedPendingRecord(
+  job: SourceDeckLifecycleJob,
+): PendingSourceAction {
+  return {
+    slug: job.slug,
+    action: job.action,
+    expectedState: expectedStateFor(job.action),
+    status: "queued",
+    jobId: job.jobId,
+    createdAt: job.enqueuedAt,
+    updatedAt: job.enqueuedAt,
+  };
+}
+
+function transitionPendingRecord(
+  existing: PendingSourceAction | null,
+  job: SourceDeckLifecycleJob,
+  patch: Partial<PendingSourceAction>,
+): PendingSourceAction {
+  return {
+    slug: job.slug,
+    action: job.action,
+    expectedState: expectedStateFor(job.action),
+    createdAt: existing?.createdAt ?? job.enqueuedAt,
+    jobId: job.jobId,
+    ...existing,
+    ...patch,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+async function readPendingRecord(
+  env: SourceDeckLifecycleEnv,
+  slug: string,
+): Promise<PendingSourceAction | null> {
+  return (await env.DECKS.get(
+    KV_PENDING_RECORD(slug),
+    "json",
+  )) as PendingSourceAction | null;
 }
 
 /**
@@ -425,6 +485,7 @@ async function runSourceLifecycle<A extends PendingSourceActionType>(
   input: { userEmail: string; slug: string },
   config: SourceLifecycleConfig<A>,
   getSandboxFn: GetSandboxFn,
+  options: SourceLifecycleOptions = {},
 ): Promise<SourceLifecycleSuccess<A> | SourceLifecycleFailure> {
   // 1. Auth.
   const email = (input.userEmail ?? "").trim();
@@ -669,28 +730,33 @@ async function runSourceLifecycle<A extends PendingSourceActionType>(
     return { ok: false, phase: "open_pr", error: pr.message };
   }
 
-  // 11. Persist the pending source-action record.
-  try {
-    await withSourceActionTimeout(
-      writePendingRecord(
-        env,
-        makePendingRecord(slug, config.action, pr.result.htmlUrl),
-      ),
-      PENDING_RECORD_TIMEOUT_MS,
-      "Pending marker write",
-    );
-  } catch (err) {
-    const actionLabel =
-      config.action === "archive"
-        ? "Archive"
-        : config.action === "restore"
-          ? "Restore"
-          : "Delete";
-    return {
-      ok: false,
-      phase: "pending_record",
-      error: `${actionLabel} PR opened (${pr.result.htmlUrl}) but the pending marker write failed: ${err instanceof Error ? err.message : String(err)}`,
-    };
+  // 11. Persist the pending source-action record in direct mode. Queue
+  // consumers own their status transitions so they disable this write.
+  if (options.writePendingRecord !== false) {
+    try {
+      await withSourceActionTimeout(
+        writePendingRecord(
+          env,
+          makePendingRecord(slug, config.action, pr.result.htmlUrl, {
+            branch: commit.branch,
+          }),
+        ),
+        PENDING_RECORD_TIMEOUT_MS,
+        "Pending marker write",
+      );
+    } catch (err) {
+      const actionLabel =
+        config.action === "archive"
+          ? "Archive"
+          : config.action === "restore"
+            ? "Restore"
+            : "Delete";
+      return {
+        ok: false,
+        phase: "pending_record",
+        error: `${actionLabel} PR opened (${pr.result.htmlUrl}) but the pending marker write failed: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
   }
 
   return {
@@ -741,8 +807,9 @@ export async function runArchiveSourceDeck(
   env: SourceDeckLifecycleEnv,
   input: ArchiveSourceDeckInput,
   getSandboxFn: GetSandboxFn = getSandbox,
+  options: SourceLifecycleOptions = {},
 ): Promise<ArchiveSourceDeckResult | ArchiveSourceDeckError> {
-  return runSourceLifecycle(env, input, ARCHIVE_CONFIG, getSandboxFn);
+  return runSourceLifecycle(env, input, ARCHIVE_CONFIG, getSandboxFn, options);
 }
 
 // ── runRestoreSourceDeck ────────────────────────────────────────────
@@ -759,8 +826,9 @@ export async function runRestoreSourceDeck(
   env: SourceDeckLifecycleEnv,
   input: RestoreSourceDeckInput,
   getSandboxFn: GetSandboxFn = getSandbox,
+  options: SourceLifecycleOptions = {},
 ): Promise<RestoreSourceDeckResult | RestoreSourceDeckError> {
-  return runSourceLifecycle(env, input, RESTORE_CONFIG, getSandboxFn);
+  return runSourceLifecycle(env, input, RESTORE_CONFIG, getSandboxFn, options);
 }
 
 // ── runDeleteSourceDeck ─────────────────────────────────────────────
@@ -785,8 +853,80 @@ export async function runDeleteSourceDeck(
   env: SourceDeckLifecycleEnv,
   input: DeleteSourceDeckInput,
   getSandboxFn: GetSandboxFn = getSandbox,
+  options: SourceLifecycleOptions = {},
 ): Promise<DeleteSourceDeckResult | DeleteSourceDeckError> {
-  return runSourceLifecycle(env, input, DELETE_CONFIG, getSandboxFn);
+  return runSourceLifecycle(env, input, DELETE_CONFIG, getSandboxFn, options);
+}
+
+// ── Queue consumer ──────────────────────────────────────────────────
+
+function redactedError(error: string, job: SourceDeckLifecycleJob): string {
+  return error
+    .replaceAll(job.userEmail, "[redacted-email]")
+    .replace(/gh[opsu]_[A-Za-z0-9_]+/g, "[redacted-token]");
+}
+
+async function runQueuedSourceLifecycle(
+  env: SourceDeckLifecycleEnv,
+  job: SourceDeckLifecycleJob,
+): Promise<
+  | SourceLifecycleSuccess<PendingSourceActionType>
+  | SourceLifecycleFailure
+> {
+  const input = { userEmail: job.userEmail, slug: job.slug };
+  const options: SourceLifecycleOptions = { writePendingRecord: false };
+  switch (job.action) {
+    case "archive":
+      return runArchiveSourceDeck(env, input, getSandbox, options);
+    case "restore":
+      return runRestoreSourceDeck(env, input, getSandbox, options);
+    case "delete":
+      return runDeleteSourceDeck(env, input, getSandbox, options);
+  }
+}
+
+async function handleSourceLifecycleJob(
+  job: SourceDeckLifecycleJob,
+  env: SourceDeckLifecycleEnv,
+): Promise<void> {
+  const existing = await readPendingRecord(env, job.slug);
+  await writePendingRecord(
+    env,
+    transitionPendingRecord(existing, job, { status: "running" }),
+  );
+  const result = await runQueuedSourceLifecycle(env, job);
+  const latest = await readPendingRecord(env, job.slug);
+  if (result.ok) {
+    await writePendingRecord(
+      env,
+      transitionPendingRecord(latest, job, {
+        status: "pr_open",
+        prUrl: result.prUrl,
+        branch: result.branch,
+        error: undefined,
+      }),
+    );
+    return;
+  }
+  await writePendingRecord(
+    env,
+    transitionPendingRecord(latest, job, {
+      status: "failed",
+      prUrl: undefined,
+      branch: undefined,
+      error: redactedError(result.error, job),
+    }),
+  );
+}
+
+export async function handleSourceDeckLifecycleQueue(
+  batch: MessageBatch<SourceDeckLifecycleJob>,
+  env: SourceDeckLifecycleEnv,
+  _ctx: ExecutionContext,
+): Promise<void> {
+  for (const message of batch.messages) {
+    await handleSourceLifecycleJob(message.body, env);
+  }
 }
 
 // ── HTTP router ─────────────────────────────────────────────────────
@@ -807,56 +947,53 @@ function jsonError(status: number, error: string, extra?: Record<string, unknown
   );
 }
 
-/**
- * Map a phase from `runSourceLifecycle` to an HTTP status code.
- *
- *   - auth / github_token → 409 (the caller's environment isn't
- *     ready; the UI surfaces a "connect GitHub" hint).
- *   - invalid_slug → 400.
- *   - source_missing / archive_exists / archive_missing /
- *     active_exists → 400 (caller asked for an operation that
- *     doesn't match disk state).
- *   - everything else (clone/test_gate/push/PR/KV) → 400 with the
- *     phase echoed so the UI can show the right error.
- *
- * We avoid 500 — every failure is a known shape, not an internal
- * server error.
- */
-function statusForPhase(phase: SourceLifecyclePhase): number {
-  switch (phase) {
-    case "auth":
-    case "github_token":
-      return 409;
-    case "invalid_slug":
-      return 400;
-    default:
-      return 400;
-  }
-}
-
-function buildSuccessResponse(
-  result: SourceLifecycleSuccess<PendingSourceActionType>,
-): Response {
-  return new Response(
-    JSON.stringify({
-      ok: true,
-      prUrl: result.prUrl,
-      prNumber: result.prNumber,
-      branch: result.branch,
-      action: result.action,
-    }),
-    { status: 200, headers: NO_STORE_HEADERS },
-  );
-}
-
-function buildFailureResponse(result: SourceLifecycleFailure): Response {
-  return jsonError(statusForPhase(result.phase), result.error, {
-    phase: result.phase,
-    ...(result.failedTestGatePhase
-      ? { failedTestGatePhase: result.failedTestGatePhase }
-      : {}),
-    ...(result.noEffectiveChanges ? { noEffectiveChanges: true } : {}),
+function buildQueuedResponse(record: PendingSourceAction): Response {
+  return new Response(JSON.stringify({ ok: true, pending: record }), {
+    status: 202,
+    headers: NO_STORE_HEADERS,
   });
+}
+
+async function enqueueSourceLifecycleAction(
+  request: Request,
+  env: SourceDeckLifecycleEnv,
+  slug: string,
+  action: PendingSourceActionType,
+  label: string,
+): Promise<Response> {
+  if (!isValidSlug(slug)) {
+    return jsonError(400, `invalid slug: "${slug}"`);
+  }
+  const email = getAccessUserEmail(request);
+  if (!email) {
+    return jsonError(
+      409,
+      `Source ${label} requires an interactive Access user — service-token auth has no email to associate with a GitHub account.`,
+    );
+  }
+  const stored = await getStoredGitHubToken(env, email);
+  if (!stored) {
+    return jsonError(
+      409,
+      "GitHub not connected. Connect GitHub from Settings → GitHub → Connect before retrying. This flow needs the user's GitHub credentials to clone the repo, push a branch, and open a draft PR.",
+      { phase: "github_token" },
+    );
+  }
+  if (!env.SOURCE_DECK_LIFECYCLE_QUEUE) {
+    return jsonError(500, "Source lifecycle queue binding is not configured.");
+  }
+  const enqueuedAt = new Date().toISOString();
+  const job: SourceDeckLifecycleJob = {
+    jobId: crypto.randomUUID(),
+    action,
+    slug,
+    userEmail: email,
+    enqueuedAt,
+  };
+  const record = makeQueuedPendingRecord(job);
+  await writePendingRecord(env, record);
+  await env.SOURCE_DECK_LIFECYCLE_QUEUE.send(job, { contentType: "json" });
+  return buildQueuedResponse(record);
 }
 
 async function handleArchive(
@@ -864,18 +1001,7 @@ async function handleArchive(
   env: SourceDeckLifecycleEnv,
   slug: string,
 ): Promise<Response> {
-  if (!isValidSlug(slug)) {
-    return jsonError(400, `invalid slug: "${slug}"`);
-  }
-  const email = getAccessUserEmail(request);
-  if (!email) {
-    return jsonError(
-      409,
-      "Source archive requires an interactive Access user — service-token auth has no email to associate with a GitHub account.",
-    );
-  }
-  const result = await runArchiveSourceDeck(env, { userEmail: email, slug });
-  return result.ok ? buildSuccessResponse(result) : buildFailureResponse(result);
+  return enqueueSourceLifecycleAction(request, env, slug, "archive", "archive");
 }
 
 async function handleRestore(
@@ -883,18 +1009,7 @@ async function handleRestore(
   env: SourceDeckLifecycleEnv,
   slug: string,
 ): Promise<Response> {
-  if (!isValidSlug(slug)) {
-    return jsonError(400, `invalid slug: "${slug}"`);
-  }
-  const email = getAccessUserEmail(request);
-  if (!email) {
-    return jsonError(
-      409,
-      "Source restore requires an interactive Access user — service-token auth has no email to associate with a GitHub account.",
-    );
-  }
-  const result = await runRestoreSourceDeck(env, { userEmail: email, slug });
-  return result.ok ? buildSuccessResponse(result) : buildFailureResponse(result);
+  return enqueueSourceLifecycleAction(request, env, slug, "restore", "restore");
 }
 
 async function handleDelete(
@@ -902,18 +1017,7 @@ async function handleDelete(
   env: SourceDeckLifecycleEnv,
   slug: string,
 ): Promise<Response> {
-  if (!isValidSlug(slug)) {
-    return jsonError(400, `invalid slug: "${slug}"`);
-  }
-  const email = getAccessUserEmail(request);
-  if (!email) {
-    return jsonError(
-      409,
-      "Source delete requires an interactive Access user — service-token auth has no email to associate with a GitHub account.",
-    );
-  }
-  const result = await runDeleteSourceDeck(env, { userEmail: email, slug });
-  return result.ok ? buildSuccessResponse(result) : buildFailureResponse(result);
+  return enqueueSourceLifecycleAction(request, env, slug, "delete", "delete");
 }
 
 /**

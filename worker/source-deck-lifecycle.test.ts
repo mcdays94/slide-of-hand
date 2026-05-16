@@ -62,11 +62,13 @@ vi.mock("@cloudflare/sandbox", () => ({
 }));
 
 import {
+  handleSourceDeckLifecycleQueue,
   handleSourceDeckLifecycle,
   runArchiveSourceDeck,
   runDeleteSourceDeck,
   runRestoreSourceDeck,
   type SourceDeckLifecycleEnv,
+  type SourceDeckLifecycleJob,
 } from "./source-deck-lifecycle";
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -97,11 +99,25 @@ function makeKv(): KVNamespace {
   } as unknown as KVNamespace;
 }
 
-function makeEnv(): SourceDeckLifecycleEnv {
+function makeQueue(): Queue<SourceDeckLifecycleJob> {
+  return {
+    send: vi.fn(async () => ({
+      metadata: { metrics: { backlogCount: 0, backlogBytes: 0 } },
+    })),
+    sendBatch: vi.fn(),
+    metrics: vi.fn(),
+  } as unknown as Queue<SourceDeckLifecycleJob>;
+}
+
+function makeEnv(
+  overrides: Partial<SourceDeckLifecycleEnv> = {},
+): SourceDeckLifecycleEnv {
   return {
     Sandbox: {} as unknown as SourceDeckLifecycleEnv["Sandbox"],
     DECKS: makeKv(),
     GITHUB_TOKENS: {} as KVNamespace,
+    SOURCE_DECK_LIFECYCLE_QUEUE: makeQueue(),
+    ...overrides,
   };
 }
 
@@ -617,79 +633,74 @@ describe("handleSourceDeckLifecycle — POST /api/admin/source-decks/<slug>/arch
     expect(res!.status).toBe(403);
   });
 
-  it("returns 200 + { ok, prUrl, branch, prNumber, action } on success", async () => {
+  it("returns 202 + queued pending record and enqueues the job without running Sandbox/GitHub in fetch", async () => {
     setHappyPathMocks();
+    const env = makeEnv();
     const res = await handleSourceDeckLifecycle(
       buildRequest("hello"),
-      makeEnv(),
+      env,
     );
     expect(res).not.toBeNull();
-    expect(res!.status).toBe(200);
+    expect(res!.status).toBe(202);
     const body = (await res!.json()) as {
       ok: boolean;
-      prUrl: string;
-      branch: string;
-      prNumber: number;
-      action: string;
+      pending: {
+        slug: string;
+        action: string;
+        expectedState: string;
+        status: string;
+        jobId: string;
+        createdAt: string;
+        updatedAt: string;
+      };
     };
     expect(body.ok).toBe(true);
-    expect(body.prUrl).toBe(
-      "https://github.com/mcdays94/slide-of-hand/pull/247",
+    expect(body.pending).toMatchObject({
+      slug: "hello",
+      action: "archive",
+      expectedState: "archived",
+      status: "queued",
+    });
+    expect(typeof body.pending.jobId).toBe("string");
+    expect(body.pending.createdAt).toBe(body.pending.updatedAt);
+    expect(cloneRepoIntoSandboxMock).not.toHaveBeenCalled();
+    expect(runSandboxTestGateMock).not.toHaveBeenCalled();
+    expect(openPullRequestMock).not.toHaveBeenCalled();
+
+    const queueSend = env.SOURCE_DECK_LIFECYCLE_QUEUE!.send as unknown as ReturnType<typeof vi.fn>;
+    expect(queueSend).toHaveBeenCalledWith(
+      {
+        jobId: body.pending.jobId,
+        action: "archive",
+        slug: "hello",
+        userEmail: "alice@example.com",
+        enqueuedAt: body.pending.createdAt,
+      },
+      { contentType: "json" },
     );
-    expect(body.branch).toBe("archive/hello-1700000000000");
-    expect(body.prNumber).toBe(247);
-    expect(body.action).toBe("archive");
+
+    const putCalls = (env.DECKS.put as unknown as ReturnType<typeof vi.fn>).mock.calls;
+    const recordCall = putCalls.find(
+      (c: unknown[]) => String(c[0]) === "pending-source-action:hello",
+    );
+    expect(recordCall).toBeDefined();
+    expect(JSON.parse(String(recordCall![1]))).toMatchObject(body.pending);
   });
 
   it("returns 409 with `connect GitHub` copy when the user has no stored GitHub token", async () => {
     setHappyPathMocks();
     getStoredGitHubTokenMock.mockResolvedValue(null);
+    const env = makeEnv();
     const res = await handleSourceDeckLifecycle(
       buildRequest("hello"),
-      makeEnv(),
+      env,
     );
     expect(res).not.toBeNull();
     expect(res!.status).toBe(409);
     const body = (await res!.json()) as { error: string };
     expect(body.error).toMatch(/connect GitHub/i);
-  });
-
-  it("returns 400 with `source missing` when the deck folder doesn't exist on main", async () => {
-    setHappyPathMocks();
-    const sandbox = makeSandboxStub();
-    sandbox.exec.mockImplementation(async (cmd: string) => {
-      if (cmd.startsWith("test -d src/decks/public/")) {
-        return { success: false, exitCode: 1, stdout: "", stderr: "" };
-      }
-      return { success: true, exitCode: 0, stdout: "", stderr: "" };
-    });
-    getSandboxMock.mockReturnValue(
-      sandbox as unknown as ReturnType<typeof getSandboxMock>,
-    );
-    const res = await handleSourceDeckLifecycle(
-      buildRequest("ghost"),
-      makeEnv(),
-    );
-    expect(res).not.toBeNull();
-    expect(res!.status).toBe(400);
-    const body = (await res!.json()) as { error: string; phase: string };
-    expect(body.phase).toBe("source_missing");
-  });
-
-  it("returns 400 with the gate's failed phase when test_gate fails", async () => {
-    setHappyPathMocks();
-    runSandboxTestGateMock.mockResolvedValue({
-      ok: false,
-      failedPhase: "test",
-      phases: [],
-    });
-    const res = await handleSourceDeckLifecycle(
-      buildRequest("hello"),
-      makeEnv(),
-    );
-    expect(res!.status).toBe(400);
-    const body = (await res!.json()) as { error: string; phase: string };
-    expect(body.phase).toBe("test_gate");
+    const queueSend = env.SOURCE_DECK_LIFECYCLE_QUEUE!.send as unknown as ReturnType<typeof vi.fn>;
+    expect(queueSend).not.toHaveBeenCalled();
   });
 
   it("returns 405 on non-POST methods", async () => {
@@ -717,6 +728,81 @@ describe("handleSourceDeckLifecycle — POST /api/admin/source-decks/<slug>/arch
     });
     const res = await handleSourceDeckLifecycle(req, makeEnv());
     expect(res).toBeNull();
+  });
+});
+
+describe("handleSourceDeckLifecycleQueue", () => {
+  function batchFor(
+    job: SourceDeckLifecycleJob,
+  ): MessageBatch<SourceDeckLifecycleJob> {
+    return {
+      queue: "source-deck-lifecycle",
+      messages: [
+        {
+          id: job.jobId,
+          timestamp: new Date(job.enqueuedAt),
+          body: job,
+          attempts: 1,
+          ack: vi.fn(),
+          retry: vi.fn(),
+        },
+      ],
+      metadata: { metrics: { backlogCount: 1, backlogBytes: 100 } },
+      ackAll: vi.fn(),
+      retryAll: vi.fn(),
+    } as unknown as MessageBatch<SourceDeckLifecycleJob>;
+  }
+
+  const job: SourceDeckLifecycleJob = {
+    jobId: "job-123",
+    action: "archive",
+    slug: "hello",
+    userEmail: "alice@example.com",
+    enqueuedAt: "2026-05-16T12:00:00.000Z",
+  };
+
+  it("marks running, calls the executor, and writes pr_open with prUrl on success", async () => {
+    setHappyPathMocks();
+    const env = makeEnv();
+
+    await handleSourceDeckLifecycleQueue(batchFor(job), env, {} as ExecutionContext);
+
+    expect(cloneRepoIntoSandboxMock).toHaveBeenCalled();
+    expect(openPullRequestMock).toHaveBeenCalled();
+    const recordWrites = (env.DECKS.put as unknown as ReturnType<typeof vi.fn>).mock.calls
+      .filter((c: unknown[]) => String(c[0]) === "pending-source-action:hello")
+      .map((c: unknown[]) => JSON.parse(String(c[1])) as { status: string; prUrl?: string; branch?: string; jobId?: string });
+    expect(recordWrites.map((r) => r.status)).toEqual(["running", "pr_open"]);
+    expect(recordWrites[1]).toMatchObject({
+      slug: "hello",
+      action: "archive",
+      expectedState: "archived",
+      status: "pr_open",
+      prUrl: "https://github.com/mcdays94/slide-of-hand/pull/247",
+      branch: "archive/hello-1700000000000",
+      jobId: "job-123",
+    });
+  });
+
+  it("writes failed with a redacted error and returns normally on known executor failure", async () => {
+    setHappyPathMocks();
+    cloneRepoIntoSandboxMock.mockRejectedValueOnce(
+      new Error("clone failed for alice@example.com with ghu_secret123"),
+    );
+    const env = makeEnv();
+
+    await expect(
+      handleSourceDeckLifecycleQueue(batchFor(job), env, {} as ExecutionContext),
+    ).resolves.toBeUndefined();
+
+    const recordWrites = (env.DECKS.put as unknown as ReturnType<typeof vi.fn>).mock.calls
+      .filter((c: unknown[]) => String(c[0]) === "pending-source-action:hello")
+      .map((c: unknown[]) => JSON.parse(String(c[1])) as { status: string; error?: string; prUrl?: string });
+    expect(recordWrites.map((r) => r.status)).toEqual(["running", "failed"]);
+    expect(recordWrites[1].error).toMatch(/clone failed/i);
+    expect(recordWrites[1].error).not.toContain("alice@example.com");
+    expect(recordWrites[1].error).not.toContain("ghu_secret123");
+    expect(recordWrites[1].prUrl).toBeUndefined();
   });
 });
 
@@ -1171,28 +1257,21 @@ describe("handleSourceDeckLifecycle — POST /api/admin/source-decks/<slug>/rest
     expect(res!.status).toBe(403);
   });
 
-  it("returns 200 + { ok, prUrl, branch, prNumber, action } on success", async () => {
+  it("returns 202 + queued pending restore record on success", async () => {
     setHappyPathRestoreMocks();
     const res = await handleSourceDeckLifecycle(
       buildRequest("hello"),
       makeEnv(),
     );
     expect(res).not.toBeNull();
-    expect(res!.status).toBe(200);
-    const body = (await res!.json()) as {
-      ok: boolean;
-      prUrl: string;
-      branch: string;
-      prNumber: number;
-      action: string;
-    };
+    expect(res!.status).toBe(202);
+    const body = (await res!.json()) as { ok: boolean; pending: { action: string; status: string; expectedState: string } };
     expect(body.ok).toBe(true);
-    expect(body.prUrl).toBe(
-      "https://github.com/mcdays94/slide-of-hand/pull/248",
-    );
-    expect(body.branch).toBe("restore/hello-1700000000000");
-    expect(body.prNumber).toBe(248);
-    expect(body.action).toBe("restore");
+    expect(body.pending).toMatchObject({
+      action: "restore",
+      status: "queued",
+      expectedState: "active",
+    });
   });
 
   it("returns 409 with `connect GitHub` copy when the user has no stored GitHub token", async () => {
@@ -1206,67 +1285,6 @@ describe("handleSourceDeckLifecycle — POST /api/admin/source-decks/<slug>/rest
     expect(res!.status).toBe(409);
     const body = (await res!.json()) as { error: string };
     expect(body.error).toMatch(/connect GitHub/i);
-  });
-
-  it("returns 400 with `archive_missing` when the archive folder doesn't exist on main", async () => {
-    setHappyPathRestoreMocks();
-    const sandbox = makeSandboxStub();
-    sandbox.exec.mockImplementation(async (cmd: string) => {
-      if (cmd.startsWith("test -d src/decks/archive/")) {
-        return { success: false, exitCode: 1, stdout: "", stderr: "" };
-      }
-      return { success: true, exitCode: 0, stdout: "", stderr: "" };
-    });
-    getSandboxMock.mockReturnValue(
-      sandbox as unknown as ReturnType<typeof getSandboxMock>,
-    );
-    const res = await handleSourceDeckLifecycle(
-      buildRequest("ghost"),
-      makeEnv(),
-    );
-    expect(res).not.toBeNull();
-    expect(res!.status).toBe(400);
-    const body = (await res!.json()) as { error: string; phase: string };
-    expect(body.phase).toBe("archive_missing");
-  });
-
-  it("returns 400 with `active_exists` when the public folder is already present", async () => {
-    setHappyPathRestoreMocks();
-    const sandbox = makeSandboxStub();
-    sandbox.exec.mockImplementation(async (cmd: string) => {
-      if (cmd.startsWith("test -d ")) {
-        // Both folders exist.
-        return { success: true, exitCode: 0, stdout: "", stderr: "" };
-      }
-      return { success: true, exitCode: 0, stdout: "", stderr: "" };
-    });
-    getSandboxMock.mockReturnValue(
-      sandbox as unknown as ReturnType<typeof getSandboxMock>,
-    );
-    const res = await handleSourceDeckLifecycle(
-      buildRequest("hello"),
-      makeEnv(),
-    );
-    expect(res).not.toBeNull();
-    expect(res!.status).toBe(400);
-    const body = (await res!.json()) as { error: string; phase: string };
-    expect(body.phase).toBe("active_exists");
-  });
-
-  it("returns 400 with the gate's failed phase when test_gate fails", async () => {
-    setHappyPathRestoreMocks();
-    runSandboxTestGateMock.mockResolvedValue({
-      ok: false,
-      failedPhase: "test",
-      phases: [],
-    });
-    const res = await handleSourceDeckLifecycle(
-      buildRequest("hello"),
-      makeEnv(),
-    );
-    expect(res!.status).toBe(400);
-    const body = (await res!.json()) as { error: string; phase: string };
-    expect(body.phase).toBe("test_gate");
   });
 
   it("returns 405 on non-POST methods", async () => {
@@ -1769,28 +1787,21 @@ describe("handleSourceDeckLifecycle — POST /api/admin/source-decks/<slug>/dele
     expect(res!.status).toBe(403);
   });
 
-  it("returns 200 + { ok, prUrl, branch, prNumber, action } on success", async () => {
+  it("returns 202 + queued pending delete record on success", async () => {
     setHappyPathDeleteMocks("public");
     const res = await handleSourceDeckLifecycle(
       buildRequest("hello"),
       makeEnv(),
     );
     expect(res).not.toBeNull();
-    expect(res!.status).toBe(200);
-    const body = (await res!.json()) as {
-      ok: boolean;
-      prUrl: string;
-      branch: string;
-      prNumber: number;
-      action: string;
-    };
+    expect(res!.status).toBe(202);
+    const body = (await res!.json()) as { ok: boolean; pending: { action: string; status: string; expectedState: string } };
     expect(body.ok).toBe(true);
-    expect(body.prUrl).toBe(
-      "https://github.com/mcdays94/slide-of-hand/pull/249",
-    );
-    expect(body.branch).toBe("delete/hello-1700000000000");
-    expect(body.prNumber).toBe(249);
-    expect(body.action).toBe("delete");
+    expect(body.pending).toMatchObject({
+      action: "delete",
+      status: "queued",
+      expectedState: "deleted",
+    });
   });
 
   it("returns 409 with `connect GitHub` copy when the user has no stored GitHub token", async () => {
@@ -1804,44 +1815,6 @@ describe("handleSourceDeckLifecycle — POST /api/admin/source-decks/<slug>/dele
     expect(res!.status).toBe(409);
     const body = (await res!.json()) as { error: string };
     expect(body.error).toMatch(/connect GitHub/i);
-  });
-
-  it("returns 400 with `source_missing` when neither folder exists on main", async () => {
-    setHappyPathDeleteMocks("public");
-    const sandbox = makeSandboxStub();
-    sandbox.exec.mockImplementation(async (cmd: string) => {
-      if (cmd.startsWith("test -d ")) {
-        return { success: false, exitCode: 1, stdout: "", stderr: "" };
-      }
-      return { success: true, exitCode: 0, stdout: "", stderr: "" };
-    });
-    getSandboxMock.mockReturnValue(
-      sandbox as unknown as ReturnType<typeof getSandboxMock>,
-    );
-    const res = await handleSourceDeckLifecycle(
-      buildRequest("ghost"),
-      makeEnv(),
-    );
-    expect(res).not.toBeNull();
-    expect(res!.status).toBe(400);
-    const body = (await res!.json()) as { error: string; phase: string };
-    expect(body.phase).toBe("source_missing");
-  });
-
-  it("returns 400 with the gate's failed phase when test_gate fails", async () => {
-    setHappyPathDeleteMocks("public");
-    runSandboxTestGateMock.mockResolvedValue({
-      ok: false,
-      failedPhase: "build",
-      phases: [],
-    });
-    const res = await handleSourceDeckLifecycle(
-      buildRequest("hello"),
-      makeEnv(),
-    );
-    expect(res!.status).toBe(400);
-    const body = (await res!.json()) as { error: string; phase: string };
-    expect(body.phase).toBe("test_gate");
   });
 
   it("returns 405 on non-POST methods", async () => {
