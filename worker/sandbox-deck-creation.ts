@@ -283,6 +283,15 @@ export type RunBuildDraftPreviewFn = (
 ) => Promise<BuildDraftPreviewResult>;
 
 /**
+ * Preview building is a derived UX enhancement, not the source of truth.
+ * It must never keep the deck-creation tool open indefinitely after
+ * the Artifacts commit already succeeded. Keep this comfortably above
+ * the normal warm-cache build path, but far below the 10+ minute hang
+ * class seen in production.
+ */
+const PREVIEW_BUILD_TIMEOUT_MS = 90_000;
+
+/**
  * Sandbox key for a given draft. One sandbox per draft so iteration
  * reuses the warmed container. The sandbox is destroyed when the
  * Container is recycled (after idle timeout).
@@ -539,13 +548,20 @@ async function* runPreviewWiring(
 
   let build: BuildDraftPreviewResult;
   try {
-    build = await runBuildDraftPreviewFn(previewEnv, {
-      userEmail: input.userEmail,
-      slug: input.slug,
-      draftRepoName: draftId,
-      commitSha: input.commitSha,
-      previewId,
-    });
+    const timeoutMs =
+      (runBuildDraftPreviewFn as RunBuildDraftPreviewFn & { timeoutMs?: number })
+        .timeoutMs ?? PREVIEW_BUILD_TIMEOUT_MS;
+    build = await withTimeout(
+      runBuildDraftPreviewFn(previewEnv, {
+        userEmail: input.userEmail,
+        slug: input.slug,
+        draftRepoName: draftId,
+        commitSha: input.commitSha,
+        previewId,
+      }),
+      timeoutMs,
+      `Preview build timed out after ${Math.round(timeoutMs / 1000)} seconds. The draft was created, but rendered preview is not available yet.`,
+    );
   } catch (err) {
     // Defensive: the builder is supposed to return typed failures,
     // but a thrown error mustn't tank deck creation. Catch + map
@@ -585,6 +601,24 @@ function redactPreviewError(message: string): string {
   out = out.replace(/art_v1_[0-9a-f]+(\?expires=[0-9]+)?/gi, "[REDACTED]");
   out = out.replace(/gh[uosr]_[A-Za-z0-9]{20,}/g, "[REDACTED]");
   return out;
+}
+
+async function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  message: string,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 /**

@@ -1966,6 +1966,33 @@ describe("runCreateDeckDraft — preview wiring (#271)", () => {
     }
   });
 
+  it("treats a hung preview builder as a non-destructive timeout", async () => {
+    const builder = Object.assign(
+      vi.fn<RunBuildDraftPreviewFn>(
+        () => new Promise<never>(() => {}),
+      ),
+      { timeoutMs: 1 },
+    );
+    const { result } = await runGen(
+      runCreateDeckDraft(
+        makeEnvWithPreview(),
+        {
+          userEmail: "alice@example.com",
+          slug: "my",
+          prompt: "x",
+        },
+        getSandboxMock as unknown as typeof getSandboxMock,
+        builder,
+      ),
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.previewStatus).toBe("error");
+      expect(result.previewError).toMatch(/timed out/i);
+      expect(result.previewUrl).toBeUndefined();
+    }
+  });
+
   it("does NOT call the preview builder when the commit/push step fails", async () => {
     // Force commit to fail — preview must NOT fire because there's
     // no committed SHA to build against.
