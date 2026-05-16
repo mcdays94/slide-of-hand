@@ -432,4 +432,106 @@ describe("DeckCardGrid", () => {
       ).toBe(3);
     });
   });
+
+  describe("visibility toggle wiring (issue #214)", () => {
+    /**
+     * The grid threads `onToggleVisibility` through to each card,
+     * gated by the per-item `canToggleVisibility` flag (so source-
+     * backed admin rows don't get an enabled toggle).
+     *
+     * Public surface MUST NEVER render the toggle — the homepage has
+     * no admin authority and the audience must never see a control
+     * that promises to mutate the deck.
+     */
+    it("renders an enabled visibility toggle on KV-backed admin items when onToggleVisibility is wired", () => {
+      const onToggleVisibility = vi.fn();
+      render(
+        <MemoryRouter>
+          <SettingsProvider>
+            <DeckCardGrid
+              surface="admin"
+              items={[
+                item("kv-a", "KV A", {
+                  visibility: "public",
+                  canToggleVisibility: true,
+                }),
+              ]}
+              onToggleVisibility={onToggleVisibility}
+            />
+          </SettingsProvider>
+        </MemoryRouter>,
+      );
+      expect(screen.getByTestId("deck-visibility-toggle-kv-a")).toBeDefined();
+    });
+
+    it("does NOT render the toggle on source-backed admin items (canToggleVisibility=false)", () => {
+      const onToggleVisibility = vi.fn();
+      render(
+        <MemoryRouter>
+          <SettingsProvider>
+            <DeckCardGrid
+              surface="admin"
+              items={[
+                item("src-deck", "Source Deck", {
+                  visibility: "public",
+                  canToggleVisibility: false,
+                }),
+              ]}
+              onToggleVisibility={onToggleVisibility}
+            />
+          </SettingsProvider>
+        </MemoryRouter>,
+      );
+      expect(
+        screen.queryByTestId("deck-visibility-toggle-src-deck"),
+      ).toBeNull();
+    });
+
+    it("public surface never renders the toggle even when items declare canToggleVisibility=true", () => {
+      // The public DeckCardGrid never receives `onToggleVisibility`,
+      // so the toggle stays off regardless of per-item flags.
+      render(
+        <MemoryRouter>
+          <SettingsProvider>
+            <DeckCardGrid
+              surface="public"
+              items={[
+                item("kv-a", "KV A", {
+                  visibility: "public",
+                  canToggleVisibility: true,
+                }),
+              ]}
+            />
+          </SettingsProvider>
+        </MemoryRouter>,
+      );
+      expect(
+        screen.queryByTestId("deck-visibility-toggle-kv-a"),
+      ).toBeNull();
+    });
+
+    it("clicking the toggle invokes the grid-level handler with (slug, next)", async () => {
+      const onToggleVisibility = vi.fn().mockResolvedValue(undefined);
+      render(
+        <MemoryRouter>
+          <SettingsProvider>
+            <DeckCardGrid
+              surface="admin"
+              items={[
+                item("kv-a", "KV A", {
+                  visibility: "private",
+                  canToggleVisibility: true,
+                }),
+              ]}
+              onToggleVisibility={onToggleVisibility}
+            />
+          </SettingsProvider>
+        </MemoryRouter>,
+      );
+      fireEvent.click(screen.getByTestId("deck-visibility-toggle-kv-a"));
+      await waitFor(() =>
+        expect(onToggleVisibility).toHaveBeenCalledWith("kv-a", "public"),
+      );
+    });
+  });
 });

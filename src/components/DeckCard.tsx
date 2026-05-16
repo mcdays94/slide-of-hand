@@ -58,6 +58,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import type { MouseEvent as ReactMouseEvent } from "react";
 import { Link } from "react-router-dom";
 import type { DeckMeta } from "@/framework/viewer/types";
 import type { PendingSourceActionType } from "@/lib/pending-source-actions";
@@ -112,6 +113,36 @@ export interface DeckCardProps {
    * inline in the dialog so the user can retry without dismissing.
    */
   onArchive?: (slug: string) => Promise<void> | void;
+  /**
+   * Optional admin-only visibility toggle callback (issue #214).
+   * When wired AND `canToggleVisibility` is `true`, the card renders
+   * an interactive PUBLIC ↔ PRIVATE pill in place of the static
+   * private badge. Clicking the pill invokes this callback with the
+   * deck slug and the NEXT visibility value (the opposite of the
+   * current). Errors thrown by the callback are surfaced inline
+   * underneath the kicker so the user can retry. The card does NOT
+   * own the optimistic state — that lives in the parent (see
+   * `AdminIndex.handleToggleVisibility`) — so the rendered pill
+   * always reflects whatever `visibility` prop the parent passes.
+   *
+   * Source-backed decks must omit this prop OR set
+   * `canToggleVisibility={false}` — their public/private semantics
+   * are determined by source folder placement, not a KV field, and
+   * are out of scope for this slice.
+   */
+  onToggleVisibility?: (
+    slug: string,
+    next: DeckCardVisibility,
+  ) => Promise<void> | void;
+  /**
+   * Gate for the interactive visibility toggle (issue #214). Used to
+   * distinguish KV-backed admin rows (which CAN toggle) from
+   * source-backed admin rows (which cannot — their visibility comes
+   * from the source folder layout). Defaults to `false` so non-admin
+   * callers (the public homepage) never accidentally render the
+   * toggle.
+   */
+  canToggleVisibility?: boolean;
   /**
    * Optional admin-only Restore callback. Mirrors `onArchive` but only
    * renders when the card is an archived deck.
@@ -179,6 +210,8 @@ export function DeckCard({
   onArchive,
   onRestore,
   onDelete,
+  onToggleVisibility,
+  canToggleVisibility = false,
   ideHref,
   hoverPreviewSlideCount = 0,
   pending,
@@ -263,6 +296,50 @@ export function DeckCard({
   const [clearingPending, setClearingPending] = useState(false);
   const [clearPendingError, setClearPendingError] = useState<string | null>(
     null,
+  );
+
+  // Visibility toggle state (issue #214). The toggle is a single
+  // affordance with no confirm dialog, so we surface "in flight" via
+  // `togglingVisibility` (disables the click while the parent's
+  // promise resolves) and any rejection via
+  // `visibilityToggleError` (inline message under the kicker). The
+  // displayed visibility value comes from the `visibility` prop —
+  // optimistic updates are owned by the parent so the card stays
+  // controlled.
+  const toggleEnabled = canToggleVisibility && Boolean(onToggleVisibility);
+  const [togglingVisibility, setTogglingVisibility] = useState(false);
+  const [visibilityToggleError, setVisibilityToggleError] = useState<
+    string | null
+  >(null);
+  const handleToggleVisibility = useCallback(
+    async (event: ReactMouseEvent<HTMLButtonElement>) => {
+      // Stop the click from reaching the wrapping <Link>; the card's
+      // outer anchor would otherwise navigate to `to` on the same
+      // click that the user meant for the toggle. React's
+      // `stopPropagation` only halts React's synthetic delegation —
+      // the underlying DOM event still bubbles, so we also call
+      // `nativeEvent.stopPropagation()` to defeat any native
+      // listeners (test spies, tracking scripts) on ancestors.
+      event.preventDefault();
+      event.stopPropagation();
+      event.nativeEvent.stopPropagation();
+      if (!onToggleVisibility || togglingVisibility) return;
+      const current: DeckCardVisibility = visibility ?? "public";
+      const next: DeckCardVisibility =
+        current === "public" ? "private" : "public";
+      setTogglingVisibility(true);
+      setVisibilityToggleError(null);
+      try {
+        await onToggleVisibility(meta.slug, next);
+        setTogglingVisibility(false);
+      } catch (e) {
+        setVisibilityToggleError(
+          e instanceof Error ? e.message : "Network error — try again.",
+        );
+        setTogglingVisibility(false);
+      }
+    },
+    [meta.slug, onToggleVisibility, togglingVisibility, visibility],
   );
 
   useEffect(() => {
@@ -467,16 +544,34 @@ export function DeckCard({
                     draft
                   </span>
                 )}
-                {visibility === "private" && (
-                  <span
-                    data-visibility="private"
-                    className="rounded border border-cf-orange/40 bg-cf-orange/10 px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.25em] text-cf-orange"
-                  >
-                    private
-                  </span>
+                {toggleEnabled ? (
+                  <VisibilityTogglePill
+                    slug={meta.slug}
+                    visibility={visibility ?? "public"}
+                    busy={togglingVisibility}
+                    onClick={handleToggleVisibility}
+                  />
+                ) : (
+                  visibility === "private" && (
+                    <span
+                      data-visibility="private"
+                      className="rounded border border-cf-orange/40 bg-cf-orange/10 px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.25em] text-cf-orange"
+                    >
+                      private
+                    </span>
+                  )
                 )}
               </div>
             </div>
+            {toggleEnabled && visibilityToggleError && (
+              <p
+                role="alert"
+                data-testid={`visibility-toggle-error-${meta.slug}`}
+                className="rounded border border-cf-orange/40 bg-cf-orange/10 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.2em] text-cf-orange"
+              >
+                {visibilityToggleError}
+              </p>
+            )}
 
             <h2
               className={
@@ -721,5 +816,59 @@ function PendingActionPill({
         </p>
       )}
     </div>
+  );
+}
+
+// ─── Visibility toggle pill (issue #214) ─────────────────────────────
+//
+// Replacement for the static private badge when the parent wires up
+// an `onToggleVisibility` callback (KV-backed admin rows). The pill
+// is a `<button>` rather than a `<span>` so it gets keyboard focus +
+// Enter/Space activation for free, and `data-interactive` so the
+// card's outer keydown nav doesn't fight the toggle.
+//
+// Visual language follows the existing static badges: the PRIVATE
+// state mirrors the orange-accent pill the static badge uses (so a
+// quick glance still reads "this deck is private"); the PUBLIC state
+// is a muted text-on-cream pill so the active "private" state stays
+// the eye-catching one. Hover/disabled tweaks are minimal —
+// `cursor-not-allowed` while a click is in flight, slight opacity
+// drop, hover brightens the border.
+
+interface VisibilityTogglePillProps {
+  slug: string;
+  visibility: DeckCardVisibility;
+  busy: boolean;
+  onClick: (event: ReactMouseEvent<HTMLButtonElement>) => void;
+}
+
+function VisibilityTogglePill({
+  slug,
+  visibility,
+  busy,
+  onClick,
+}: VisibilityTogglePillProps) {
+  const isPrivate = visibility === "private";
+  const label = isPrivate ? "private" : "public";
+  // The PRIVATE state keeps the orange-accent visual emphasis from
+  // the legacy static badge; PUBLIC stays muted so the eye lands on
+  // the deck title first.
+  const className = isPrivate
+    ? "rounded border border-cf-orange/40 bg-cf-orange/10 px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.25em] text-cf-orange transition-colors hover:border-cf-orange disabled:cursor-not-allowed disabled:opacity-50"
+    : "rounded border border-cf-border bg-cf-bg-200 px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.25em] text-cf-text-muted transition-colors hover:border-cf-text hover:text-cf-text disabled:cursor-not-allowed disabled:opacity-50";
+  return (
+    <button
+      type="button"
+      data-interactive
+      data-testid={`deck-visibility-toggle-${slug}`}
+      data-visibility={visibility}
+      aria-label={`Visibility: ${label}. Click to switch to ${isPrivate ? "public" : "private"}.`}
+      title={`Visibility: ${label}. Click to switch to ${isPrivate ? "public" : "private"}.`}
+      disabled={busy}
+      onClick={onClick}
+      className={className}
+    >
+      {label}
+    </button>
   );
 }

@@ -183,6 +183,14 @@ export default function AdminIndex() {
   const [archivedOverrides, setArchivedOverrides] = useState<
     Record<string, boolean>
   >(() => ({}));
+  // Issue #214 — KV visibility quick toggle. Mirrors
+  // `archivedOverrides` semantics: keyed by slug → next visibility,
+  // missing means "use the registry value". Optimistically flipped
+  // before the POST resolves, reverted on failure so the pill stays
+  // truthful. KV decks only — source decks never hit this map.
+  const [visibilityOverrides, setVisibilityOverrides] = useState<
+    Record<string, "public" | "private">
+  >(() => ({}));
 
   // Issue #250 — automatic reconciliation of pending source actions.
   //
@@ -301,6 +309,100 @@ export default function AdminIndex() {
       return true;
     },
     [githubConnection.state, findTitle],
+  );
+
+  /**
+   * Issue #214 — KV-backed visibility quick toggle.
+   *
+   * The flow:
+   *   1. Optimistically flip `visibilityOverrides[slug]` so the pill
+   *      reads the next value immediately.
+   *   2. GET the full DataDeck record via `/api/admin/decks/<slug>`.
+   *      A read failure means we have no record to mutate, so we
+   *      revert + throw (DeckCard surfaces the inline error).
+   *   3. Mutate `meta.visibility` to `next` and POST the full record
+   *      back to the same path (existing upsert; same shape as the
+   *      editor's save flow).
+   *   4. On POST success: keep the override (the registry hook
+   *      doesn't refetch, so the override is what makes the pill
+   *      stay flipped). The public list will catch up on its own
+   *      lifecycle (next `/api/decks` poll or page reload).
+   *   5. On POST failure: revert the override and throw so the
+   *      DeckCard surfaces an inline error and the user can retry.
+   *
+   * Source-backed decks are NOT routed through this handler — the
+   * card never wires the toggle for them (see `toGridItem` /
+   * `archivedItems` below; `canToggleVisibility` is false for
+   * `source === "source"`). A future slice can add a source-backed
+   * visibility PR flow if desired; for now source visibility is
+   * purely a function of source folder placement.
+   */
+  const handleToggleVisibility = useCallback(
+    async (slug: string, next: "public" | "private") => {
+      if (findSource(slug) !== "kv") {
+        // Defensive: the toggle is gated off for source decks at
+        // the grid level. If somehow invoked, surface an explicit
+        // failure rather than silently no-op.
+        throw new Error(
+          "Source-backed visibility is determined by source folder placement, not a KV field.",
+        );
+      }
+      // Optimistic flip.
+      setVisibilityOverrides((prev) => ({ ...prev, [slug]: next }));
+      try {
+        const getRes = await fetch(
+          `/api/admin/decks/${encodeURIComponent(slug)}`,
+          { headers: adminWriteHeaders(), cache: "no-store" },
+        );
+        if (!getRes.ok) {
+          let message = `Failed to read deck (${getRes.status})`;
+          try {
+            const body = (await getRes.json()) as { error?: string };
+            if (body?.error) message = body.error;
+          } catch {
+            /* not JSON — keep generic message */
+          }
+          throw new Error(message);
+        }
+        const deck = (await getRes.json()) as {
+          meta: Record<string, unknown> & {
+            visibility: "public" | "private";
+          };
+          slides: unknown[];
+        };
+        const updated = {
+          ...deck,
+          meta: { ...deck.meta, visibility: next },
+        };
+        const postRes = await fetch(
+          `/api/admin/decks/${encodeURIComponent(slug)}`,
+          {
+            method: "POST",
+            headers: adminWriteHeaders(),
+            body: JSON.stringify(updated),
+          },
+        );
+        if (!postRes.ok) {
+          let message = `Failed to update visibility (${postRes.status})`;
+          try {
+            const body = (await postRes.json()) as { error?: string };
+            if (body?.error) message = body.error;
+          } catch {
+            /* not JSON — keep generic message */
+          }
+          throw new Error(message);
+        }
+      } catch (err) {
+        // Revert the optimistic flip so the pill matches reality.
+        setVisibilityOverrides((prev) => {
+          const copy = { ...prev };
+          delete copy[slug];
+          return copy;
+        });
+        throw err;
+      }
+    },
+    [findSource],
   );
 
   const handleArchive = useCallback(
@@ -557,6 +659,7 @@ export default function AdminIndex() {
       projectRoot,
       pendingActions,
       clearPending,
+      visibilityOverrides,
     }),
   );
 
@@ -574,12 +677,18 @@ export default function AdminIndex() {
   const archivedItems: DeckCardGridItem[] = archivedEntries.map((entry) => {
     const isSource = (entry.source ?? "source") === "source";
     const pending = isSource ? pendingActions[entry.meta.slug] : undefined;
+    // Issue #214 — KV decks (active OR archived) get the visibility
+    // toggle. Source decks never do.
+    const canToggleVisibility = !isSource;
+    const resolvedVisibility =
+      visibilityOverrides[entry.meta.slug] ?? entry.visibility;
     return {
       meta: entry.meta,
       to: `/admin/decks/${entry.meta.slug}`,
-      visibility: entry.visibility,
+      visibility: resolvedVisibility,
       canDelete: true,
       canRestore: true,
+      canToggleVisibility,
       pending: pending
         ? {
             action: pending.action,
@@ -638,6 +747,7 @@ export default function AdminIndex() {
           items={activeItems}
           onDelete={handleDelete}
           onArchive={handleArchive}
+          onToggleVisibility={handleToggleVisibility}
         />
       </section>
 
@@ -659,6 +769,7 @@ export default function AdminIndex() {
             items={archivedItems}
             onDelete={handleDelete}
             onRestore={handleRestore}
+            onToggleVisibility={handleToggleVisibility}
           />
         </section>
       )}
@@ -743,6 +854,12 @@ interface ToGridItemContext {
   pendingActions: Record<string, PendingSourceAction>;
   /** Clear-pending handler (issue #246) — passed to source-backed pending cards. */
   clearPending: (slug: string) => Promise<void>;
+  /**
+   * Issue #214 — local visibility overrides for the optimistic
+   * toggle flow. Keyed by slug → next visibility. Missing entries
+   * fall back to the registry entry's persisted visibility.
+   */
+  visibilityOverrides: Record<string, "public" | "private">;
 }
 
 function toGridItem(
@@ -777,12 +894,21 @@ function toGridItem(
   // (issue #246). KV decks get an immediate lifecycle from PR #245.
   const pending = isSource ? ctx.pendingActions[entry.meta.slug] : undefined;
 
+  // Issue #214 — only KV-backed admin rows expose the interactive
+  // visibility toggle. Source-backed rows fall back to the static
+  // private badge (if applicable) so their visibility is still
+  // visible at a glance without promising a one-click flip.
+  const canToggleVisibility = !isSource;
+  const resolvedVisibility =
+    ctx.visibilityOverrides[entry.meta.slug] ?? entry.visibility;
+
   return {
     meta: entry.meta,
     to: `/admin/decks/${entry.meta.slug}`,
-    visibility: entry.visibility,
+    visibility: resolvedVisibility,
     canDelete,
     canArchive,
+    canToggleVisibility,
     ideHref: ideHref || undefined,
     pending: pending
       ? {
