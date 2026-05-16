@@ -1,0 +1,25 @@
+worker/sandbox-deck-creation.ts
+  11a18b79b72b31a5 286-293,551-564,606-621
+worker/sandbox-deck-creation.test.ts
+  11a18b79b72b31a5 1969-1995
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.8",
+  "base_commit_sha": "1d6cbd4a3d7b9cf04dee34abde073155c3ec56a1",
+  "prompts": {
+    "11a18b79b72b31a5": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_1d7f53624ffe5pzFOLEYdlwlFl",
+        "model": "anthropic/claude-opus-4-7"
+      },
+      "human_author": "mcdays94",
+      "messages": [],
+      "total_additions": 68,
+      "total_deletions": 7,
+      "accepted_lines": 68,
+      "overriden_lines": 0
+    }
+  }
+}
