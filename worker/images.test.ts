@@ -10,6 +10,7 @@
 import { describe, it, expect } from "vitest";
 import {
   handleImages,
+  hashOwnerEmail,
   type ImagesEnv,
   type ImageRecord,
 } from "./images";
@@ -590,5 +591,410 @@ describe("routing", () => {
       env,
     );
     expect(res.status).toBe(405);
+  });
+});
+
+// ─── Profile assets — issue #266 ─────────────────────────────────────
+//
+// Per-user recurring asset library (speaker photo, logos, brand
+// marks). Same storage substrate as deck images but a separate
+// `/api/admin/profile-assets` admin namespace, a `profile-assets/<ownerHash>/...`
+// R2 prefix, and a `/images/profile/<ownerHash>/...` public URL shape.
+// All identifiers in the public surface are hashed — the user's email
+// must never appear in URLs, R2 keys, KV index keys, or response
+// bodies.
+
+const TEST_EMAIL = "test@example.com";
+// Pre-derived ownerHash matches the production helper's algorithm:
+// first 32 hex chars of SHA-256(lowercased email). Pinned so a future
+// change to the derivation is loud + visible.
+const TEST_OWNER_HASH_PROMISE = hashOwnerEmail(TEST_EMAIL);
+
+/**
+ * Build a profile-asset request with the Access email header set to
+ * `email`. When `email` is undefined the request carries only the
+ * service-token JWT signal — `requireAccessAuth` passes but
+ * `getAccessUserEmail` returns null, exercising the strict
+ * interactive-only path.
+ */
+function profileRequest(
+  input: string | URL,
+  init: RequestInit = {},
+  email: string | undefined = TEST_EMAIL,
+): Request {
+  const headers = new Headers(init.headers);
+  if (email) headers.set("cf-access-authenticated-user-email", email);
+  return new Request(input, { ...init, headers });
+}
+
+describe("hashOwnerEmail", () => {
+  it("returns 32 hex characters", async () => {
+    const h = await hashOwnerEmail("alice@example.com");
+    expect(h).toMatch(/^[0-9a-f]{32}$/);
+  });
+
+  it("is case-insensitive on the input", async () => {
+    const a = await hashOwnerEmail("Alice@Example.com");
+    const b = await hashOwnerEmail("alice@example.com");
+    expect(a).toBe(b);
+  });
+
+  it("trims surrounding whitespace before hashing", async () => {
+    const a = await hashOwnerEmail("  alice@example.com  ");
+    const b = await hashOwnerEmail("alice@example.com");
+    expect(a).toBe(b);
+  });
+
+  it("yields different hashes for different emails", async () => {
+    const a = await hashOwnerEmail("alice@example.com");
+    const b = await hashOwnerEmail("bob@example.com");
+    expect(a).not.toBe(b);
+  });
+});
+
+describe("GET /api/admin/profile-assets — list", () => {
+  it("rejects without Access header (403)", async () => {
+    const { env } = makeEnv();
+    const res = await call(
+      new Request("https://example.com/api/admin/profile-assets"),
+      env,
+    );
+    expect(res.status).toBe(403);
+  });
+
+  it("rejects service-token callers without an interactive email (403)", async () => {
+    const { env } = makeEnv();
+    // Service-token signal — JWT header present, but no email
+    // header. `requireAccessAuth` admits the request; the profile
+    // handler then rejects because there's no interactive owner.
+    const headers = new Headers();
+    headers.set("cf-access-jwt-assertion", "fake-jwt");
+    const res = await call(
+      new Request("https://example.com/api/admin/profile-assets", { headers }),
+      env,
+    );
+    expect(res.status).toBe(403);
+    // The body must NOT leak any email-shaped value (defence in
+    // depth — there's no email in scope here, but the assertion
+    // pins the contract).
+    const body = await res.text();
+    expect(body).not.toMatch(/@/);
+  });
+
+  it("returns { images: [] } when no profile assets exist", async () => {
+    const { env } = makeEnv();
+    const res = await call(
+      profileRequest("https://example.com/api/admin/profile-assets"),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { images: ImageRecord[] };
+    expect(body.images).toEqual([]);
+    // The serialised response MUST NOT contain the raw email — the
+    // owner identity has to flow through hashed surfaces only.
+    const raw = JSON.stringify(body);
+    expect(raw).not.toContain(TEST_EMAIL);
+  });
+
+  it("returns the persisted index after uploads (caller scoped to their own ownerHash)", async () => {
+    const { env } = makeEnv();
+    await call(
+      profileRequest("https://example.com/api/admin/profile-assets", {
+        method: "POST",
+        body: multipartUpload(pngFile("profile-a", "speaker.png")),
+      }),
+      env,
+    );
+    const res = await call(
+      profileRequest("https://example.com/api/admin/profile-assets"),
+      env,
+    );
+    const body = (await res.json()) as { images: ImageRecord[] };
+    expect(body.images).toHaveLength(1);
+    expect(body.images[0].originalFilename).toBe("speaker.png");
+    expect(body.images[0].mimeType).toBe("image/png");
+    // The URL must start with the hashed-owner prefix, never the raw email.
+    const ownerHash = await TEST_OWNER_HASH_PROMISE;
+    expect(body.images[0].src).toBe(
+      `/images/profile/${ownerHash}/${body.images[0].contentHash}.png`,
+    );
+    // Owner hash is opaque — no email anywhere in the response body.
+    const raw = JSON.stringify(body);
+    expect(raw).not.toContain(TEST_EMAIL);
+  });
+
+  it("isolates assets per ownerHash — alice cannot see bob's", async () => {
+    const { env } = makeEnv();
+    // Alice uploads.
+    await call(
+      profileRequest(
+        "https://example.com/api/admin/profile-assets",
+        {
+          method: "POST",
+          body: multipartUpload(pngFile("alice-bytes", "alice.png")),
+        },
+        "alice@example.com",
+      ),
+      env,
+    );
+    // Bob requests his list — must be empty.
+    const res = await call(
+      profileRequest(
+        "https://example.com/api/admin/profile-assets",
+        {},
+        "bob@example.com",
+      ),
+      env,
+    );
+    const body = (await res.json()) as { images: ImageRecord[] };
+    expect(body.images).toEqual([]);
+  });
+});
+
+describe("POST /api/admin/profile-assets — upload", () => {
+  it("rejects without Access header (403) and writes nothing", async () => {
+    const { env, r2, kv } = makeEnv();
+    const res = await call(
+      new Request("https://example.com/api/admin/profile-assets", {
+        method: "POST",
+        body: multipartUpload(pngFile()),
+      }),
+      env,
+    );
+    expect(res.status).toBe(403);
+    expect(r2.store.size).toBe(0);
+    expect(kv.store.size).toBe(0);
+  });
+
+  it("stores the bytes under a hashed-owner R2 key (no raw email)", async () => {
+    const { env, r2, kv } = makeEnv();
+    const res = await call(
+      profileRequest("https://example.com/api/admin/profile-assets", {
+        method: "POST",
+        body: multipartUpload(pngFile("logo-bytes")),
+      }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as ImageRecord;
+    const ownerHash = await TEST_OWNER_HASH_PROMISE;
+    const expectedKey = `profile-assets/${ownerHash}/${body.contentHash}.png`;
+    expect(r2.store.has(expectedKey)).toBe(true);
+    // No R2 key may contain the raw email.
+    for (const key of r2.store.keys()) {
+      expect(key).not.toContain(TEST_EMAIL);
+      expect(key).not.toContain("@");
+    }
+    // KV index key must be hashed too.
+    expect(kv.store.has(`profile-assets:${ownerHash}`)).toBe(true);
+    for (const key of kv.store.keys()) {
+      expect(key).not.toContain(TEST_EMAIL);
+      expect(key).not.toContain("@");
+    }
+  });
+
+  it("returns a src under /images/profile/<ownerHash>/", async () => {
+    const { env } = makeEnv();
+    const res = await call(
+      profileRequest("https://example.com/api/admin/profile-assets", {
+        method: "POST",
+        body: multipartUpload(pngFile("speaker-bytes")),
+      }),
+      env,
+    );
+    const body = (await res.json()) as ImageRecord;
+    const ownerHash = await TEST_OWNER_HASH_PROMISE;
+    expect(body.src).toBe(
+      `/images/profile/${ownerHash}/${body.contentHash}.png`,
+    );
+    expect(body.src).not.toContain(TEST_EMAIL);
+  });
+
+  it("rejects unsupported MIME types with 415 (same allowlist as deck images)", async () => {
+    const { env } = makeEnv();
+    const fd = new FormData();
+    fd.append(
+      "file",
+      new Blob(["whatever"], { type: "application/pdf" }),
+      "doc.pdf",
+    );
+    const res = await call(
+      profileRequest("https://example.com/api/admin/profile-assets", {
+        method: "POST",
+        body: fd,
+      }),
+      env,
+    );
+    expect(res.status).toBe(415);
+  });
+
+  it("rejects files over 10MB with 413 (same cap as deck images)", async () => {
+    const { env } = makeEnv();
+    const oversize = new Uint8Array(10 * 1024 * 1024 + 1);
+    const fd = new FormData();
+    fd.append(
+      "file",
+      new File([oversize], "huge.png", { type: "image/png" }),
+    );
+    const res = await call(
+      profileRequest("https://example.com/api/admin/profile-assets", {
+        method: "POST",
+        body: fd,
+      }),
+      env,
+    );
+    expect(res.status).toBe(413);
+  });
+
+  it("is content-addressed: re-upload of same bytes converges to one record", async () => {
+    const { env, r2 } = makeEnv();
+    await call(
+      profileRequest("https://example.com/api/admin/profile-assets", {
+        method: "POST",
+        body: multipartUpload(pngFile("same", "first.png")),
+      }),
+      env,
+    );
+    await call(
+      profileRequest("https://example.com/api/admin/profile-assets", {
+        method: "POST",
+        body: multipartUpload(pngFile("same", "second.png")),
+      }),
+      env,
+    );
+    expect(r2.store.size).toBe(1);
+    const listRes = await call(
+      profileRequest("https://example.com/api/admin/profile-assets"),
+      env,
+    );
+    const body = (await listRes.json()) as { images: ImageRecord[] };
+    expect(body.images).toHaveLength(1);
+    expect(body.images[0].originalFilename).toBe("second.png");
+  });
+});
+
+describe("DELETE /api/admin/profile-assets/<hash> — remove", () => {
+  it("rejects without Access header (403)", async () => {
+    const { env } = makeEnv();
+    const fakeHash = "a".repeat(64);
+    const res = await call(
+      new Request(
+        `https://example.com/api/admin/profile-assets/${fakeHash}`,
+        { method: "DELETE" },
+      ),
+      env,
+    );
+    expect(res.status).toBe(403);
+  });
+
+  it("removes both the R2 object and the index entry; returns 204", async () => {
+    const { env, r2, kv } = makeEnv();
+    const upload = await call(
+      profileRequest("https://example.com/api/admin/profile-assets", {
+        method: "POST",
+        body: multipartUpload(pngFile("delete-me")),
+      }),
+      env,
+    );
+    const { contentHash } = (await upload.json()) as ImageRecord;
+    expect(r2.store.size).toBe(1);
+
+    const res = await call(
+      profileRequest(
+        `https://example.com/api/admin/profile-assets/${contentHash}`,
+        { method: "DELETE" },
+      ),
+      env,
+    );
+    expect(res.status).toBe(204);
+    expect(r2.store.size).toBe(0);
+    const ownerHash = await TEST_OWNER_HASH_PROMISE;
+    const stored = JSON.parse(
+      kv.store.get(`profile-assets:${ownerHash}`)!,
+    ) as ImageRecord[];
+    expect(stored).toEqual([]);
+  });
+
+  it("rejects malformed hashes with 400", async () => {
+    const { env } = makeEnv();
+    const res = await call(
+      profileRequest(
+        "https://example.com/api/admin/profile-assets/notahash",
+        { method: "DELETE" },
+      ),
+      env,
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it("isolates deletes per ownerHash — bob cannot delete alice's asset", async () => {
+    const { env, r2 } = makeEnv();
+    const aliceUpload = await call(
+      profileRequest(
+        "https://example.com/api/admin/profile-assets",
+        {
+          method: "POST",
+          body: multipartUpload(pngFile("alice-secret")),
+        },
+        "alice@example.com",
+      ),
+      env,
+    );
+    const { contentHash } = (await aliceUpload.json()) as ImageRecord;
+    expect(r2.store.size).toBe(1);
+
+    // Bob tries to delete Alice's hash. Idempotent path returns
+    // 204 against bob's own (empty) index — but alice's R2 object
+    // survives.
+    const res = await call(
+      profileRequest(
+        `https://example.com/api/admin/profile-assets/${contentHash}`,
+        { method: "DELETE" },
+        "bob@example.com",
+      ),
+      env,
+    );
+    expect(res.status).toBe(204);
+    expect(r2.store.size).toBe(1);
+  });
+});
+
+describe("GET /images/profile/<ownerHash>/<hash>.<ext> — public serve", () => {
+  it("streams the R2 object with content-type + immutable cache-control", async () => {
+    const { env } = makeEnv();
+    const upload = await call(
+      profileRequest("https://example.com/api/admin/profile-assets", {
+        method: "POST",
+        body: multipartUpload(pngFile("served-profile-bytes")),
+      }),
+      env,
+    );
+    const record = (await upload.json()) as ImageRecord;
+    // Sanity: src must be under /images/profile/, NOT /images/decks/.
+    expect(record.src.startsWith("/images/profile/")).toBe(true);
+
+    const res = await call(
+      new Request(`https://example.com${record.src}`),
+      env,
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("image/png");
+    expect(res.headers.get("cache-control")).toBe(
+      "public, max-age=31536000, immutable",
+    );
+    const text = await res.text();
+    expect(text).toBe("served-profile-bytes");
+  });
+
+  it("returns 404 for a missing profile asset", async () => {
+    const { env } = makeEnv();
+    const ownerHash = await TEST_OWNER_HASH_PROMISE;
+    const res = await call(
+      new Request(
+        `https://example.com/images/profile/${ownerHash}/${"a".repeat(64)}.png`,
+      ),
+      env,
+    );
+    expect(res.status).toBe(404);
   });
 });

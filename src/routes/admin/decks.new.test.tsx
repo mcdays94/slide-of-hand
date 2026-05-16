@@ -77,6 +77,7 @@ vi.mock("@/lib/shiki", () => {
 import NewDeckRoute from "./decks.new";
 
 function setupHooks() {
+  stubProfileAssetsEmpty();
   useAgentMock.mockReturnValue({
     agent: "DeckAuthorAgent",
     name: "new-deck-test-uuid",
@@ -103,7 +104,24 @@ afterEach(() => {
   useAgentMock.mockReset();
   useAgentChatMock.mockReset();
   useAccessAuthMock.mockReset();
+  vi.unstubAllGlobals();
 });
+
+// `useProfileAssets` (mounted by the route at the top level for #266)
+// fires `fetch("/api/admin/profile-assets")` on mount. Stub fetch to
+// an empty index so the route renders cleanly in tests without a
+// real Worker behind it. Individual tests below override this when
+// they need a populated profile-asset list.
+function stubProfileAssetsEmpty() {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () =>
+      new Response(JSON.stringify({ images: [] }), {
+        headers: { "content-type": "application/json" },
+      }),
+    ),
+  );
+}
 
 /**
  * Render `<NewDeckRoute>` inside a MemoryRouter so `useNavigate` /
@@ -865,6 +883,101 @@ describe("<NewDeckRoute>", () => {
       expect(screen.getByTestId("deck-creation-canvas")).toBeDefined();
       const shelf = screen.getByTestId("draft-asset-shelf");
       expect(shelf.getAttribute("data-slug")).toBe("preserve-me");
+    });
+  });
+
+  // Issue #266 — recurring profile assets. The route mounts the
+  // `<ProfileAssetShelf>` directly under the canvas (pre-pivot)
+  // and threads the user's current profile-asset list into the
+  // agent's body so the model sees the available URLs and can
+  // embed them on every new draft.
+  describe("profile assets shelf (#266)", () => {
+    it("renders the Profile assets shelf on the new-deck page", async () => {
+      setupHooks();
+      await renderRoute();
+      expect(screen.getByTestId("profile-asset-shelf")).toBeDefined();
+    });
+
+    it("passes the user's profile assets through useAgentChat's body in compact { src, originalFilename } shape", async () => {
+      // Override the default empty fetch with a populated profile list.
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (input: RequestInfo | URL) => {
+          const url = typeof input === "string" ? input : input.toString();
+          if (url.includes("/api/admin/profile-assets")) {
+            return new Response(
+              JSON.stringify({
+                images: [
+                  {
+                    src: "/images/profile/abcd/aaaa.png",
+                    contentHash: "a".repeat(64),
+                    size: 10,
+                    mimeType: "image/png",
+                    originalFilename: "speaker.png",
+                    uploadedAt: "2026-05-16T00:00:00Z",
+                  },
+                ],
+              }),
+              { headers: { "content-type": "application/json" } },
+            );
+          }
+          return new Response("{}", { status: 200 });
+        }),
+      );
+      useAgentMock.mockReturnValue({
+        agent: "DeckAuthorAgent",
+        name: "new-deck-test-uuid",
+        getHttpUrl: () => "https://example.com/api/admin/agents/...",
+      });
+      useAgentChatMock.mockReturnValue({
+        messages: [],
+        sendMessage: vi.fn(),
+        clearHistory: vi.fn(),
+        stop: vi.fn(),
+        status: "ready",
+        addToolOutput: vi.fn(),
+        addToolApprovalResponse: vi.fn(),
+        setMessages: vi.fn(),
+        isStreaming: false,
+        isServerStreaming: false,
+        isToolContinuation: false,
+      });
+      useAccessAuthMock.mockReturnValue("authenticated");
+      await renderRoute();
+      // The route fetches profile assets on mount and threads them
+      // through the body. Wait until at least one call carries a
+      // populated profileAssets array.
+      await screen.findByTestId("profile-asset-shelf");
+      const calls = useAgentChatMock.mock.calls;
+      const populated = calls
+        .map((c) => c[0]?.body?.profileAssets)
+        .filter(
+          (v): v is Array<{ src: string; originalFilename: string }> =>
+            Array.isArray(v) && v.length > 0,
+        );
+      // At least one re-render carried the populated list.
+      expect(populated.length).toBeGreaterThan(0);
+      const latest = populated[populated.length - 1];
+      // Compact shape — only src + originalFilename, NOT the
+      // contentHash / mimeType / uploadedAt sized fields.
+      expect(latest).toEqual([
+        {
+          src: "/images/profile/abcd/aaaa.png",
+          originalFilename: "speaker.png",
+        },
+      ]);
+      // Defence in depth: no raw email could possibly land here
+      // (the route never sees one), but pin the contract.
+      const json = JSON.stringify(latest);
+      expect(json).not.toMatch(/@/);
+    });
+
+    it("defaults body.profileAssets to an empty array when the user has no profile assets", async () => {
+      setupHooks();
+      await renderRoute();
+      const [chatOpts] = useAgentChatMock.mock.calls[0];
+      expect(chatOpts.body).toHaveProperty("profileAssets");
+      expect(Array.isArray(chatOpts.body.profileAssets)).toBe(true);
     });
   });
 });
