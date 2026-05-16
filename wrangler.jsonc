@@ -196,11 +196,25 @@
    * multipart). Served via `GET /images/<path...>` (public,
    * `Cache-Control: public, max-age=31536000, immutable`). Indexed
    * per-deck via the `IMAGES_INDEX` KV namespace above.
+   *
+   * Draft preview bundles (issue #269 / PRD #178) live in a SEPARATE
+   * bucket — `slide-of-hand-preview-bundles`, bound as
+   * `PREVIEW_BUNDLES`. Preview bundles are throwaway per-draft-per-commit
+   * artefacts with their own cache + lifecycle policy (see
+   * `worker/preview-bundles.ts`); keeping them out of the deck-image
+   * bucket keeps both surfaces' invariants simple. The bucket itself
+   * is provisioned out-of-band before deploy (orchestrator runs
+   * `wrangler r2 bucket create slide-of-hand-preview-bundles`); the
+   * binding declared here is all the Worker config needs.
    */
   "r2_buckets": [
     {
       "binding": "IMAGES",
       "bucket_name": "slide-of-hand-images"
+    },
+    {
+      "binding": "PREVIEW_BUNDLES",
+      "bucket_name": "slide-of-hand-preview-bundles"
     }
   ],
   /**
